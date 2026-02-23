@@ -178,10 +178,29 @@ WEB_API_ENABLED=true
 docker-compose -f docker-compose.local.yml down
 docker-compose -f docker-compose.local.yml up -d
 
-# 3. Проверьте что переменные прочитаны
+# 3. Проверьте переменные
 docker exec remnawave_bot env | grep CABINET_ENABLED
-# Должно показать: CABINET_ENABLED=true
 ```
+
+**См. также**: [FIX_CABINET_404.md](FIX_CABINET_404.md)
+
+---
+
+### "Please verify your email first"
+
+**Проблема**: Email verification блокирует вход
+
+**Решение для dev**:
+```bash
+# 1. Отключите verification в .env
+CABINET_EMAIL_VERIFICATION_ENABLED=false
+
+# 2. Перезапустите
+docker-compose -f docker-compose.local.yml down
+docker-compose -f docker-compose.local.yml up -d
+```
+
+**См. также**: [FIX_EMAIL_VERIFICATION.md](FIX_EMAIL_VERIFICATION.md)
 
 ---
 
@@ -196,29 +215,11 @@ docker exec remnawave_bot env | grep CABINET_ENABLED
 
 ---
 
-### Email verification required
-
-Если backend требует верификацию email, есть 2 варианта:
-
-**Вариант 1: Настроить тестовый email (рекомендуется для dev)**
-
-Добавьте в `.env`:
-```env
-TEST_EMAIL=test@example.com:password123
-```
-
-Теперь `test@example.com` с паролем `password123` можно использовать без верификации.
-
-**Вариант 2: Настроить email отправку**
-
-Настройте SMTP в `.env` для отправки писем верификации (для production).
-
----
-
 ## Полезные документы
 
 - `docs/CABINET_API_REFERENCE.md` - Полный справочник Cabinet API
 - `docs/FLUTTER_CONNECTION.md` - Подключение Flutter к backend
+- `docs/FIX_EMAIL_VERIFICATION.md` - ⭐ Решение "Please verify your email first"
 - `docs/FIX_CABINET_404.md` - Решение 404 ошибок
 - `docs/WINDOWS_SETUP.md` - Настройка на Windows
 
@@ -229,6 +230,7 @@ TEST_EMAIL=test@example.com:password123
 - [x] Backend запущен (`docker-compose up -d` или `python main.py`)
 - [x] `CABINET_ENABLED=true` в `.env`
 - [x] `CABINET_EMAIL_AUTH_ENABLED=true` в `.env`
+- [x] `CABINET_EMAIL_VERIFICATION_ENABLED=false` в `.env` (для dev)
 - [x] `WEB_API_ENABLED=true` в `.env`
 - [x] `/health/unified` возвращает JSON
 - [x] `/cabinet/auth/email/login` возвращает 400 (НЕ 404)

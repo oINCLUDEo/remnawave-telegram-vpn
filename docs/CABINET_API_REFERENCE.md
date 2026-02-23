@@ -52,9 +52,11 @@ http://localhost:8081
 ```
 
 **Errors**:
-- `400` - Неверный email или пароль
-- `401` - Email не верифицирован
-- `404` - Пользователь не найден
+- `401` - Неверный email или пароль
+- `403` - **"Please verify your email first"** - Email не верифицирован
+- `403` - Аккаунт неактивен
+
+**Примечание**: ⚠️ Если получаете ошибку "Please verify your email first", см. [FIX_EMAIL_VERIFICATION.md](FIX_EMAIL_VERIFICATION.md) для решения.
 
 **Example**:
 ```bash

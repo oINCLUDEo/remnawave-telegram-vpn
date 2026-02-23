@@ -299,6 +299,36 @@ docker exec remnawave_bot env | grep CABINET_ENABLED
 
 ---
 
+### Ошибка: "Please verify your email first"
+
+**Причина**: Email verification включена, но email не верифицирован.
+
+**Быстрое решение для dev**:
+```bash
+# Добавить в .env
+CABINET_EMAIL_VERIFICATION_ENABLED=false
+
+# Перезапустить
+docker-compose -f docker-compose.local.yml down
+docker-compose -f docker-compose.local.yml up -d
+```
+
+**Альтернативы**:
+1. **SQL**: Верифицировать существующего пользователя
+   ```sql
+   UPDATE users SET email_verified = true WHERE email = 'your@email.com';
+   ```
+
+2. **TEST_EMAIL**: Использовать тестовый аккаунт
+   ```env
+   TEST_EMAIL=test@example.com
+   TEST_EMAIL_PASSWORD=TestPass123
+   ```
+
+**Детальная инструкция**: См. [FIX_EMAIL_VERIFICATION.md](FIX_EMAIL_VERIFICATION.md)
+
+---
+
 ### Ошибка: "404 Not Found on /docs"
 
 
@@ -346,6 +376,7 @@ WEB_API_HOST=0.0.0.0  # НЕ 127.0.0.1
 - [ ] Backend запущен (`python main.py` или Docker)
 - [ ] `CABINET_ENABLED=true` в `.env`
 - [ ] `CABINET_EMAIL_AUTH_ENABLED=true` в `.env`
+- [ ] `CABINET_EMAIL_VERIFICATION_ENABLED=false` в `.env` (для dev)
 - [ ] `WEB_API_ENABLED=true` в `.env`
 - [ ] `WEB_API_HOST=0.0.0.0` в `.env`
 - [ ] `WEB_API_PORT=8081` в `.env`
