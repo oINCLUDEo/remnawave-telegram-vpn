@@ -123,7 +123,7 @@ nano .env
 docker-compose up -d
 
 # 4. Проверьте
-curl http://localhost:8080/api/health
+curl http://localhost:8081/api/health
 ```
 
 #### Вариант 2: Локальная разработка
@@ -162,13 +162,13 @@ flutter pub get
 flutter devices
 
 # 4. Запустите приложение с указанием API URL
-flutter run --dart-define=API_BASE_URL=http://YOUR_IP:8080
+flutter run --dart-define=API_BASE_URL=http://YOUR_IP:8081
 
 # Для Android эмулятора используйте 10.0.2.2
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8081
 
 # Для физического устройства используйте IP вашего компьютера
-flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8080
+flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8081
 ```
 
 ## API Endpoints
@@ -256,7 +256,7 @@ Response: 200 OK
 ### 1. Создание тестового пользователя
 
 ```bash
-curl -X POST http://localhost:8080/api/auth/register \
+curl -X POST http://localhost:8081/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "email": "test@example.com",
@@ -398,7 +398,7 @@ curl -X POST http://localhost:8080/api/auth/register \
 
 1. **Backend не запускается**:
    - Проверьте логи: `docker-compose logs -f`
-   - Убедитесь что порты 8080, 5432, 6379 свободны
+   - Убедитесь что порты 8081, 5432, 6379 свободны
    - Проверьте .env конфигурацию
 
 2. **Flutter приложение не подключается к API**:

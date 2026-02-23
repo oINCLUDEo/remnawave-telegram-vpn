@@ -32,10 +32,11 @@ TELEGRAM_BOT_ENABLED=false
 # Включаем Web API
 WEB_API_ENABLED=true
 WEB_API_HOST=0.0.0.0
-WEB_API_PORT=8080
+WEB_API_PORT=8081  # Измените если порт 8080 занят
 
 # Настройки базы данных
 DATABASE_MODE=postgres
+# Для локального запуска на Windows/Mac/Linux используйте localhost
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=remnawave_bot
@@ -43,6 +44,7 @@ POSTGRES_USER=remnawave_user
 POSTGRES_PASSWORD=your_secure_password
 
 # Redis (для кеша и сессий)
+# Для локального запуска используйте localhost
 REDIS_URL=redis://localhost:6379/0
 
 # RemnaWave API настройки
@@ -62,6 +64,11 @@ SMTP_USER=your_email@gmail.com
 SMTP_PASSWORD=your_app_password
 SMTP_USE_TLS=true
 ```
+
+**Важно для Windows пользователей:**
+- Используйте `POSTGRES_HOST=localhost` вместо `postgres` (который работает только в Docker)
+- Используйте `REDIS_URL=redis://localhost:6379/0` вместо `redis://redis:6379/0`
+- Если порт 8080 занят, измените `WEB_API_PORT` на другой (например, 8081)
 
 ### 3. Запуск с Docker Compose
 
@@ -155,12 +162,12 @@ GET /api/servers/{id}
 
 1. **API доступно**: 
    ```bash
-   curl http://localhost:8080/api/health
+   curl http://localhost:8081/api/health
    ```
 
 2. **Swagger документация** (если включена):
    ```
-   http://localhost:8080/docs
+   http://localhost:8081/docs
    ```
 
 3. **Логи запуска**:
@@ -188,14 +195,14 @@ flutter pub get
 ```dart
 static const String baseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'http://localhost:8080',  // Измените на ваш URL
+  defaultValue: 'http://localhost:8081',  // Измените на ваш URL
 );
 ```
 
 Или используйте переменную окружения при запуске:
 
 ```bash
-flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8080
+flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8081
 ```
 
 ### 4. Запуск приложения
@@ -242,7 +249,7 @@ curl -X POST http://localhost:8080/api/auth/login \
 ### Получение данных пользователя
 
 ```bash
-curl http://localhost:8080/api/users/me \
+curl http://localhost:8081/api/users/me \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 

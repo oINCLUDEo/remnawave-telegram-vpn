@@ -61,7 +61,7 @@ remnawave-telegram-vpn/
    TELEGRAM_BOT_ENABLED=false   # Отключаем бота!
    WEB_API_ENABLED=true
    WEB_API_HOST=0.0.0.0
-   WEB_API_PORT=8080
+   WEB_API_PORT=8081
    
    # База данных (можно через Docker)
    DATABASE_MODE=postgres
@@ -79,7 +79,7 @@ remnawave-telegram-vpn/
 
 4. **Проверь что работает**:
    ```bash
-   curl http://localhost:8080/api/health
+   curl http://localhost:8081/api/health
    ```
 
 ### Flutter приложение (Windows)
@@ -97,10 +97,10 @@ remnawave-telegram-vpn/
 3. **Запусти на эмуляторе или устройстве**:
    ```bash
    # Для Android эмулятора (10.0.2.2 это localhost)
-   flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080
+   flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8081
    
    # Для физического устройства (замени на IP твоего компьютера)
-   flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8080
+   flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8081
    ```
 
 ## 📱 Экраны приложения
@@ -173,7 +173,7 @@ remnawave-telegram-vpn/
 2. Узнай свой IP: `ipconfig` (например 192.168.1.100)
 3. Запусти Flutter с этим IP:
    ```bash
-   flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8080
+   flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8081
    ```
 
 ### Если хочешь добавить VPN:
@@ -207,7 +207,7 @@ remnawave-telegram-vpn/
 
 1. **Backend не запускается**:
    - Проверь логи: `docker-compose logs -f`
-   - Убедись что порты 8080, 5432, 6379 свободны
+   - Убедись что порты 8081, 5432, 6379 свободны
 
 2. **Flutter не компилируется**:
    - Запусти: `flutter doctor` и исправь проблемы

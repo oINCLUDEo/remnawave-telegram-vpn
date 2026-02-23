@@ -2,7 +2,7 @@ class ApiConfig {
   // Base URL for API - can be changed for production
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://localhost:8080',
+    defaultValue: 'http://localhost:8081',
   );
   
   // API Endpoints
