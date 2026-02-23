@@ -28,9 +28,13 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from aiogram import Bot
+# Conditional import to support API-only mode without aiogram
+if TYPE_CHECKING:
+    from aiogram import Bot
+else:
+    Bot = None  # type: ignore
 
 
 # Constants
@@ -87,7 +91,7 @@ class TelegramNotifierProcessor:
     """
 
     def __init__(self) -> None:
-        self._bot: Bot | None = None
+        self._bot: Any = None  # Bot | None at runtime
         # LRU-like cache of recent message hashes: hash -> timestamp
         self._recent_hashes: dict[str, float] = {}
         self._lock = threading.Lock()
@@ -96,7 +100,7 @@ class TelegramNotifierProcessor:
     # Public API
     # ------------------------------------------------------------------
 
-    def set_bot(self, bot: Bot) -> None:
+    def set_bot(self, bot: Any) -> None:  # Bot type at runtime
         """Inject the Bot instance for sending messages.
 
         Called from main.py after the bot is created.
@@ -192,7 +196,7 @@ class TelegramNotifierProcessor:
             for k in sorted_keys[: len(self._recent_hashes) - RECENT_HASHES_MAX_SIZE]:
                 self._recent_hashes.pop(k, None)
 
-    def _schedule_send(self, bot: Bot, event_dict: dict[str, Any]) -> None:
+    def _schedule_send(self, bot: Any, event_dict: dict[str, Any]) -> None:  # Bot at runtime
         """Schedule async delivery via event loop.
 
         Works from any thread:
@@ -212,7 +216,7 @@ class TelegramNotifierProcessor:
 
     def _create_send_task(
         self,
-        bot: Bot,
+        bot: Any,  # Bot at runtime
         event_dict: dict[str, Any],
         loop: asyncio.AbstractEventLoop,
     ) -> None:
@@ -220,7 +224,7 @@ class TelegramNotifierProcessor:
         loop.create_task(self._send(bot, event_dict))
 
     @staticmethod
-    async def _send(bot: Bot, event_dict: dict[str, Any]) -> None:
+    async def _send(bot: Any, event_dict: dict[str, Any]) -> None:  # Bot at runtime
         """Send the log event to the admin chat via existing infrastructure."""
         try:
             # Lazy import to avoid circular dependencies at startup
