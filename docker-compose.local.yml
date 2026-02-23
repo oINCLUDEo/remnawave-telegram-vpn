@@ -12,7 +12,9 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - bot_network
-      - remnawave-network # Подключаем к сети панели
+      # Опционально: подключаем к сети панели RemnaWave если она существует
+      # Раскомментируйте следующую строку если используете внешнюю панель
+      # - remnawave-network
     healthcheck:
       test:
         [
@@ -33,7 +35,9 @@ services:
       - redis_data:/data
     networks:
       - bot_network
-      - remnawave-network # Подключаем к сети панели
+      # Опционально: подключаем к сети панели RemnaWave если она существует
+      # Раскомментируйте следующую строку если используете внешнюю панель
+      # - remnawave-network
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 30s
@@ -71,15 +75,17 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ./vpn_logo.png:/app/vpn_logo.png:ro
     ports:
-      - '${WEB_API_PORT:-8080}:8080'
+      - '${WEB_API_PORT:-8081}:8081'
     networks:
       - bot_network
-      - remnawave-network # Подключаем к сети панели
+      # Опционально: подключаем к сети панели RemnaWave если она существует
+      # Раскомментируйте следующую строку если используете внешнюю панель
+      # - remnawave-network
     healthcheck:
       test:
         [
           'CMD-SHELL',
-          'python -c "import requests, os; requests.get(''http://localhost:8080/health'', headers={''X-API-Key'': os.environ.get(''WEB_API_DEFAULT_TOKEN'')}, timeout=5) or exit(1)"',
+          'python -c "import requests, os; requests.get(''http://localhost:8081/health'', headers={''X-API-Key'': os.environ.get(''WEB_API_DEFAULT_TOKEN'')}, timeout=5) or exit(1)"',
         ]
       interval: 60s
       timeout: 10s
@@ -102,6 +108,8 @@ networks:
     driver_opts:
       com.docker.network.driver.mtu: 1350
 
-  remnawave-network:
-    name: remnawave-network
-    external: true # Используем существующую сеть панели
+  # Внешняя сеть для подключения к панели RemnaWave (опционально)
+  # Раскомментируйте если используете внешнюю панель и сеть создана
+  # remnawave-network:
+  #   name: remnawave-network
+  #   external: true
