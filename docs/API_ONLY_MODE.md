@@ -53,9 +53,11 @@ REMNAWAVE_API_KEY=your_api_key
 REMNAWAVE_SECRET_KEY=your_secret_key
 
 # Email настройки (для регистрации через Cabinet)
+# ВАЖНО: Для работы Flutter приложения включите Cabinet
 CABINET_ENABLED=true
 CABINET_EMAIL_AUTH_ENABLED=true
 CABINET_EMAIL_VERIFICATION_ENABLED=false  # Для тестирования
+CABINET_ALLOWED_ORIGINS=*  # Для разработки, в production укажите конкретные домены
 
 # SMTP (если нужна отправка email)
 SMTP_HOST=smtp.gmail.com
@@ -294,8 +296,14 @@ python -m alembic upgrade head
 1. Если тестируете на физическом устройстве, используйте IP вашего компьютера вместо `localhost`
 2. Убедитесь, что `WEB_API_HOST=0.0.0.0` (не `127.0.0.1`)
 3. Проверьте firewall настройки
+4. **Для Android эмулятора используйте `10.0.2.2` вместо `localhost`**
+5. **Убедитесь что `CABINET_ENABLED=true` в `.env`**
 
-### Проблема: CORS errors в браузере
+**Подробная инструкция**: См. [FLUTTER_CONNECTION.md](FLUTTER_CONNECTION.md)
+
+---
+
+### Проблема: CORS errors в браузере или Flutter
 
 **Решение**: Настройте CORS в `.env`:
 ```env
