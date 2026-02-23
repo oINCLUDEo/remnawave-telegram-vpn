@@ -6,7 +6,18 @@
 password authentication failed for user "remnawave_user"
 ```
 
-## ✅ Что это означает
+## ⚠️ Сначала проверьте логи PostgreSQL!
+
+Если в логах PostgreSQL вы видите:
+```
+FATAL: role "remnawave_user" does not exist
+```
+
+**ЭТО ДРУГАЯ ПРОБЛЕМА!** Перейдите к [FIX_USER_NOT_EXISTS.md](FIX_USER_NOT_EXISTS.md)
+
+---
+
+## ✅ Что это означает (если пользователь существует)
 
 ✅ **Хорошая новость**: PostgreSQL запущен и работает!  
 ❌ **Проблема**: Пароль в вашем `.env` файле не совпадает с паролем в PostgreSQL

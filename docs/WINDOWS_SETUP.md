@@ -202,22 +202,31 @@ redis-cli ping
    netstat -an | findstr :5432
    ```
 
-3. **Пароль правильный?**
+3. **Пользователь remnawave_user существует?**
    ```bash
-   # Попробуйте подключиться вручную
-   psql -h localhost -U remnawave_user -d postgres
-   # Если просит пароль - PostgreSQL работает
-   # Если "password authentication failed" - пароль неверный
+   # Проверить список пользователей
+   docker exec -it remnawave_bot_db psql -U postgres -c "\du"
+   
+   # Если пользователя нет - см. FIX_USER_NOT_EXISTS.md
    ```
 
-4. **.env файл существует и заполнен?**
+4. **Пароль правильный?**
+   ```bash
+   # Попробуйте подключиться вручную
+   docker exec -it remnawave_bot_db psql -U remnawave_user -d remnawave_bot
+   # Если просит пароль - PostgreSQL работает
+   # Если "password authentication failed" - пароль неверный
+   # Если "role does not exist" - пользователь не создан
+   ```
+
+5. **.env файл существует и заполнен?**
    ```bash
    type .env | findstr POSTGRES_PASSWORD
    ```
 
-5. **База данных создана?**
+6. **База данных создана?**
    ```bash
-   psql -h localhost -U remnawave_user -d postgres -c "\l"
+   docker exec -it remnawave_bot_db psql -U postgres -c "\l"
    ```
 
 ---
@@ -343,6 +352,53 @@ docker-compose -f docker-compose.local.yml --env-file .env up -d
 # Убедитесь что .env в корне проекта рядом с main.py
 python main.py
 ```
+
+---
+
+---
+
+### Ошибка: "role remnawave_user does not exist"
+
+**Описание**: В логах PostgreSQL: `FATAL: role "remnawave_user" does not exist`
+
+Это означает что пользователь не создан в PostgreSQL.
+
+**Причина**:
+- PostgreSQL был инициализирован ранее с другим пользователем
+- `POSTGRES_USER` работает только при первой инициализации
+- Существующий Docker volume содержит старые данные
+
+**Быстрое решение - Полная очистка**:
+
+```bash
+# Остановить все и удалить volumes
+docker-compose -f docker-compose.local.yml down -v
+
+# Проверить что volumes удалены
+docker volume ls | findstr remnawave
+
+# Запустить заново
+docker-compose -f docker-compose.local.yml up -d
+
+# PostgreSQL создаст пользователя с нуля
+```
+
+**Или создать пользователя вручную**:
+
+```bash
+# Подключиться к PostgreSQL
+docker exec -it remnawave_bot_db psql -U postgres
+
+# Выполнить в psql:
+CREATE USER remnawave_user WITH PASSWORD 'secure_password_123';
+CREATE DATABASE remnawave_bot OWNER remnawave_user;
+GRANT ALL PRIVILEGES ON DATABASE remnawave_bot TO remnawave_user;
+\c remnawave_bot
+GRANT ALL ON SCHEMA public TO remnawave_user;
+\q
+```
+
+**Подробная инструкция**: См. [FIX_USER_NOT_EXISTS.md](FIX_USER_NOT_EXISTS.md)
 
 ---
 
