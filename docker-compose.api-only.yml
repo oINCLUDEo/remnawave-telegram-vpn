@@ -1,0 +1,140 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: vpn-postgres
+    environment:
+      POSTGRES_DB: vpn_db
+      POSTGRES_USER: vpn_user
+      POSTGRES_PASSWORD: vpn_password_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vpn_user -d vpn_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vpn_network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: vpn-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vpn_network
+
+  # API Backend (API-only mode, no Telegram bot)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vpn-api
+    environment:
+      # API-Only Mode
+      API_ONLY_MODE: "true"
+      
+      # Cabinet API
+      CABINET_ENABLED: "true"
+      CABINET_URL: "http://localhost:8000/cabinet"
+      CABINET_JWT_SECRET: "${CABINET_JWT_SECRET:-change-this-secret-key-min-32-chars}"
+      CABINET_ALLOWED_ORIGINS: "http://localhost:3000,myapp://"
+      CABINET_EMAIL_AUTH_ENABLED: "true"
+      
+      # Database
+      DATABASE_URL: "******postgres:5432/vpn_db"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: vpn_db
+      POSTGRES_USER: vpn_user
+      POSTGRES_PASSWORD: vpn_password_123
+      
+      # Redis
+      REDIS_URL: "redis://redis:6379/0"
+      
+      # Web API Server
+      WEB_API_HOST: "0.0.0.0"
+      WEB_API_PORT: 8000
+      WEB_API_ENABLED: "true"
+      WEB_API_DEFAULT_TOKEN: "${WEB_API_DEFAULT_TOKEN:-admin-token-change-me}"
+      
+      # RemnaWave API
+      REMNAWAVE_API_URL: "${REMNAWAVE_API_URL}"
+      REMNAWAVE_API_KEY: "${REMNAWAVE_API_KEY}"
+      REMNAWAVE_AUTH_TYPE: "${REMNAWAVE_AUTH_TYPE:-api_key}"
+      
+      # Payment Systems
+      YOOKASSA_ENABLED: "${YOOKASSA_ENABLED:-false}"
+      YOOKASSA_SHOP_ID: "${YOOKASSA_SHOP_ID}"
+      YOOKASSA_SECRET_KEY: "${YOOKASSA_SECRET_KEY}"
+      
+      TELEGRAM_STARS_ENABLED: "${TELEGRAM_STARS_ENABLED:-false}"
+      
+      # Trial Settings
+      TRIAL_ENABLED: "true"
+      TRIAL_DURATION_DAYS: 3
+      TRIAL_TRAFFIC_LIMIT_GB: 5
+      TRIAL_DEVICE_LIMIT: 2
+      CHANNEL_IS_REQUIRED_SUB: "false"
+      
+      # Subscription Mode
+      SUBSCRIPTION_MODE: "tariff_mode"
+      
+      # Referral Program
+      REFERRAL_PROGRAM_ENABLED: "true"
+      REFERRAL_COMMISSION_PERCENT: 25
+      
+      # Logging
+      LOG_LEVEL: "INFO"
+      LOG_ROTATION_ENABLED: "true"
+      
+      # Disable Telegram-dependent features
+      ADMIN_NOTIFICATIONS_ENABLED: "false"
+      ADMIN_REPORTS_ENABLED: "false"
+      SUPPORT_MENU_ENABLED: "false"
+      CONTESTS_ENABLED: "false"
+      
+      # Timezone
+      TIMEZONE: "Europe/Moscow"
+      TZ: "Europe/Moscow"
+      
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - vpn_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  vpn_network:
+    driver: bridge
