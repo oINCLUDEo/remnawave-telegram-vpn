@@ -82,14 +82,16 @@ flutter run --dart-define=API_BASE_URL=http://localhost:8081
 ### Шаг 3: Проверьте что backend работает
 
 ```bash
-# Проверьте что API отвечает
-curl http://localhost:8081/api/health
+# Проверьте что API отвечает (unified health endpoint)
+curl http://localhost:8081/health/unified
 
 # Или через браузер
-http://localhost:8081/api/health
+http://localhost:8081/health/unified
 ```
 
-Должно вернуть ответ (например, `{"status": "ok"}` или подобное).
+Должно вернуть JSON ответ с информацией о состоянии системы.
+
+**Важно**: Endpoint `/api/health` требует API токен. Для простой проверки используйте `/health/unified`.
 
 ---
 
@@ -122,7 +124,20 @@ type .env | findstr CABINET_ENABLED
 # Должно быть: CABINET_ENABLED=true
 ```
 
-### Проверка 4: API endpoints доступны?
+### Проверка 4: Unified health endpoint отвечает?
+
+```bash
+# Попробуйте unified health endpoint (без токена)
+curl http://localhost:8081/health/unified
+
+# Должен вернуть JSON с информацией о системе
+```
+
+**Примечание**: Endpoint `/api/health` требует API токен аутентификацию. Для проверки работоспособности используйте `/health/unified`.
+
+### Проверка 5: Cabinet auth endpoints доступны?
+
+### Проверка 5: Cabinet auth endpoints доступны?
 
 ```bash
 # Попробуйте вызвать auth endpoint
@@ -130,11 +145,11 @@ curl http://localhost:8081/api/auth/login -X POST \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"test@test.com\",\"password\":\"test\"}"
 
-# Должен вернуть ошибку 401 или 400 (это нормально)
+# Должен вернуть ошибку 400 или 401 (это нормально - пользователь не существует)
 # НЕ должен вернуть 404 (endpoint not found)
 ```
 
-### Проверка 5: Flutter использует правильный URL?
+### Проверка 6: Flutter использует правильный URL?
 
 В Flutter app:
 - Android эмулятор: `10.0.2.2:8081` ✅
@@ -218,7 +233,7 @@ docker-compose -f docker-compose.local.yml up -d
 
 ```bash
 # Проверить что API работает
-curl http://localhost:8081/api/health
+curl http://localhost:8081/health/unified
 ```
 
 ### 3. Flutter App
@@ -250,6 +265,19 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8081
 ```env
 CABINET_ALLOWED_ORIGINS=*
 ```
+
+### Ошибка: "404 Not Found on /api/health"
+
+**Причина**: Неправильный endpoint.
+
+**Решение**: Используйте `/health/unified` для проверки работоспособности:
+```bash
+curl http://localhost:8081/health/unified
+```
+
+Endpoint `/api/health` требует API token аутентификацию и используется для административных целей.
+
+---
 
 ### Ошибка: "404 Not Found on /api/auth/login"
 
@@ -290,7 +318,7 @@ WEB_API_HOST=0.0.0.0  # НЕ 127.0.0.1
 - [ ] `WEB_API_HOST=0.0.0.0` в `.env`
 - [ ] `WEB_API_PORT=8081` в `.env`
 - [ ] `CABINET_ALLOWED_ORIGINS=*` в `.env` (для dev)
-- [ ] API отвечает: `curl http://localhost:8081/api/health`
+- [ ] Health endpoint отвечает: `curl http://localhost:8081/health/unified`
 - [ ] Порт 8081 открыт: `netstat -an | findstr :8081`
 - [ ] Flutter использует правильный URL (10.0.2.2 для Android эмулятора)
 - [ ] PostgreSQL запущен и пользователь создан
@@ -316,6 +344,7 @@ WEB_API_HOST=0.0.0.0  # НЕ 127.0.0.1
 
 ## 📚 Дополнительная информация
 
+- [FIX_API_404.md](FIX_API_404.md) - Исправление 404 ошибок на API endpoints
 - [WINDOWS_SETUP.md](WINDOWS_SETUP.md) - Настройка PostgreSQL
 - [FIX_USER_NOT_EXISTS.md](FIX_USER_NOT_EXISTS.md) - Исправление проблем с пользователем БД
 - [API_ONLY_MODE.md](API_ONLY_MODE.md) - Настройка API-only режима
