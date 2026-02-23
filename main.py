@@ -10,7 +10,6 @@ import structlog
 
 sys.path.append(str(Path(__file__).parent))
 
-from app.bot import setup_bot
 from app.config import settings
 from app.database.database import sync_postgres_sequences
 from app.database.migrations import run_alembic_upgrade
@@ -278,6 +277,9 @@ async def main():
         
         # Skip Telegram bot setup in API-only mode
         if not settings.is_api_only_mode():
+            # Import setup_bot only when needed
+            from app.bot import setup_bot
+            
             async with timeline.stage('Настройка бота', '🤖', success_message='Бот настроен') as stage:
                 bot, dp = await setup_bot()
                 stage.log('Кеш и FSM подготовлены')
