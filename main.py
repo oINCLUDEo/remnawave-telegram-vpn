@@ -275,17 +275,29 @@ async def main():
 
         bot = None
         dp = None
-        async with timeline.stage('Настройка бота', '🤖', success_message='Бот настроен') as stage:
-            bot, dp = await setup_bot()
-            stage.log('Кеш и FSM подготовлены')
+        
+        # Skip Telegram bot setup in API-only mode
+        if not settings.is_api_only_mode():
+            async with timeline.stage('Настройка бота', '🤖', success_message='Бот настроен') as stage:
+                bot, dp = await setup_bot()
+                stage.log('Кеш и FSM подготовлены')
+        else:
+            timeline.add_manual_step(
+                'Настройка бота',
+                '⏭️',
+                'Пропущено',
+                'API_ONLY_MODE=true (работает только Cabinet API)',
+            )
 
-        monitoring_service.bot = bot
-        maintenance_service.set_bot(bot)
-        broadcast_service.set_bot(bot)
-        ban_notification_service.set_bot(bot)
-        traffic_monitoring_scheduler.set_bot(bot)
-        daily_subscription_service.set_bot(bot)
-        telegram_notifier.set_bot(bot)
+        # Initialize bot-dependent services only if bot is available
+        if bot:
+            monitoring_service.bot = bot
+            maintenance_service.set_bot(bot)
+            broadcast_service.set_bot(bot)
+            ban_notification_service.set_bot(bot)
+            traffic_monitoring_scheduler.set_bot(bot)
+            daily_subscription_service.set_bot(bot)
+            telegram_notifier.set_bot(bot)
 
         # Initialize email broadcast service
         from app.cabinet.services.email_service import email_service
@@ -293,28 +305,39 @@ async def main():
 
         email_broadcast_service.set_email_service(email_service)
 
-        from app.services.admin_notification_service import AdminNotificationService
+        # Initialize admin notification service (only if bot is available)
+        if bot:
+            from app.services.admin_notification_service import AdminNotificationService
 
-        async with timeline.stage(
-            'Интеграция сервисов',
-            '🔗',
-            success_message='Сервисы подключены',
-        ) as stage:
-            admin_notification_service = AdminNotificationService(bot)
-            version_service.bot = bot
-            version_service.set_notification_service(admin_notification_service)
-            referral_contest_service.set_bot(bot)
-            stage.log(f'Репозиторий версий: {version_service.repo}')
-            stage.log(f'Текущая версия: {version_service.current_version}')
-            stage.success('Мониторинг, уведомления и рассылки подключены')
+            async with timeline.stage(
+                'Интеграция сервисов',
+                '🔗',
+                success_message='Сервисы подключены',
+            ) as stage:
+                admin_notification_service = AdminNotificationService(bot)
+                version_service.bot = bot
+                version_service.set_notification_service(admin_notification_service)
+                referral_contest_service.set_bot(bot)
+                stage.log(f'Репозиторий версий: {version_service.repo}')
+                stage.log(f'Текущая версия: {version_service.current_version}')
+                stage.success('Мониторинг, уведомления и рассылки подключены')
+        else:
+            timeline.add_manual_step(
+                'Интеграция сервисов',
+                '⏭️',
+                'Пропущено',
+                'API_ONLY_MODE=true (Telegram-зависимые сервисы отключены)',
+            )
 
+        # Backup service (works with or without bot)
         async with timeline.stage(
             'Сервис бекапов',
             '🗄️',
             success_message='Сервис бекапов инициализирован',
         ) as stage:
             try:
-                backup_service.bot = bot
+                if bot:
+                    backup_service.bot = bot
                 settings_obj = await backup_service.get_backup_settings()
                 if settings_obj.auto_backup_enabled:
                     await backup_service.start_auto_backup()
@@ -329,13 +352,15 @@ async def main():
                 stage.warning(f'Ошибка инициализации сервиса бекапов: {e}')
                 logger.error('❌ Ошибка инициализации сервиса бекапов', error=e)
 
+        # Reporting service (works with or without bot, but needs bot for notifications)
         async with timeline.stage(
             'Сервис отчетов',
             '📊',
             success_message='Сервис отчетов готов',
         ) as stage:
             try:
-                reporting_service.set_bot(bot)
+                if bot:
+                    reporting_service.set_bot(bot)
                 await reporting_service.start()
             except Exception as e:
                 stage.warning(f'Ошибка запуска сервиса отчетов: {e}')
@@ -372,6 +397,7 @@ async def main():
                 stage.warning(f'Ошибка запуска ротации игр: {e}')
                 logger.error('❌ Ошибка запуска ротации игр', error=e)
 
+        # Log rotation service (works with or without bot, but notification needs bot)
         if settings.is_log_rotation_enabled():
             async with timeline.stage(
                 'Ротация логов',
@@ -379,12 +405,13 @@ async def main():
                 success_message='Сервис ротации логов готов',
             ) as stage:
                 try:
-                    log_rotation_service.set_bot(bot)
+                    if bot:
+                        log_rotation_service.set_bot(bot)
                     await log_rotation_service.start()
                     status = log_rotation_service.get_status()
                     stage.log(f'Время ротации: {status.rotation_time}')
                     stage.log(f'Хранение архивов: {status.keep_days} дней')
-                    if status.send_to_telegram:
+                    if status.send_to_telegram and bot:
                         stage.log('Отправка в Telegram: включена')
                     if status.next_rotation:
                         from datetime import datetime
@@ -416,11 +443,12 @@ async def main():
                 stage.warning(f'Ошибка запуска автосинхронизации: {e}')
                 logger.error('❌ Ошибка запуска автосинхронизации RemnaWave', error=e)
 
-        payment_service = PaymentService(bot)
+        # Payment service initialization (optional bot for notifications)
+        payment_service = PaymentService(bot) if bot else PaymentService(None)
         auto_payment_verification_service.set_payment_service(payment_service)
 
-        # Настройка сервиса очереди чеков NaloGO
-        if payment_service.nalogo_service:
+        # Настройка сервиса очереди чеков NaloGO (requires bot)
+        if payment_service.nalogo_service and bot:
             nalogo_queue_service.set_nalogo_service(payment_service.nalogo_service)
             nalogo_queue_service.set_bot(bot)
 
@@ -509,9 +537,15 @@ async def main():
                 stage.warning(f'Ошибка подготовки внешней админки: {error}')
                 logger.error('❌ Ошибка подготовки внешней админки', error=error)
 
-        bot_run_mode = settings.get_bot_run_mode()
-        polling_enabled = bot_run_mode == 'polling'
-        telegram_webhook_enabled = bot_run_mode == 'webhook'
+        # Determine bot run mode and what services to enable
+        if settings.is_api_only_mode():
+            bot_run_mode = 'api_only'
+            polling_enabled = False
+            telegram_webhook_enabled = False
+        else:
+            bot_run_mode = settings.get_bot_run_mode()
+            polling_enabled = bot_run_mode == 'polling'
+            telegram_webhook_enabled = bot_run_mode == 'webhook'
 
         payment_webhooks_enabled = any(
             [
@@ -530,8 +564,10 @@ async def main():
             '🌐',
             success_message='Веб-сервер запущен',
         ) as stage:
+            # In API-only mode, always start web app for Cabinet API
             should_start_web_app = (
-                settings.is_web_api_enabled()
+                settings.is_api_only_mode()
+                or settings.is_web_api_enabled()
                 or telegram_webhook_enabled
                 or payment_webhooks_enabled
                 or settings.get_miniapp_static_path().exists()
@@ -552,6 +588,8 @@ async def main():
                 stage.log(f'Базовый URL: {base_url}')
 
                 features: list[str] = []
+                if settings.is_api_only_mode():
+                    features.append('Cabinet API (режим API-only)')
                 if settings.is_web_api_enabled():
                     features.append('админка')
                 if payment_webhooks_enabled:
@@ -572,7 +610,9 @@ async def main():
             '🤖',
             success_message='Telegram webhook настроен',
         ) as stage:
-            if telegram_webhook_enabled:
+            if settings.is_api_only_mode():
+                stage.skip('API_ONLY_MODE=true — Telegram webhook отключен')
+            elif telegram_webhook_enabled and bot and dp:
                 webhook_url = settings.get_telegram_webhook_url()
                 if not webhook_url:
                     stage.warning('WEBHOOK_URL не задан, пропускаем настройку webhook')
@@ -653,12 +693,17 @@ async def main():
                 version_check_task = None
                 stage.skip('Проверка версий отключена настройками')
 
+        # Start polling only if not in API-only mode and bot is available
         async with timeline.stage(
             'Запуск polling',
             '🤖',
             success_message='Aiogram polling запущен',
         ) as stage:
-            if polling_enabled:
+            if settings.is_api_only_mode():
+                polling_task = None
+                polling_enabled = False
+                stage.skip('API_ONLY_MODE=true — Telegram bot отключен')
+            elif polling_enabled and bot and dp:
                 polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=False))
                 stage.log('skip_updates=False — накопившиеся обновления будут обработаны')
             else:

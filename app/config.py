@@ -27,7 +27,10 @@ logger = structlog.get_logger(__name__)
 
 
 class Settings(BaseSettings):
-    BOT_TOKEN: str
+    # API-Only Mode: Disable Telegram bot completely, run only Cabinet API and WebAPI
+    API_ONLY_MODE: bool = False
+    
+    BOT_TOKEN: str = ''  # Made optional for API-only mode
     BOT_USERNAME: str | None = None
     ADMIN_IDS: str = ''
     ADMIN_EMAILS: str = ''  # Comma-separated admin emails for email-only users
@@ -2443,13 +2446,20 @@ class Settings(BaseSettings):
         return Path(raw_path)
 
     # Cabinet methods
+    def is_api_only_mode(self) -> bool:
+        """Check if running in API-only mode (no Telegram bot)."""
+        return bool(self.API_ONLY_MODE)
+    
     def is_cabinet_enabled(self) -> bool:
         return bool(self.CABINET_ENABLED)
 
     def get_cabinet_jwt_secret(self) -> str:
         if self.CABINET_JWT_SECRET:
             return self.CABINET_JWT_SECRET
-        return self.BOT_TOKEN
+        # In API-only mode, BOT_TOKEN might be empty, require explicit JWT secret
+        if self.is_api_only_mode() and not self.BOT_TOKEN:
+            raise ValueError('CABINET_JWT_SECRET must be set when API_ONLY_MODE=true and BOT_TOKEN is not provided')
+        return self.BOT_TOKEN if self.BOT_TOKEN else ''
 
     def get_cabinet_access_token_expire_minutes(self) -> int:
         return max(1, self.CABINET_ACCESS_TOKEN_EXPIRE_MINUTES)
