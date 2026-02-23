@@ -1,0 +1,316 @@
+# API-Only Mode Configuration Guide
+
+Этот гайд объясняет, как запустить backend в режиме API-only (без Telegram бота) для работы с Flutter приложением.
+
+## Что изменилось
+
+1. **Новая настройка**: `TELEGRAM_BOT_ENABLED` - контролирует запуск Telegram бота
+2. **BOT_TOKEN теперь опциональный** - если `TELEGRAM_BOT_ENABLED=false`, токен не требуется
+3. **Модифицирован main.py** - пропускает инициализацию бота и связанных сервисов при отключенном боте
+
+## Быстрый старт
+
+### 1. Настройка .env файла
+
+Создайте `.env` файл на основе `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+### 2. Конфигурация для API-only режима
+
+Отредактируйте `.env` и установите следующие параметры:
+
+```env
+# Отключаем Telegram бота
+TELEGRAM_BOT_ENABLED=false
+
+# BOT_TOKEN можно оставить пустым или закомментировать
+# BOT_TOKEN=
+
+# Включаем Web API
+WEB_API_ENABLED=true
+WEB_API_HOST=0.0.0.0
+WEB_API_PORT=8080
+
+# Настройки базы данных
+DATABASE_MODE=postgres
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=remnawave_bot
+POSTGRES_USER=remnawave_user
+POSTGRES_PASSWORD=your_secure_password
+
+# Redis (для кеша и сессий)
+REDIS_URL=redis://localhost:6379/0
+
+# RemnaWave API настройки
+REMNAWAVE_API_URL=http://your-remnawave-server:port
+REMNAWAVE_API_KEY=your_api_key
+REMNAWAVE_SECRET_KEY=your_secret_key
+
+# Email настройки (для регистрации через Cabinet)
+CABINET_ENABLED=true
+CABINET_EMAIL_AUTH_ENABLED=true
+CABINET_EMAIL_VERIFICATION_ENABLED=false  # Для тестирования
+
+# SMTP (если нужна отправка email)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_email@gmail.com
+SMTP_PASSWORD=your_app_password
+SMTP_USE_TLS=true
+```
+
+### 3. Запуск с Docker Compose
+
+Самый простой способ:
+
+```bash
+docker-compose -f docker-compose.local.yml up -d
+```
+
+Или для production:
+
+```bash
+docker-compose up -d
+```
+
+### 4. Запуск без Docker (локальная разработка)
+
+#### Установка зависимостей
+
+```bash
+pip install -r requirements.txt
+```
+
+#### Запуск PostgreSQL и Redis
+
+```bash
+# PostgreSQL
+docker run -d --name postgres \
+  -e POSTGRES_PASSWORD=your_secure_password \
+  -e POSTGRES_DB=remnawave_bot \
+  -e POSTGRES_USER=remnawave_user \
+  -p 5432:5432 \
+  postgres:15
+
+# Redis
+docker run -d --name redis \
+  -p 6379:6379 \
+  redis:7-alpine
+```
+
+#### Запуск миграций
+
+```bash
+python -m alembic upgrade head
+```
+
+#### Запуск приложения
+
+```bash
+python main.py
+```
+
+## API Endpoints для Flutter приложения
+
+Backend предоставляет следующие эндпоинты для мобильного приложения:
+
+### Authentication
+
+```
+POST /api/auth/register
+POST /api/auth/login
+POST /api/auth/refresh
+```
+
+### Users
+
+```
+GET /api/users/me
+PUT /api/users/me
+GET /api/users/me/subscription
+```
+
+### Subscriptions
+
+```
+GET /api/subscriptions
+POST /api/subscriptions
+PUT /api/subscriptions/{id}
+```
+
+### Servers
+
+```
+GET /api/servers
+GET /api/servers/{id}
+```
+
+## Проверка работы
+
+После запуска проверьте:
+
+1. **API доступно**: 
+   ```bash
+   curl http://localhost:8080/api/health
+   ```
+
+2. **Swagger документация** (если включена):
+   ```
+   http://localhost:8080/docs
+   ```
+
+3. **Логи запуска**:
+   - Должно быть сообщение `TELEGRAM_BOT_ENABLED=false (API-only режим)`
+   - Должно быть сообщение `🌐 Запуск административного API`
+
+## Настройка Flutter приложения
+
+### 1. Переход в директорию приложения
+
+```bash
+cd flutter_app/ulya_vpn
+```
+
+### 2. Установка зависимостей
+
+```bash
+flutter pub get
+```
+
+### 3. Настройка API URL
+
+Отредактируйте `lib/config/api_config.dart`:
+
+```dart
+static const String baseUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'http://localhost:8080',  // Измените на ваш URL
+);
+```
+
+Или используйте переменную окружения при запуске:
+
+```bash
+flutter run --dart-define=API_BASE_URL=http://192.168.1.100:8080
+```
+
+### 4. Запуск приложения
+
+```bash
+# Android emulator
+flutter run
+
+# iOS simulator
+flutter run -d ios
+
+# Конкретное устройство
+flutter run -d <device_id>
+```
+
+## Тестирование
+
+### Регистрация нового пользователя
+
+```bash
+curl -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "password123",
+    "first_name": "Test",
+    "last_name": "User"
+  }'
+```
+
+### Вход
+
+```bash
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "password123"
+  }'
+```
+
+Ответ содержит `access_token` и `refresh_token`.
+
+### Получение данных пользователя
+
+```bash
+curl http://localhost:8080/api/users/me \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
+```
+
+## Troubleshooting
+
+### Проблема: "Missing API key"
+
+**Решение**: Убедитесь, что вы передаете токен в заголовке:
+```
+Authorization: Bearer YOUR_ACCESS_TOKEN
+```
+
+### Проблема: База данных не инициализирована
+
+**Решение**: Запустите миграции:
+```bash
+python -m alembic upgrade head
+```
+
+### Проблема: Connection refused при подключении из Flutter
+
+**Решение**: 
+1. Если тестируете на физическом устройстве, используйте IP вашего компьютера вместо `localhost`
+2. Убедитесь, что `WEB_API_HOST=0.0.0.0` (не `127.0.0.1`)
+3. Проверьте firewall настройки
+
+### Проблема: CORS errors в браузере
+
+**Решение**: Настройте CORS в `.env`:
+```env
+WEB_API_ALLOWED_ORIGINS=http://localhost:3000,http://192.168.1.100:3000
+```
+
+## Production Deployment
+
+### 1. Безопасность
+
+- Используйте HTTPS (nginx/traefik reverse proxy)
+- Настройте strong passwords для БД
+- Включите rate limiting
+- Используйте JWT секреты с высокой энтропией
+
+### 2. Масштабирование
+
+- Используйте PostgreSQL для production
+- Настройте Redis cluster для высокой доступности
+- Рассмотрите использование CDN для статических файлов
+
+### 3. Мониторинг
+
+- Настройте логирование в файлы или ELK stack
+- Используйте Prometheus + Grafana для метрик
+- Настройте alerting
+
+## Возвращение к режиму с Telegram ботом
+
+Если нужно вернуть Telegram бота:
+
+```env
+TELEGRAM_BOT_ENABLED=true
+BOT_TOKEN=your_bot_token
+```
+
+Перезапустите приложение, и бот снова заработает параллельно с API.
+
+## Поддержка
+
+При возникновении проблем:
+1. Проверьте логи: `docker-compose logs -f` или `tail -f logs/bot.log`
+2. Убедитесь, что все зависимости установлены
+3. Проверьте настройки `.env` файла
