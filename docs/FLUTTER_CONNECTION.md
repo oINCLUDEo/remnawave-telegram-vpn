@@ -281,11 +281,43 @@ Endpoint `/api/health` требует API token аутентификацию и 
 
 ### Ошибка: "404 Not Found on /api/auth/login"
 
-**Решение**: Cabinet отключен. Включите:
-```env
-CABINET_ENABLED=true
-CABINET_EMAIL_AUTH_ENABLED=true
+**Причина**: Cabinet отключен или не прочитан из .env.
+
+**Быстрое решение**: Пересоздайте Docker контейнер:
+```bash
+docker-compose -f docker-compose.local.yml down
+docker-compose -f docker-compose.local.yml up -d
 ```
+
+**Проверьте что переменные прочитаны**:
+```bash
+docker exec remnawave_bot env | grep CABINET_ENABLED
+# Должно вывести: CABINET_ENABLED=true
+```
+
+**Детальная инструкция**: См. [FIX_CABINET_404.md](FIX_CABINET_404.md)
+
+---
+
+### Ошибка: "404 Not Found on /docs"
+
+
+### Ошибка: "404 Not Found on /docs"
+
+**Причина**: Docs могут быть отключены.
+
+**Решение**: Проверьте `.env`:
+```env
+WEB_API_DOCS_ENABLED=true
+```
+
+Затем пересоздайте контейнер:
+```bash
+docker-compose -f docker-compose.local.yml down
+docker-compose -f docker-compose.local.yml up -d
+```
+
+---
 
 ### Ошибка: "Connection refused" на Android
 
@@ -344,6 +376,7 @@ WEB_API_HOST=0.0.0.0  # НЕ 127.0.0.1
 
 ## 📚 Дополнительная информация
 
+- [FIX_CABINET_404.md](FIX_CABINET_404.md) - Исправление 404 на Cabinet endpoints ⭐ **ВАЖНО**
 - [FIX_API_404.md](FIX_API_404.md) - Исправление 404 ошибок на API endpoints
 - [WINDOWS_SETUP.md](WINDOWS_SETUP.md) - Настройка PostgreSQL
 - [FIX_USER_NOT_EXISTS.md](FIX_USER_NOT_EXISTS.md) - Исправление проблем с пользователем БД

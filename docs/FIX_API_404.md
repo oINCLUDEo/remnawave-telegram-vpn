@@ -26,9 +26,10 @@ curl http://localhost:8081/health/unified
 
 ### Проблема 2: Cabinet endpoints недоступны (404 на /api/auth/*)
 
-**Причина**: `CABINET_ENABLED=false` в `.env`
 
-**Решение**: Включите Cabinet в `.env`:
+**Причина**: `CABINET_ENABLED=false` в `.env` или не прочитан из .env при запуске через Docker.
+
+**Решение 1**: Убедитесь что в `.env` правильно установлено:
 
 ```env
 # В файле .env
@@ -36,7 +37,25 @@ CABINET_ENABLED=true
 CABINET_EMAIL_AUTH_ENABLED=true
 ```
 
-**Перезапустите backend**:
+**Решение 2**: Если используете Docker, полностью пересоздайте контейнер:
+
+```bash
+# НЕ используйте просто restart!
+docker-compose -f docker-compose.local.yml down
+docker-compose -f docker-compose.local.yml up -d
+```
+
+**Решение 3**: Проверьте что переменная прочитана:
+
+```bash
+# Для Docker
+docker exec remnawave_bot env | grep CABINET_ENABLED
+
+# Должно вывести: CABINET_ENABLED=true
+```
+
+**Решение 4**: Перезапустите backend:
+
 ```bash
 # Если через Python
 python main.py
@@ -54,6 +73,8 @@ curl http://localhost:8081/api/auth/login -X POST \
 # Должен вернуть 400 или 401 (пользователь не существует)
 # НЕ должен вернуть 404
 ```
+
+**Детальная инструкция**: См. [FIX_CABINET_404.md](FIX_CABINET_404.md)
 
 ---
 
@@ -221,6 +242,7 @@ CABINET_EMAIL_AUTH_ENABLED=true
 
 ## 📚 Дополнительная информация
 
+- [FIX_CABINET_404.md](FIX_CABINET_404.md) - Детальное руководство по исправлению 404 на Cabinet ⭐
 - [FLUTTER_CONNECTION.md](FLUTTER_CONNECTION.md) - Подключение Flutter приложения
 - [API_ONLY_MODE.md](API_ONLY_MODE.md) - Настройка API-only режима
 - [WINDOWS_SETUP.md](WINDOWS_SETUP.md) - Настройка на Windows
