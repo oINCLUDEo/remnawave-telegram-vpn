@@ -255,6 +255,25 @@ curl http://localhost:8081/api/users/me \
 
 ## Troubleshooting
 
+### Проблема: "password authentication failed"
+
+**Решение**: Пароль в `.env` не совпадает с PostgreSQL.
+
+**Быстрое исправление**:
+```bash
+# Пересоздайте PostgreSQL контейнер
+docker stop remnawave_postgres && docker rm remnawave_postgres
+docker run -d --name remnawave_postgres \
+  -e POSTGRES_PASSWORD=secure_password_123 \
+  -e POSTGRES_DB=remnawave_bot \
+  -e POSTGRES_USER=remnawave_user \
+  -p 5432:5432 postgres:15
+```
+
+**Подробная инструкция**: См. [FIX_PASSWORD_ERROR.md](FIX_PASSWORD_ERROR.md)
+
+---
+
 ### Проблема: "Missing API key"
 
 **Решение**: Убедитесь, что вы передаете токен в заголовке:

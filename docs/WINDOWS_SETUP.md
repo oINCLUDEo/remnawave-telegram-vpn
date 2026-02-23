@@ -184,6 +184,46 @@ redis-cli ping
 
 ## Troubleshooting
 
+### 🔍 Быстрая диагностика проблем
+
+Если что-то не работает, проверьте по порядку:
+
+1. **PostgreSQL запущен?**
+   ```bash
+   # Для Docker
+   docker ps | findstr postgres
+   
+   # Для Windows службы
+   sc query postgresql-x64-15
+   ```
+
+2. **PostgreSQL отвечает на порту 5432?**
+   ```bash
+   netstat -an | findstr :5432
+   ```
+
+3. **Пароль правильный?**
+   ```bash
+   # Попробуйте подключиться вручную
+   psql -h localhost -U remnawave_user -d postgres
+   # Если просит пароль - PostgreSQL работает
+   # Если "password authentication failed" - пароль неверный
+   ```
+
+4. **.env файл существует и заполнен?**
+   ```bash
+   type .env | findstr POSTGRES_PASSWORD
+   ```
+
+5. **База данных создана?**
+   ```bash
+   psql -h localhost -U remnawave_user -d postgres -c "\l"
+   ```
+
+---
+
+### Частые ошибки и решения
+
 ### Ошибка: "port is already allocated" (Docker)
 
 Порт уже используется другим процессом.
@@ -215,16 +255,96 @@ services.msc
 
 ### Ошибка: "password authentication failed"
 
-Неправильный пароль или пользователь.
+**Описание**: `password authentication failed for user "remnawave_user"`
 
-**Решение**:
-- Проверьте `.env` файл
-- Убедитесь что пароль в `.env` совпадает с PostgreSQL
-- Пересоздайте Docker контейнер:
-  ```bash
-  docker rm -f remnawave_postgres
-  docker run -d --name remnawave_postgres ...
-  ```
+Это означает что PostgreSQL запущен ✅, но пароль неверный ❌
+
+**Решение (пошагово)**:
+
+#### Шаг 1: Проверьте ваш .env файл
+
+Убедитесь что в `.env` установлен правильный пароль:
+```env
+POSTGRES_PASSWORD=secure_password_123
+```
+
+#### Шаг 2: Определите как запущен PostgreSQL
+
+**A. Если через Docker контейнер**:
+
+```bash
+# Проверьте переменные окружения контейнера
+docker inspect remnawave_postgres | findstr POSTGRES_PASSWORD
+
+# Пересоздайте контейнер с правильным паролем
+docker stop remnawave_postgres
+docker rm remnawave_postgres
+
+docker run -d --name remnawave_postgres ^
+  -e POSTGRES_PASSWORD=secure_password_123 ^
+  -e POSTGRES_DB=remnawave_bot ^
+  -e POSTGRES_USER=remnawave_user ^
+  -p 5432:5432 ^
+  postgres:15
+```
+
+**B. Если через Docker Compose**:
+
+```bash
+# Остановите и удалите контейнеры
+docker-compose -f docker-compose.local.yml down -v
+
+# Проверьте .env файл и запустите заново
+docker-compose -f docker-compose.local.yml up -d postgres redis
+```
+
+**C. Если PostgreSQL установлен на Windows**:
+
+Измените пароль через psql:
+
+```sql
+-- Подключитесь как суперпользователь postgres
+psql -U postgres
+
+-- Измените пароль
+ALTER USER remnawave_user WITH PASSWORD 'secure_password_123';
+
+-- Или создайте пользователя если его нет
+CREATE USER remnawave_user WITH PASSWORD 'secure_password_123';
+GRANT ALL PRIVILEGES ON DATABASE remnawave_bot TO remnawave_user;
+
+-- Выход
+\q
+```
+
+#### Шаг 3: Проверьте подключение
+
+```bash
+# Попробуйте подключиться вручную
+psql -h localhost -U remnawave_user -d remnawave_bot
+# Введите пароль: secure_password_123
+
+# Если подключение успешно - проблема решена!
+```
+
+#### Шаг 4: Убедитесь что .env загружен
+
+Если используете Docker Compose:
+```bash
+# Проверьте что .env файл существует
+dir .env
+
+# Перезапустите с явным указанием .env
+docker-compose -f docker-compose.local.yml --env-file .env up -d
+```
+
+Если запускаете через Python:
+```bash
+# Убедитесь что .env в корне проекта рядом с main.py
+python main.py
+```
+
+---
 
 ### Ошибка: "database does not exist"
 
