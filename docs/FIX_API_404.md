@@ -66,7 +66,7 @@ docker-compose -f docker-compose.local.yml restart bot
 
 **Проверка**:
 ```bash
-curl http://localhost:8081/api/auth/login -X POST \
+curl http://localhost:8081/cabinet/auth/email/login -X POST \
   -H "Content-Type: application/json" \
   -d '{"email":"test@test.com","password":"test"}'
 
@@ -155,12 +155,12 @@ GET http://localhost:8081/redoc
 
 ```bash
 # Вход
-POST http://localhost:8081/api/auth/login
+POST http://localhost:8081/cabinet/auth/email/login
 Content-Type: application/json
 {"email": "user@example.com", "password": "password"}
 
 # Регистрация
-POST http://localhost:8081/api/auth/register
+POST http://localhost:8081/cabinet/auth/email/register/standalone
 Content-Type: application/json
 {"email": "user@example.com", "password": "password", "first_name": "User"}
 
@@ -169,11 +169,11 @@ POST http://localhost:8081/api/auth/refresh
 Authorization: Bearer {refresh_token}
 
 # Информация о пользователе
-GET http://localhost:8081/api/users/me
+GET http://localhost:8081/cabinet/auth/me
 Authorization: Bearer {access_token}
 
 # Подписка пользователя
-GET http://localhost:8081/api/users/me/subscription
+GET http://localhost:8081/cabinet/auth/me/subscription
 Authorization: Bearer {access_token}
 ```
 
@@ -224,7 +224,7 @@ curl http://localhost:8081/health/unified  # Без токена
 curl http://localhost:8081/api/health -H "Authorization: Bearer YOUR_TOKEN"  # С токеном
 ```
 
-### Ошибка: "404 на /api/auth/login"
+### Ошибка: "404 на /cabinet/auth/email/login"
 
 **Решение**: Включите Cabinet:
 ```env

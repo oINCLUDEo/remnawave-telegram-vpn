@@ -141,7 +141,7 @@ curl http://localhost:8081/health/unified
 
 ```bash
 # Попробуйте вызвать auth endpoint
-curl http://localhost:8081/api/auth/login -X POST \
+curl http://localhost:8081/cabinet/auth/email/login -X POST \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"test@test.com\",\"password\":\"test\"}"
 
@@ -279,7 +279,7 @@ Endpoint `/api/health` требует API token аутентификацию и 
 
 ---
 
-### Ошибка: "404 Not Found on /api/auth/login"
+### Ошибка: "404 Not Found on /cabinet/auth/email/login"
 
 **Причина**: Cabinet отключен или не прочитан из .env.
 

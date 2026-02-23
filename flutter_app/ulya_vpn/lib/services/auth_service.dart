@@ -48,6 +48,7 @@ class AuthService {
     required String password,
     required String firstName,
     String? lastName,
+    String language = 'ru',
   }) async {
     try {
       final response = await ApiService.post(
@@ -57,6 +58,7 @@ class AuthService {
           'password': password,
           'first_name': firstName,
           if (lastName != null) 'last_name': lastName,
+          'language': language,
         },
         auth: false,
       );

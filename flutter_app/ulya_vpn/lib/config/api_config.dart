@@ -6,15 +6,18 @@ class ApiConfig {
   );
   
   // API Endpoints
-  static const String authLogin = '/api/auth/login';
-  static const String authRegister = '/api/auth/register';
-  static const String authRefresh = '/api/auth/refresh';
+  // Cabinet Auth endpoints
+  static const String authLogin = '/cabinet/auth/email/login';
+  static const String authRegister = '/cabinet/auth/email/register/standalone';
+  static const String authRefresh = '/cabinet/auth/refresh';
   
-  static const String usersMe = '/api/users/me';
-  static const String userSubscription = '/api/users/me/subscription';
+  // Cabinet User endpoints
+  static const String usersMe = '/cabinet/auth/me';
+  static const String userSubscription = '/cabinet/subscription/current';
   
-  static const String subscriptions = '/api/subscriptions';
-  static const String servers = '/api/servers';
+  // Other Cabinet endpoints
+  static const String subscriptions = '/cabinet/subscription';
+  static const String servers = '/cabinet/info/servers';
   
   // Timeout settings
   static const Duration connectTimeout = Duration(seconds: 30);

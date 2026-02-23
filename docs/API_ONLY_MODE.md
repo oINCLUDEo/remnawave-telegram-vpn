@@ -130,17 +130,17 @@ Backend предоставляет следующие эндпоинты для 
 ### Authentication
 
 ```
-POST /api/auth/register
-POST /api/auth/login
+POST /cabinet/auth/email/register/standalone
+POST /cabinet/auth/email/login
 POST /api/auth/refresh
 ```
 
 ### Users
 
 ```
-GET /api/users/me
-PUT /api/users/me
-GET /api/users/me/subscription
+GET /cabinet/auth/me
+PUT /cabinet/auth/me
+GET /cabinet/auth/me/subscription
 ```
 
 ### Subscriptions
@@ -182,7 +182,7 @@ GET /api/servers/{id}
 
 4. **Cabinet auth endpoints**:
    ```bash
-   curl http://localhost:8081/api/auth/login -X POST \
+   curl http://localhost:8081/cabinet/auth/email/login -X POST \
      -H "Content-Type: application/json" \
      -d '{"email":"test@test.com","password":"test"}'
    
@@ -238,7 +238,7 @@ flutter run -d <device_id>
 ### Регистрация нового пользователя
 
 ```bash
-curl -X POST http://localhost:8080/api/auth/register \
+curl -X POST http://localhost:8080/cabinet/auth/email/register/standalone \
   -H "Content-Type: application/json" \
   -d '{
     "email": "test@example.com",
@@ -251,7 +251,7 @@ curl -X POST http://localhost:8080/api/auth/register \
 ### Вход
 
 ```bash
-curl -X POST http://localhost:8080/api/auth/login \
+curl -X POST http://localhost:8080/cabinet/auth/email/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "test@example.com",
@@ -264,7 +264,7 @@ curl -X POST http://localhost:8080/api/auth/login \
 ### Получение данных пользователя
 
 ```bash
-curl http://localhost:8081/api/users/me \
+curl http://localhost:8081/cabinet/auth/me \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 

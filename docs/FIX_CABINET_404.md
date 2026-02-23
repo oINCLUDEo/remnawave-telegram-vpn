@@ -3,7 +3,7 @@
 ## ❌ Проблема
 
 ```bash
-curl http://localhost:8081/api/auth/login -X POST -H "Content-Type: application/json" -d "{\"email\":\"test@test.com\",\"password\":\"test\"}"
+curl http://localhost:8081/cabinet/auth/email/login -X POST -H "Content-Type: application/json" -d "{\"email\":\"test@test.com\",\"password\":\"test\"}"
 {"detail":"Not Found"}
 
 curl http://localhost:8081/docs
@@ -205,7 +205,7 @@ curl http://localhost:8081/docs
 curl http://localhost:8081/openapi.json
 
 # Cabinet login - должен вернуть 400/401, НЕ 404
-curl http://localhost:8081/api/auth/login -X POST \
+curl http://localhost:8081/cabinet/auth/email/login -X POST \
   -H "Content-Type: application/json" \
   -d '{"email":"test@test.com","password":"test"}'
 ```
@@ -230,7 +230,7 @@ curl http://localhost:8081/docs
 
 **Cabinet login (несуществующий пользователь)**:
 ```bash
-curl http://localhost:8081/api/auth/login -X POST \
+curl http://localhost:8081/cabinet/auth/email/login -X POST \
   -H "Content-Type: application/json" \
   -d '{"email":"test@test.com","password":"test"}'
 
