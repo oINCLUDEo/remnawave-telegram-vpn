@@ -16,31 +16,34 @@ from app.database.migrations import run_alembic_upgrade
 from app.database.models import PaymentMethod
 from app.localization.loader import ensure_locale_templates
 from app.logging_config import setup_logging
-from app.services.backup_service import backup_service
-from app.services.ban_notification_service import ban_notification_service
-from app.services.broadcast_service import broadcast_service
-from app.services.contest_rotation_service import contest_rotation_service
-from app.services.daily_subscription_service import daily_subscription_service
 from app.services.external_admin_service import ensure_external_admin_token
-from app.services.log_rotation_service import log_rotation_service
-from app.services.maintenance_service import maintenance_service
-from app.services.monitoring_service import monitoring_service
-from app.services.nalogo_queue_service import nalogo_queue_service
-from app.services.payment_service import PaymentService
-from app.services.payment_verification_service import (
-    PENDING_MAX_AGE,
-    SUPPORTED_MANUAL_CHECK_METHODS,
-    auto_payment_verification_service,
-    get_enabled_auto_methods,
-    method_display_name,
-)
-from app.services.referral_contest_service import referral_contest_service
 from app.services.remnawave_sync_service import remnawave_sync_service
-from app.services.reporting_service import reporting_service
 from app.services.system_settings_service import bot_configuration_service
-from app.services.traffic_monitoring_service import traffic_monitoring_scheduler
 from app.services.version_service import version_service
 from app.services.web_api_token_service import ensure_default_web_api_token
+
+# Bot-dependent services - imported conditionally to avoid aiogram import failures in API-only mode
+# These services import 'aiogram.Bot' at module level and will fail if aiogram is not available
+# They will be imported inside main() only when needed
+backup_service = None
+ban_notification_service = None
+broadcast_service = None
+contest_rotation_service = None
+daily_subscription_service = None
+log_rotation_service = None
+maintenance_service = None
+monitoring_service = None
+nalogo_queue_service = None
+PaymentService = None
+auto_payment_verification_service = None
+referral_contest_service = None
+reporting_service = None
+traffic_monitoring_scheduler = None
+telegram_notifier = None
+PENDING_MAX_AGE = None
+SUPPORTED_MANUAL_CHECK_METHODS = None
+get_enabled_auto_methods = None
+method_display_name = None
 from app.utils.log_handlers import ExcludePaymentFilter, LevelFilterHandler
 from app.utils.payment_logger import configure_payment_logger
 from app.utils.startup_timeline import StartupTimeline
@@ -58,12 +61,54 @@ class GracefulExit:
 
 
 async def main():
+    # Import bot-dependent services here to avoid import failures in API-only mode
+    # These services import aiogram.Bot at module level, so we wrap in try-except
+    global backup_service, ban_notification_service, broadcast_service
+    global contest_rotation_service, daily_subscription_service, log_rotation_service
+    global maintenance_service, monitoring_service, nalogo_queue_service
+    global PaymentService, auto_payment_verification_service, referral_contest_service
+    global reporting_service, traffic_monitoring_scheduler, telegram_notifier
+    global PENDING_MAX_AGE, SUPPORTED_MANUAL_CHECK_METHODS
+    global get_enabled_auto_methods, method_display_name
+    
+    try:
+        from app.services.backup_service import backup_service
+        from app.services.ban_notification_service import ban_notification_service
+        from app.services.broadcast_service import broadcast_service
+        from app.services.contest_rotation_service import contest_rotation_service
+        from app.services.daily_subscription_service import daily_subscription_service
+        from app.services.log_rotation_service import log_rotation_service
+        from app.services.maintenance_service import maintenance_service
+        from app.services.monitoring_service import monitoring_service
+        from app.services.nalogo_queue_service import nalogo_queue_service
+        from app.services.payment_service import PaymentService
+        from app.services.payment_verification_service import (
+            PENDING_MAX_AGE,
+            SUPPORTED_MANUAL_CHECK_METHODS,
+            auto_payment_verification_service,
+            get_enabled_auto_methods,
+            method_display_name,
+        )
+        from app.services.referral_contest_service import referral_contest_service
+        from app.services.reporting_service import reporting_service
+        from app.services.traffic_monitoring_service import traffic_monitoring_scheduler
+    except ImportError as e:
+        # In API-only mode, bot-dependent services may not be importable
+        if not settings.is_api_only_mode():
+            # If not in API-only mode, this is a real error
+            raise
+        # In API-only mode, we'll skip bot-dependent functionality
+        structlog.get_logger(__name__).warning(
+            'Не удалось импортировать сервисы с зависимостью от бота (нормально для API-only режима)',
+            error=str(e)
+        )
+    
     file_formatter, console_formatter, telegram_notifier = setup_logging()
 
     log_handlers = []
 
     # === Инициализация системы логирования ===
-    if settings.is_log_rotation_enabled():
+    if settings.is_log_rotation_enabled() and log_rotation_service:
         # Новая система: разделение по уровням + отдельный лог платежей
         await log_rotation_service.initialize()
 
@@ -293,19 +338,27 @@ async def main():
 
         # Initialize bot-dependent services only if bot is available
         if bot:
-            monitoring_service.bot = bot
-            maintenance_service.set_bot(bot)
-            broadcast_service.set_bot(bot)
-            ban_notification_service.set_bot(bot)
-            traffic_monitoring_scheduler.set_bot(bot)
-            daily_subscription_service.set_bot(bot)
-            telegram_notifier.set_bot(bot)
+            if monitoring_service:
+                monitoring_service.bot = bot
+            if maintenance_service:
+                maintenance_service.set_bot(bot)
+            if broadcast_service:
+                broadcast_service.set_bot(bot)
+            if ban_notification_service:
+                ban_notification_service.set_bot(bot)
+            if traffic_monitoring_scheduler:
+                traffic_monitoring_scheduler.set_bot(bot)
+            if daily_subscription_service:
+                daily_subscription_service.set_bot(bot)
+            if telegram_notifier:
+                telegram_notifier.set_bot(bot)
 
         # Initialize email broadcast service
-        from app.cabinet.services.email_service import email_service
-        from app.services.broadcast_service import email_broadcast_service
+        if broadcast_service:
+            from app.cabinet.services.email_service import email_service
+            from app.services.broadcast_service import email_broadcast_service
 
-        email_broadcast_service.set_email_service(email_service)
+            email_broadcast_service.set_email_service(email_service)
 
         # Initialize admin notification service (only if bot is available)
         if bot:
@@ -319,7 +372,8 @@ async def main():
                 admin_notification_service = AdminNotificationService(bot)
                 version_service.bot = bot
                 version_service.set_notification_service(admin_notification_service)
-                referral_contest_service.set_bot(bot)
+                if referral_contest_service:
+                    referral_contest_service.set_bot(bot)
                 stage.log(f'Репозиторий версий: {version_service.repo}')
                 stage.log(f'Текущая версия: {version_service.current_version}')
                 stage.success('Мониторинг, уведомления и рассылки подключены')
@@ -332,72 +386,76 @@ async def main():
             )
 
         # Backup service (works with or without bot)
-        async with timeline.stage(
-            'Сервис бекапов',
-            '🗄️',
-            success_message='Сервис бекапов инициализирован',
-        ) as stage:
-            try:
-                if bot:
-                    backup_service.bot = bot
-                settings_obj = await backup_service.get_backup_settings()
-                if settings_obj.auto_backup_enabled:
-                    await backup_service.start_auto_backup()
-                    stage.log(
-                        'Автобекапы включены: интервал '
-                        f'{settings_obj.backup_interval_hours}ч, запуск {settings_obj.backup_time}'
-                    )
-                else:
-                    stage.log('Автобекапы отключены настройками')
-                stage.success('Сервис бекапов инициализирован')
-            except Exception as e:
-                stage.warning(f'Ошибка инициализации сервиса бекапов: {e}')
-                logger.error('❌ Ошибка инициализации сервиса бекапов', error=e)
+        if backup_service:
+            async with timeline.stage(
+                'Сервис бекапов',
+                '🗄️',
+                success_message='Сервис бекапов инициализирован',
+            ) as stage:
+                try:
+                    if bot:
+                        backup_service.bot = bot
+                    settings_obj = await backup_service.get_backup_settings()
+                    if settings_obj.auto_backup_enabled:
+                        await backup_service.start_auto_backup()
+                        stage.log(
+                            'Автобекапы включены: интервал '
+                            f'{settings_obj.backup_interval_hours}ч, запуск {settings_obj.backup_time}'
+                        )
+                    else:
+                        stage.log('Автобекапы отключены настройками')
+                    stage.success('Сервис бекапов инициализирован')
+                except Exception as e:
+                    stage.warning(f'Ошибка инициализации сервиса бекапов: {e}')
+                    logger.error('❌ Ошибка инициализации сервиса бекапов', error=e)
 
         # Reporting service (works with or without bot, but needs bot for notifications)
-        async with timeline.stage(
-            'Сервис отчетов',
-            '📊',
-            success_message='Сервис отчетов готов',
-        ) as stage:
-            try:
-                if bot:
-                    reporting_service.set_bot(bot)
-                await reporting_service.start()
-            except Exception as e:
-                stage.warning(f'Ошибка запуска сервиса отчетов: {e}')
-                logger.error('❌ Ошибка запуска сервиса отчетов', error=e)
+        if reporting_service:
+            async with timeline.stage(
+                'Сервис отчетов',
+                '📊',
+                success_message='Сервис отчетов готов',
+            ) as stage:
+                try:
+                    if bot:
+                        reporting_service.set_bot(bot)
+                    await reporting_service.start()
+                except Exception as e:
+                    stage.warning(f'Ошибка запуска сервиса отчетов: {e}')
+                    logger.error('❌ Ошибка запуска сервиса отчетов', error=e)
 
-        async with timeline.stage(
-            'Реферальные конкурсы',
-            '🏆',
-            success_message='Сервис конкурсов готов',
-        ) as stage:
-            try:
-                await referral_contest_service.start()
-                if referral_contest_service.is_running():
-                    stage.log('Автосводки по конкурсам запущены')
-                else:
-                    stage.skip('Сервис конкурсов выключен настройками')
-            except Exception as e:
-                stage.warning(f'Ошибка запуска сервиса конкурсов: {e}')
-                logger.error('❌ Ошибка запуска сервиса конкурсов', error=e)
+        if referral_contest_service:
+            async with timeline.stage(
+                'Реферальные конкурсы',
+                '🏆',
+                success_message='Сервис конкурсов готов',
+            ) as stage:
+                try:
+                    await referral_contest_service.start()
+                    if referral_contest_service.is_running():
+                        stage.log('Автосводки по конкурсам запущены')
+                    else:
+                        stage.skip('Сервис конкурсов выключен настройками')
+                except Exception as e:
+                    stage.warning(f'Ошибка запуска сервиса конкурсов: {e}')
+                    logger.error('❌ Ошибка запуска сервиса конкурсов', error=e)
 
-        async with timeline.stage(
-            'Ротация игр',
-            '🎲',
-            success_message='Мини-игры готовы',
-        ) as stage:
-            try:
-                contest_rotation_service.set_bot(bot)
-                await contest_rotation_service.start()
-                if contest_rotation_service.is_running():
-                    stage.log('Ротационные игры запущены')
-                else:
-                    stage.skip('Ротация игр выключена настройками')
-            except Exception as e:
-                stage.warning(f'Ошибка запуска ротации игр: {e}')
-                logger.error('❌ Ошибка запуска ротации игр', error=e)
+        if contest_rotation_service:
+            async with timeline.stage(
+                'Ротация игр',
+                '🎲',
+                success_message='Мини-игры готовы',
+            ) as stage:
+                try:
+                    contest_rotation_service.set_bot(bot)
+                    await contest_rotation_service.start()
+                    if contest_rotation_service.is_running():
+                        stage.log('Ротационные игры запущены')
+                    else:
+                        stage.skip('Ротация игр выключена настройками')
+                except Exception as e:
+                    stage.warning(f'Ошибка запуска ротации игр: {e}')
+                    logger.error('❌ Ошибка запуска ротации игр', error=e)
 
         # Log rotation service (works with or without bot, but notification needs bot)
         if settings.is_log_rotation_enabled():
@@ -407,19 +465,20 @@ async def main():
                 success_message='Сервис ротации логов готов',
             ) as stage:
                 try:
-                    if bot:
+                    if bot and log_rotation_service:
                         log_rotation_service.set_bot(bot)
-                    await log_rotation_service.start()
-                    status = log_rotation_service.get_status()
-                    stage.log(f'Время ротации: {status.rotation_time}')
-                    stage.log(f'Хранение архивов: {status.keep_days} дней')
-                    if status.send_to_telegram and bot:
-                        stage.log('Отправка в Telegram: включена')
-                    if status.next_rotation:
-                        from datetime import datetime
+                    if log_rotation_service:
+                        await log_rotation_service.start()
+                        status = log_rotation_service.get_status()
+                        stage.log(f'Время ротации: {status.rotation_time}')
+                        stage.log(f'Хранение архивов: {status.keep_days} дней')
+                        if status.send_to_telegram and bot:
+                            stage.log('Отправка в Telegram: включена')
+                        if status.next_rotation:
+                            from datetime import datetime
 
-                        next_dt = datetime.fromisoformat(status.next_rotation)
-                        stage.log(f'Следующая ротация: {next_dt.strftime("%d.%m.%Y %H:%M")}')
+                            next_dt = datetime.fromisoformat(status.next_rotation)
+                            stage.log(f'Следующая ротация: {next_dt.strftime("%d.%m.%Y %H:%M")}')
                 except Exception as e:
                     stage.warning(f'Ошибка запуска сервиса ротации логов: {e}')
                     logger.error('❌ Ошибка запуска сервиса ротации логов', error=e)
@@ -446,58 +505,63 @@ async def main():
                 logger.error('❌ Ошибка запуска автосинхронизации RemnaWave', error=e)
 
         # Payment service initialization (optional bot for notifications)
-        payment_service = PaymentService(bot) if bot else PaymentService(None)
-        auto_payment_verification_service.set_payment_service(payment_service)
+        if PaymentService:
+            payment_service = PaymentService(bot) if bot else PaymentService(None)
+            if auto_payment_verification_service:
+                auto_payment_verification_service.set_payment_service(payment_service)
 
-        # Настройка сервиса очереди чеков NaloGO (requires bot)
-        if payment_service.nalogo_service and bot:
-            nalogo_queue_service.set_nalogo_service(payment_service.nalogo_service)
-            nalogo_queue_service.set_bot(bot)
+            # Настройка сервиса очереди чеков NaloGO (requires bot)
+            if payment_service.nalogo_service and bot and nalogo_queue_service:
+                nalogo_queue_service.set_nalogo_service(payment_service.nalogo_service)
+                nalogo_queue_service.set_bot(bot)
+        else:
+            payment_service = None
 
         verification_providers: list[str] = []
         auto_verification_active = False
-        async with timeline.stage(
-            'Сервис проверки пополнений',
-            '💳',
-            success_message='Ручная проверка активна',
-        ) as stage:
-            for method in SUPPORTED_MANUAL_CHECK_METHODS:
-                if method == PaymentMethod.YOOKASSA and settings.is_yookassa_enabled():
-                    verification_providers.append('YooKassa')
-                elif method == PaymentMethod.MULENPAY and settings.is_mulenpay_enabled():
-                    verification_providers.append(settings.get_mulenpay_display_name())
-                elif method == PaymentMethod.PAL24 and settings.is_pal24_enabled():
-                    verification_providers.append('PayPalych')
-                elif method == PaymentMethod.WATA and settings.is_wata_enabled():
-                    verification_providers.append('WATA')
-                elif method == PaymentMethod.HELEKET and settings.is_heleket_enabled():
-                    verification_providers.append('Heleket')
-                elif method == PaymentMethod.CRYPTOBOT and settings.is_cryptobot_enabled():
-                    verification_providers.append('CryptoBot')
+        if SUPPORTED_MANUAL_CHECK_METHODS and PENDING_MAX_AGE and get_enabled_auto_methods and method_display_name and auto_payment_verification_service:
+            async with timeline.stage(
+                'Сервис проверки пополнений',
+                '💳',
+                success_message='Ручная проверка активна',
+            ) as stage:
+                for method in SUPPORTED_MANUAL_CHECK_METHODS:
+                    if method == PaymentMethod.YOOKASSA and settings.is_yookassa_enabled():
+                        verification_providers.append('YooKassa')
+                    elif method == PaymentMethod.MULENPAY and settings.is_mulenpay_enabled():
+                        verification_providers.append(settings.get_mulenpay_display_name())
+                    elif method == PaymentMethod.PAL24 and settings.is_pal24_enabled():
+                        verification_providers.append('PayPalych')
+                    elif method == PaymentMethod.WATA and settings.is_wata_enabled():
+                        verification_providers.append('WATA')
+                    elif method == PaymentMethod.HELEKET and settings.is_heleket_enabled():
+                        verification_providers.append('Heleket')
+                    elif method == PaymentMethod.CRYPTOBOT and settings.is_cryptobot_enabled():
+                        verification_providers.append('CryptoBot')
 
-            if verification_providers:
-                hours = int(PENDING_MAX_AGE.total_seconds() // 3600)
-                stage.log(f'Ожидающие пополнения автоматически отбираются не старше {hours}ч')
-                stage.log('Доступна ручная проверка для: ' + ', '.join(sorted(verification_providers)))
-                stage.success(f'Активно провайдеров: {len(verification_providers)}')
-            else:
-                stage.skip('Нет активных провайдеров для ручной проверки')
-
-            if settings.is_payment_verification_auto_check_enabled():
-                auto_methods = get_enabled_auto_methods()
-                if auto_methods:
-                    interval_minutes = settings.get_payment_verification_auto_check_interval()
-                    auto_labels = ', '.join(sorted(method_display_name(method) for method in auto_methods))
-                    stage.log(f'Автопроверка каждые {interval_minutes} мин: {auto_labels}')
+                if verification_providers:
+                    hours = int(PENDING_MAX_AGE.total_seconds() // 3600)
+                    stage.log(f'Ожидающие пополнения автоматически отбираются не старше {hours}ч')
+                    stage.log('Доступна ручная проверка для: ' + ', '.join(sorted(verification_providers)))
+                    stage.success(f'Активно провайдеров: {len(verification_providers)}')
                 else:
-                    stage.log('Автопроверка включена, но нет активных провайдеров')
-            else:
-                stage.log('Автопроверка отключена настройками')
+                    stage.skip('Нет активных провайдеров для ручной проверки')
 
-            await auto_payment_verification_service.start()
-            auto_verification_active = auto_payment_verification_service.is_running()
-            if auto_verification_active:
-                stage.log('Фоновая автопроверка запущена')
+                if settings.is_payment_verification_auto_check_enabled():
+                    auto_methods = get_enabled_auto_methods()
+                    if auto_methods:
+                        interval_minutes = settings.get_payment_verification_auto_check_interval()
+                        auto_labels = ', '.join(sorted(method_display_name(method) for method in auto_methods))
+                        stage.log(f'Автопроверка каждые {interval_minutes} мин: {auto_labels}')
+                    else:
+                        stage.log('Автопроверка включена, но нет активных провайдеров')
+                else:
+                    stage.log('Автопроверка отключена настройками')
+
+                await auto_payment_verification_service.start()
+                auto_verification_active = auto_payment_verification_service.is_running()
+                if auto_verification_active:
+                    stage.log('Фоновая автопроверка запущена')
 
         async with timeline.stage(
             'Очередь чеков NaloGO',
@@ -632,56 +696,68 @@ async def main():
             else:
                 stage.skip('Режим webhook отключен')
 
-        async with timeline.stage(
-            'Служба мониторинга',
-            '📈',
-            success_message='Служба мониторинга запущена',
-        ) as stage:
-            monitoring_task = asyncio.create_task(monitoring_service.start_monitoring())
-            stage.log(f'Интервал опроса: {settings.MONITORING_INTERVAL}с')
+        if monitoring_service:
+            async with timeline.stage(
+                'Служба мониторинга',
+                '📈',
+                success_message='Служба мониторинга запущена',
+            ) as stage:
+                monitoring_task = asyncio.create_task(monitoring_service.start_monitoring())
+                stage.log(f'Интервал опроса: {settings.MONITORING_INTERVAL}с')
+        else:
+            monitoring_task = None
 
-        async with timeline.stage(
-            'Служба техработ',
-            '🛡️',
-            success_message='Служба техработ запущена',
-        ) as stage:
-            if not settings.is_maintenance_monitoring_enabled():
-                maintenance_task = None
-                stage.skip('Мониторинг техработ отключен настройками')
-            elif not maintenance_service._check_task or maintenance_service._check_task.done():
-                maintenance_task = asyncio.create_task(maintenance_service.start_monitoring())
-                stage.log(f'Интервал проверки: {settings.MAINTENANCE_CHECK_INTERVAL}с')
-                stage.log(f'Повторных попыток проверки: {settings.get_maintenance_retry_attempts()}')
-            else:
-                maintenance_task = None
-                stage.skip('Служба техработ уже активна')
+        if maintenance_service:
+            async with timeline.stage(
+                'Служба техработ',
+                '🛡️',
+                success_message='Служба техработ запущена',
+            ) as stage:
+                if not settings.is_maintenance_monitoring_enabled():
+                    maintenance_task = None
+                    stage.skip('Мониторинг техработ отключен настройками')
+                elif not maintenance_service._check_task or maintenance_service._check_task.done():
+                    maintenance_task = asyncio.create_task(maintenance_service.start_monitoring())
+                    stage.log(f'Интервал проверки: {settings.MAINTENANCE_CHECK_INTERVAL}с')
+                    stage.log(f'Повторных попыток проверки: {settings.get_maintenance_retry_attempts()}')
+                else:
+                    maintenance_task = None
+                    stage.skip('Служба техработ уже активна')
+        else:
+            maintenance_task = None
 
-        async with timeline.stage(
-            'Мониторинг трафика',
-            '📊',
-            success_message='Мониторинг трафика запущен',
-        ) as stage:
-            if traffic_monitoring_scheduler.is_enabled():
-                traffic_monitoring_task = asyncio.create_task(traffic_monitoring_scheduler.start_monitoring())
-                # Показываем информацию о новом мониторинге v2
-                status_info = traffic_monitoring_scheduler.get_status_info()
-                stage.log(status_info)
-            else:
-                traffic_monitoring_task = None
-                stage.skip('Мониторинг трафика отключен настройками')
+        if traffic_monitoring_scheduler:
+            async with timeline.stage(
+                'Мониторинг трафика',
+                '📊',
+                success_message='Мониторинг трафика запущен',
+            ) as stage:
+                if traffic_monitoring_scheduler.is_enabled():
+                    traffic_monitoring_task = asyncio.create_task(traffic_monitoring_scheduler.start_monitoring())
+                    # Показываем информацию о новом мониторинге v2
+                    status_info = traffic_monitoring_scheduler.get_status_info()
+                    stage.log(status_info)
+                else:
+                    traffic_monitoring_task = None
+                    stage.skip('Мониторинг трафика отключен настройками')
+        else:
+            traffic_monitoring_task = None
 
-        async with timeline.stage(
-            'Суточные подписки',
-            '💳',
-            success_message='Сервис суточных подписок запущен',
-        ) as stage:
-            if daily_subscription_service.is_enabled():
-                daily_subscription_task = asyncio.create_task(daily_subscription_service.start_monitoring())
-                interval_minutes = daily_subscription_service.get_check_interval_minutes()
-                stage.log(f'Интервал проверки: {interval_minutes} мин')
-            else:
-                daily_subscription_task = None
-                stage.skip('Суточные подписки отключены настройками')
+        if daily_subscription_service:
+            async with timeline.stage(
+                'Суточные подписки',
+                '💳',
+                success_message='Сервис суточных подписок запущен',
+            ) as stage:
+                if daily_subscription_service.is_enabled():
+                    daily_subscription_task = asyncio.create_task(daily_subscription_service.start_monitoring())
+                    interval_minutes = daily_subscription_service.get_check_interval_minutes()
+                    stage.log(f'Интервал проверки: {interval_minutes} мин')
+                else:
+                    daily_subscription_task = None
+                    stage.skip('Суточные подписки отключены настройками')
+        else:
+            daily_subscription_task = None
 
         async with timeline.stage(
             'Сервис проверки версий',
@@ -758,12 +834,12 @@ async def main():
             f'Мониторинг трафика: {"Включен" if traffic_monitoring_task else "Отключен"}',
             f'Суточные подписки: {"Включен" if daily_subscription_task else "Отключен"}',
             f'Проверка версий: {"Включен" if version_check_task else "Отключен"}',
-            f'Отчеты: {"Включен" if reporting_service.is_running() else "Отключен"}',
+            f'Отчеты: {"Включен" if reporting_service and reporting_service.is_running() else "Отключен"}',
         ]
         services_lines.append('Проверка пополнений: ' + ('Включена' if verification_providers else 'Отключена'))
         services_lines.append(
             'Автопроверка пополнений: '
-            + ('Включена' if auto_payment_verification_service.is_running() else 'Отключена')
+            + ('Включена' if auto_payment_verification_service and auto_payment_verification_service.is_running() else 'Отключена')
         )
         timeline.log_section('Активные фоновые сервисы', services_lines, icon='📄')
 
@@ -782,17 +858,19 @@ async def main():
             while not killer.exit:
                 await asyncio.sleep(1)
 
-                if monitoring_task.done():
+                if monitoring_task and monitoring_task.done():
                     exception = monitoring_task.exception()
                     if exception:
                         logger.error('Служба мониторинга завершилась с ошибкой', error=exception)
-                        monitoring_task = asyncio.create_task(monitoring_service.start_monitoring())
+                        if monitoring_service:
+                            monitoring_task = asyncio.create_task(monitoring_service.start_monitoring())
 
                 if maintenance_task and maintenance_task.done():
                     exception = maintenance_task.exception()
                     if exception:
                         logger.error('Служба техработ завершилась с ошибкой', error=exception)
-                        maintenance_task = asyncio.create_task(maintenance_service.start_monitoring())
+                        if maintenance_service:
+                            maintenance_task = asyncio.create_task(maintenance_service.start_monitoring())
 
                 if version_check_task and version_check_task.done():
                     exception = version_check_task.exception()
@@ -806,7 +884,7 @@ async def main():
                     exception = traffic_monitoring_task.exception()
                     if exception:
                         logger.error('Мониторинг трафика завершился с ошибкой', error=exception)
-                        if traffic_monitoring_scheduler.is_enabled():
+                        if traffic_monitoring_scheduler and traffic_monitoring_scheduler.is_enabled():
                             logger.info('🔄 Перезапуск мониторинга трафика...')
                             traffic_monitoring_task = asyncio.create_task(
                                 traffic_monitoring_scheduler.start_monitoring()
@@ -816,11 +894,11 @@ async def main():
                     exception = daily_subscription_task.exception()
                     if exception:
                         logger.error('Сервис суточных подписок завершился с ошибкой', error=exception)
-                        if daily_subscription_service.is_enabled():
+                        if daily_subscription_service and daily_subscription_service.is_enabled():
                             logger.info('🔄 Перезапуск сервиса суточных подписок...')
                             daily_subscription_task = asyncio.create_task(daily_subscription_service.start_monitoring())
 
-                if auto_verification_active and not auto_payment_verification_service.is_running():
+                if auto_verification_active and auto_payment_verification_service and not auto_payment_verification_service.is_running():
                     logger.warning('Сервис автопроверки пополнений остановился, пробуем перезапустить...')
                     await auto_payment_verification_service.start()
                     auto_verification_active = auto_payment_verification_service.is_running()
@@ -912,30 +990,33 @@ async def main():
         except Exception as e:
             logger.error('Ошибка остановки автосинхронизации RemnaWave', error=e)
 
-        logger.info('ℹ️ Остановка ротации игр...')
-        try:
-            await contest_rotation_service.stop()
-        except Exception as e:
-            logger.error('Ошибка остановки ротации игр', error=e)
+        if contest_rotation_service:
+            logger.info('ℹ️ Остановка ротации игр...')
+            try:
+                await contest_rotation_service.stop()
+            except Exception as e:
+                logger.error('Ошибка остановки ротации игр', error=e)
 
-        if settings.is_log_rotation_enabled():
+        if settings.is_log_rotation_enabled() and log_rotation_service:
             logger.info('ℹ️ Остановка сервиса ротации логов...')
             try:
                 await log_rotation_service.stop()
             except Exception as e:
                 logger.error('Ошибка остановки сервиса ротации логов', error=e)
 
-        logger.info('ℹ️ Остановка очереди чеков NaloGO...')
-        try:
-            await nalogo_queue_service.stop()
-        except Exception as e:
-            logger.error('Ошибка остановки очереди чеков NaloGO', error=e)
+        if nalogo_queue_service:
+            logger.info('ℹ️ Остановка очереди чеков NaloGO...')
+            try:
+                await nalogo_queue_service.stop()
+            except Exception as e:
+                logger.error('Ошибка остановки очереди чеков NaloGO', error=e)
 
-        logger.info('ℹ️ Остановка сервиса бекапов...')
-        try:
-            await backup_service.stop_auto_backup()
-        except Exception as e:
-            logger.error('Ошибка остановки сервиса бекапов', error=e)
+        if backup_service:
+            logger.info('ℹ️ Остановка сервиса бекапов...')
+            try:
+                await backup_service.stop_auto_backup()
+            except Exception as e:
+                logger.error('Ошибка остановки сервиса бекапов', error=e)
 
         if polling_task and not polling_task.done():
             logger.info('ℹ️ Остановка polling...')
