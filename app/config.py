@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import structlog
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+from pydantic_core import ValidationError as PydanticValidationError
 
 
 DEFAULT_DISPLAY_NAME_BANNED_KEYWORDS: list[str] = [
@@ -27,7 +28,7 @@ logger = structlog.get_logger(__name__)
 
 
 class Settings(BaseSettings):
-    BOT_TOKEN: str
+    BOT_TOKEN: str = Field(default='')
     BOT_USERNAME: str | None = None
     ADMIN_IDS: str = ''
     ADMIN_EMAILS: str = ''  # Comma-separated admin emails for email-only users
@@ -743,6 +744,23 @@ class Settings(BaseSettings):
     BAN_SYSTEM_API_URL: str | None = None  # e.g., http://ban-server:8000
     BAN_SYSTEM_API_TOKEN: str | None = None
     BAN_SYSTEM_REQUEST_TIMEOUT: int = 30
+
+    @field_validator('BOT_TOKEN', mode='after')
+    @classmethod
+    def validate_bot_token(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError(
+                '\n\n'
+                '╔══════════════════════════════════════════════════════╗\n'
+                '║  BOT_TOKEN не задан — бот не может запуститься       ║\n'
+                '║                                                      ║\n'
+                '║  1. Откройте @BotFather в Telegram                   ║\n'
+                '║  2. Создайте бота командой /newbot                   ║\n'
+                '║  3. Скопируйте токен в .env:                         ║\n'
+                '║     BOT_TOKEN=1234567890:AAF...                      ║\n'
+                '╚══════════════════════════════════════════════════════╝\n'
+            )
+        return value.strip()
 
     @field_validator('MAIN_MENU_MODE', mode='before')
     @classmethod
@@ -2551,7 +2569,24 @@ class Settings(BaseSettings):
         return value
 
 
-settings = Settings()
+try:
+    settings = Settings()
+except PydanticValidationError as _config_error:
+    _missing = [e['loc'][0] for e in _config_error.errors() if e['type'] == 'missing']
+    _invalid = [f"{e['loc'][0]}: {e['msg']}" for e in _config_error.errors() if e['type'] != 'missing']
+    _lines = ['', '═' * 60, '  ОШИБКА КОНФИГУРАЦИИ: не удалось запустить бот', '═' * 60]
+    if _missing:
+        _lines.append(f'  Отсутствующие обязательные переменные в .env:')
+        for _f in _missing:
+            _lines.append(f'    • {_f}')
+    if _invalid:
+        _lines.append('  Некорректные значения:')
+        for _msg in _invalid:
+            _lines.append(f'    • {_msg}')
+    _lines += ['', '  Скопируйте .env.example в .env и заполните все поля.', '═' * 60, '']
+    print('\n'.join(_lines), flush=True)
+    raise SystemExit(1) from _config_error
+
 ENV_OVERRIDE_KEYS = set(settings.model_fields_set)
 
 _PERIOD_PRICE_FIELDS: dict[int, str] = {
