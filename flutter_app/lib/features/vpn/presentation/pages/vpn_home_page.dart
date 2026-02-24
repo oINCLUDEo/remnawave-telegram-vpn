@@ -49,7 +49,8 @@ class _VpnHomePageState extends State<VpnHomePage> {
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Column(
                   children: [
-                    SizedBox(height: topGap),
+                    // Space above pushes all content toward the bottom navigation bar
+                    const Spacer(),
                     Center(
                       child: NeumorphicButton(
                         isConnected: _isConnected,
@@ -65,8 +66,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
                     _buildServerCard(context),
                     const SizedBox(height: 8),
                     _buildPremiumCard(context),
-                    // Consume any remaining space so nothing overflows
-                    const Spacer(),
+                    SizedBox(height: topGap),
                   ],
                 ),
               );
