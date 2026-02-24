@@ -37,7 +37,6 @@ final _tTokens = AuthTokens(
 
 Widget _buildUnderTest({
   required AuthBloc bloc,
-  VoidCallback? onGoToRegister,
   void Function(String)? onLoginSuccess,
 }) {
   return MaterialApp(
@@ -46,7 +45,6 @@ Widget _buildUnderTest({
       value: bloc,
       child: LoginPage(
         onLoginSuccess: onLoginSuccess,
-        onGoToRegister: onGoToRegister,
       ),
     ),
   );
@@ -187,18 +185,5 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Неверный email или пароль'), findsOneWidget);
-  });
-
-  testWidgets('calls onGoToRegister when register link is tapped',
-      (tester) async {
-    var called = false;
-    await tester.pumpWidget(
-      _buildUnderTest(bloc: _bloc(), onGoToRegister: () => called = true),
-    );
-
-    await tester.tap(find.text('Зарегистрироваться'));
-    await tester.pump();
-
-    expect(called, isTrue);
   });
 }

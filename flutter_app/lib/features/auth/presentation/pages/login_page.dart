@@ -10,13 +10,10 @@ import '../widgets/auth_text_field.dart';
 
 /// Login screen — email + password authentication.
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key, this.onLoginSuccess, this.onGoToRegister});
+  const LoginPage({super.key, this.onLoginSuccess});
 
   /// Called after a successful login with the access token.
   final void Function(String accessToken)? onLoginSuccess;
-
-  /// Navigates the user to the registration screen.
-  final VoidCallback? onGoToRegister;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -95,8 +92,6 @@ class _LoginPageState extends State<LoginPage> {
                   _buildHeader(),
                   const SizedBox(height: 40),
                   _buildForm(isLoading),
-                  const SizedBox(height: 32),
-                  _buildFooter(),
                 ],
               ),
             ),
@@ -141,8 +136,7 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  Widget _buildForm(bool isLoading) {
-    return AutofillGroup(
+  Widget _buildForm(bool isLoading) {    return AutofillGroup(
       child: Column(
         children: [
           AuthTextField(
@@ -199,22 +193,6 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildFooter() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Text(
-          'Нет аккаунта? ',
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
-        TextButton(
-          onPressed: widget.onGoToRegister,
-          child: const Text('Зарегистрироваться'),
-        ),
-      ],
     );
   }
 }

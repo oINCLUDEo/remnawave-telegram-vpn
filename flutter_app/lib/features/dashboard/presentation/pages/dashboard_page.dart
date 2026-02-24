@@ -5,19 +5,23 @@ import 'package:go_router/go_router.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/router/app_router.dart';
 import '../../../../core/theme/app_colors.dart';
-import '../../../auth/domain/entities/user.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/bloc/auth_event.dart';
 import '../../../auth/presentation/bloc/auth_state.dart';
-import '../../../profile/presentation/pages/profile_page.dart';
+import '../../../locations/presentation/pages/locations_page.dart';
 import '../../../settings/presentation/pages/settings_page.dart';
+import '../../../subscription/domain/entities/server_info.dart';
+import '../../../subscription/domain/entities/subscription.dart';
 import '../../../subscription/presentation/bloc/subscription_bloc.dart';
 import '../../../subscription/presentation/bloc/subscription_event.dart';
 import '../../../subscription/presentation/bloc/subscription_state.dart';
 import '../../../subscription/presentation/pages/subscription_page.dart';
-import '../../../subscription/presentation/widgets/subscription_status_card.dart';
 
-/// Main shell screen with bottom navigation.
+// ─────────────────────────────────────────────────────────────────────────────
+// Shell
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Main shell — bottom navigation with 4 tabs.
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
 
@@ -36,8 +40,6 @@ class _DashboardPageState extends State<DashboardPage> {
     super.initState();
     _authBloc = sl<AuthBloc>();
     _subscriptionBloc = sl<SubscriptionBloc>();
-    // Events are dispatched once here, guaranteeing a single load regardless
-    // of how many times build() is called (e.g. on tab-switch setState).
     _authBloc.add(const LoadProfileRequested());
     _subscriptionBloc.add(const SubscriptionLoadRequested());
   }
@@ -49,12 +51,12 @@ class _DashboardPageState extends State<DashboardPage> {
     super.dispose();
   }
 
+  void navigateTo(int index) => setState(() => _currentIndex = index);
+
   @override
   Widget build(BuildContext context) {
     return MultiBlocProvider(
       providers: [
-        // .value() wires the already-created blocs into the widget tree
-        // without creating new ones or closing them on widget rebuild.
         BlocProvider<AuthBloc>.value(value: _authBloc),
         BlocProvider<SubscriptionBloc>.value(value: _subscriptionBloc),
       ],
@@ -70,13 +72,13 @@ class _DashboardPageState extends State<DashboardPage> {
             children: const [
               _HomeTab(),
               SubscriptionPage(),
-              ProfilePage(),
+              LocationsPage(),
               SettingsPage(),
             ],
           ),
           bottomNavigationBar: NavigationBar(
             selectedIndex: _currentIndex,
-            onDestinationSelected: (i) => setState(() => _currentIndex = i),
+            onDestinationSelected: navigateTo,
             backgroundColor: AppColors.surface,
             indicatorColor: AppColors.primary.withValues(alpha: 0.18),
             labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
@@ -87,14 +89,14 @@ class _DashboardPageState extends State<DashboardPage> {
                 label: 'Главная',
               ),
               NavigationDestination(
-                icon: Icon(Icons.shield_outlined),
-                selectedIcon: Icon(Icons.shield_rounded),
+                icon: Icon(Icons.credit_card_outlined),
+                selectedIcon: Icon(Icons.credit_card_rounded),
                 label: 'Подписка',
               ),
               NavigationDestination(
-                icon: Icon(Icons.person_outline_rounded),
-                selectedIcon: Icon(Icons.person_rounded),
-                label: 'Профиль',
+                icon: Icon(Icons.public_outlined),
+                selectedIcon: Icon(Icons.public_rounded),
+                label: 'Серверы',
               ),
               NavigationDestination(
                 icon: Icon(Icons.settings_outlined),
@@ -107,18 +109,29 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
     );
   }
-
-  /// Navigate to a specific tab by index.
-  void navigateTo(int index) => setState(() => _currentIndex = index);
 }
 
-/// Home tab — user summary + subscription overview.
-class _HomeTab extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// Home tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _HomeTab extends StatefulWidget {
   const _HomeTab();
+
+  @override
+  State<_HomeTab> createState() => _HomeTabState();
+}
+
+class _HomeTabState extends State<_HomeTab> {
+  /// Local VPN toggle state — will be wired to a real VPN service later.
+  bool _vpnConnected = false;
+
+  void _toggleVpn() => setState(() => _vpnConnected = !_vpnConnected);
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: RefreshIndicator(
           color: AppColors.primary,
@@ -130,16 +143,20 @@ class _HomeTab extends StatelessWidget {
           },
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _TopBar(vpnConnected: _vpnConnected),
+                _VpnSection(
+                  vpnConnected: _vpnConnected,
+                  onToggle: _toggleVpn,
+                ),
+                const _PremiumBenefits(),
                 const SizedBox(height: 16),
-                _buildHeader(context),
-                const SizedBox(height: 24),
-                _buildSubscriptionSection(context),
-                const SizedBox(height: 24),
-                _buildQuickStats(context),
+                _ServerBox(
+                  onTap: () => context
+                      .findAncestorStateOfType<_DashboardPageState>()
+                      ?.navigateTo(2),
+                ),
                 const SizedBox(height: 24),
               ],
             ),
@@ -148,295 +165,439 @@ class _HomeTab extends StatelessWidget {
       ),
     );
   }
+}
 
-  Widget _buildHeader(BuildContext context) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Top bar: app name + subscription badge
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TopBar extends StatelessWidget {
+  const _TopBar({required this.vpnConnected});
+
+  final bool vpnConnected;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return BlocBuilder<AuthBloc, AuthState>(
-      builder: (context, state) {
-        String greeting = 'Добро пожаловать!';
-        String subtitle = 'Ulya VPN';
-        User? user;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+      child: Row(
+        children: [
+          // Logo
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [AppColors.primary, AppColors.accent],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.shield_rounded, color: Colors.white, size: 20),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Ulya VPN',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const Spacer(),
+          // Subscription badge
+          BlocBuilder<SubscriptionBloc, SubscriptionState>(
+            builder: (context, state) {
+              if (state is SubscriptionLoaded) {
+                return _SubscriptionBadge(subscription: state.subscription);
+              }
+              return const SizedBox.shrink();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-        if (state is AuthProfileLoaded) {
-          user = state.user;
-          final name =
-              user.firstName ?? user.username ?? user.email?.split('@').first;
-          if (name != null) greeting = 'Привет, $name!';
-          subtitle = user.email ?? 'Ulya VPN';
-        }
+class _SubscriptionBadge extends StatelessWidget {
+  const _SubscriptionBadge({required this.subscription});
 
-        return Row(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [AppColors.primary, AppColors.accent],
+  final Subscription? subscription;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    if (subscription == null || subscription!.isExpired) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceVariant,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.divider),
+        ),
+        child: Text(
+          'Нет подписки',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: AppColors.textSecondary,
+          ),
+        ),
+      );
+    }
+
+    final sub = subscription!;
+    final label = sub.tariffName ?? 'Премиум';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [AppColors.primary, AppColors.accent],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.verified_rounded, size: 12, color: Colors.white),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Central VPN button + status
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _VpnSection extends StatelessWidget {
+  const _VpnSection({
+    required this.vpnConnected,
+    required this.onToggle,
+  });
+
+  final bool vpnConnected;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 40),
+      child: Column(
+        children: [
+          // Subscription status sub-line
+          BlocBuilder<SubscriptionBloc, SubscriptionState>(
+            builder: (context, state) {
+              if (state is SubscriptionLoaded && state.subscription != null) {
+                final sub = state.subscription!;
+                final label = sub.isExpired
+                    ? 'Подписка истекла'
+                    : 'Активна до ${_fmtDate(sub.endDate)}';
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    label,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: sub.isExpired
+                          ? AppColors.error
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+                );
+              }
+              return const SizedBox(height: 12);
+            },
+          ),
+
+          // Big circle button
+          GestureDetector(
+            onTap: onToggle,
+            child: _VpnButton(connected: vpnConnected),
+          ),
+
+          const SizedBox(height: 20),
+
+          // Status label
+          Text(
+            vpnConnected ? 'VPN подключен' : 'VPN отключен',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: vpnConnected ? AppColors.success : AppColors.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+}
+
+class _VpnButton extends StatelessWidget {
+  const _VpnButton({required this.connected});
+
+  final bool connected;
+
+  @override
+  Widget build(BuildContext context) {
+    // Outer glow ring
+    return Container(
+      width: 160,
+      height: 160,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: connected
+              ? AppColors.success.withValues(alpha: 0.25)
+              : AppColors.primary.withValues(alpha: 0.15),
+          width: 12,
+        ),
+      ),
+      child: Container(
+        margin: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: connected
+              ? const LinearGradient(
+                  colors: [Color(0xFF00C896), Color(0xFF00A878)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : const LinearGradient(
+                  colors: [AppColors.primary, AppColors.primaryDark],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: const Icon(
-                Icons.shield_rounded,
-                color: Colors.white,
-                size: 26,
-              ),
+          boxShadow: [
+            BoxShadow(
+              color: connected
+                  ? AppColors.success.withValues(alpha: 0.4)
+                  : AppColors.primary.withValues(alpha: 0.4),
+              blurRadius: 30,
+              spreadRadius: 2,
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(greeting, style: theme.textTheme.titleLarge),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: theme.textTheme.bodyMedium,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-            if (user != null) _BalanceBadge(balanceRubles: user.balanceRubles),
           ],
-        );
-      },
+        ),
+        child: const Icon(
+          Icons.power_settings_new_rounded,
+          size: 52,
+          color: Colors.white,
+        ),
+      ),
     );
   }
+}
 
-  Widget _buildSubscriptionSection(BuildContext context) {
-    return BlocBuilder<SubscriptionBloc, SubscriptionState>(
-      builder: (context, state) {
-        if (state is SubscriptionLoading || state is SubscriptionInitial) {
-          return const _SectionShimmer();
-        }
-        if (state is SubscriptionError) {
-          return _SectionError(
-            message: state.message,
-            onRetry: () => context
-                .read<SubscriptionBloc>()
-                .add(const SubscriptionLoadRequested()),
-          );
-        }
-        if (state is SubscriptionLoaded) {
-          if (state.subscription == null) {
-            return _NoSubscriptionCard(
-              onBuy: () => _navigateToSubscription(context),
-            );
-          }
-          return SubscriptionStatusCard(
-            subscription: state.subscription!,
-            onManage: () => _navigateToSubscription(context),
-          );
-        }
-        return const SizedBox.shrink();
-      },
-    );
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+// Premium benefits list
+// ─────────────────────────────────────────────────────────────────────────────
 
-  void _navigateToSubscription(BuildContext context) {
-    context
-        .findAncestorStateOfType<_DashboardPageState>()
-        ?.navigateTo(1);
-  }
+class _PremiumBenefits extends StatelessWidget {
+  const _PremiumBenefits();
 
-  Widget _buildQuickStats(BuildContext context) {
+  static const _items = [
+    _Benefit(icon: Icons.play_circle_outline_rounded, label: 'YouTube без рекламы'),
+    _Benefit(icon: Icons.list_alt_rounded, label: 'Белые списки сайтов'),
+    _Benefit(icon: Icons.devices_rounded, label: 'Любые устройства'),
+    _Benefit(icon: Icons.speed_rounded, label: 'Без ограничений скорости'),
+    _Benefit(icon: Icons.security_rounded, label: 'Защита трафика'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return BlocBuilder<SubscriptionBloc, SubscriptionState>(
-      builder: (context, state) {
-        if (state is! SubscriptionLoaded || state.subscription == null) {
-          return const SizedBox.shrink();
-        }
-        final sub = state.subscription!;
-        return Column(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.divider),
+        ),
+        padding: const EdgeInsets.all(16),
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Статистика', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(
-                  child: _StatCard(
-                    icon: Icons.devices_rounded,
-                    label: 'Устройств',
-                    value: '${sub.deviceLimit}',
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _StatCard(
-                    icon: Icons.dns_rounded,
-                    label: 'Серверов',
-                    value: '${sub.servers.length}',
+                const Icon(Icons.star_rounded,
+                    size: 16, color: AppColors.warning),
+                const SizedBox(width: 6),
+                Text(
+                  'Преимущества Ulya VPN',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    letterSpacing: 0.6,
                   ),
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            ..._items.map((b) => _BenefitRow(benefit: b)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Benefit {
+  const _Benefit({required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+}
+
+class _BenefitRow extends StatelessWidget {
+  const _BenefitRow({required this.benefit});
+
+  final _Benefit benefit;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(benefit.icon, size: 15, color: AppColors.primary),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            benefit.label,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const Spacer(),
+          const Icon(Icons.check_rounded,
+              size: 15, color: AppColors.success),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server selector box
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _ServerBox extends StatelessWidget {
+  const _ServerBox({this.onTap});
+
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<SubscriptionBloc, SubscriptionState>(
+      builder: (context, state) {
+        ServerInfo? server;
+        if (state is SubscriptionLoaded &&
+            state.subscription != null &&
+            state.subscription!.servers.isNotEmpty) {
+          server = state.subscription!.servers.first;
+        }
+
+        return GestureDetector(
+          onTap: onTap,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.card,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppColors.divider),
+            ),
+            child: Row(
+              children: [
+                // Country flag / icon
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceVariant,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Center(
+                    child: Text(
+                      server != null
+                          ? _flagEmoji(server.countryCode)
+                          : '🌍',
+                      style: const TextStyle(fontSize: 22),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        server?.name ?? 'Автоматически',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: const BoxDecoration(
+                              color: AppColors.success,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Online',
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: AppColors.success,
+                                    ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  color: AppColors.textHint,
+                  size: 20,
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
   }
-}
 
-// ─────────────────────────────────── Shared widgets ───────────────────────────────────
-
-class _BalanceBadge extends StatelessWidget {
-  const _BalanceBadge({required this.balanceRubles});
-
-  final double balanceRubles;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceVariant,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.divider),
-      ),
-      child: Text(
-        '${balanceRubles.toStringAsFixed(0)} ₽',
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: AppColors.accent,
-              fontSize: 13,
-            ),
-      ),
-    );
-  }
-}
-
-class _NoSubscriptionCard extends StatelessWidget {
-  const _NoSubscriptionCard({this.onBuy});
-
-  final VoidCallback? onBuy;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.divider),
-      ),
-      child: Column(
-        children: [
-          const Icon(
-            Icons.shield_outlined,
-            size: 52,
-            color: AppColors.textHint,
-          ),
-          const SizedBox(height: 14),
-          Text(
-            'Нет активной подписки',
-            style: theme.textTheme.titleMedium,
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Подключите VPN и получите доступ ко всем серверам.',
-            style: theme.textTheme.bodyMedium,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: onBuy,
-              child: const Text('Выбрать план'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionShimmer extends StatelessWidget {
-  const _SectionShimmer();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 180,
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
-      ),
-    );
-  }
-}
-
-class _SectionError extends StatelessWidget {
-  const _SectionError({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
-      ),
-      child: Column(
-        children: [
-          const Icon(Icons.error_outline_rounded,
-              color: AppColors.error, size: 40),
-          const SizedBox(height: 8),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-          const SizedBox(height: 12),
-          TextButton(onPressed: onRetry, child: const Text('Повторить')),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatCard extends StatelessWidget {
-  const _StatCard({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.divider),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: AppColors.primary, size: 22),
-          const SizedBox(height: 10),
-          Text(value, style: theme.textTheme.headlineMedium),
-          const SizedBox(height: 2),
-          Text(label, style: theme.textTheme.bodyMedium),
-        ],
-      ),
-    );
+  String _flagEmoji(String? countryCode) {
+    if (countryCode == null || countryCode.length != 2) return '🌍';
+    final base = 127397;
+    final code = countryCode.toUpperCase().codeUnits;
+    return String.fromCharCode(base + code[0]) +
+        String.fromCharCode(base + code[1]);
   }
 }
