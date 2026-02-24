@@ -16,7 +16,7 @@ abstract class AppRoutes {
 /// Application router built with go_router.
 GoRouter buildRouter() {
   return GoRouter(
-    initialLocation: AppRoutes.login,
+    initialLocation: AppRoutes.home,
     routes: [
       GoRoute(
         path: AppRoutes.login,

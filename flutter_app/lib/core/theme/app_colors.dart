@@ -32,4 +32,9 @@ class AppColors {
   static const Color divider = Color(0xFF2A2A45);
   static const Color inputBorder = Color(0xFF3A3A5C);
   static const Color inputFocusBorder = Color(0xFF6C63FF);
+
+  // Glass / blur overlays
+  static const Color glassWhite = Color(0x0DFFFFFF);   // 5 % white
+  static const Color glassBorder = Color(0x1AFFFFFF);  // 10 % white border
+  static const Color glassDark = Color(0xB31A1A2E);    // 70 % surface for nav bar
 }

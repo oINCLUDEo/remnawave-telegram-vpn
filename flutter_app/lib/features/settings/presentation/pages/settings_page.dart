@@ -83,6 +83,8 @@ class SettingsPage extends StatelessWidget {
               ),
             ],
           ),
+          // Bottom padding for floating nav bar
+          const SizedBox(height: 100),
         ],
       ),
     );

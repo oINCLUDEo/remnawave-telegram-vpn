@@ -22,6 +22,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         title: const Text('Подписка'),
         actions: [
@@ -117,7 +118,14 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                   ),
                 ),
               ),
+            const SizedBox(height: 28),
           ],
+
+          // Premium benefits (moved here from the home tab)
+          _PremiumBenefitsSection(),
+
+          // Extra padding for floating nav bar
+          const SizedBox(height: 100),
         ],
       ),
     );
@@ -217,6 +225,97 @@ class _ErrorView extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Premium benefits section — placed on the Subscription tab.
+class _PremiumBenefitsSection extends StatelessWidget {
+  const _PremiumBenefitsSection();
+
+  static const _items = [
+    _BenefitItem(Icons.play_circle_outline_rounded, 'YouTube без рекламы'),
+    _BenefitItem(Icons.list_alt_rounded, 'Белые списки сайтов'),
+    _BenefitItem(Icons.devices_rounded, 'Любые устройства'),
+    _BenefitItem(Icons.speed_rounded, 'Без ограничений скорости'),
+    _BenefitItem(Icons.security_rounded, 'Защита трафика'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.star_rounded, size: 16, color: AppColors.warning),
+            const SizedBox(width: 6),
+            Text(
+              'Что входит в подписку',
+              style: theme.textTheme.titleMedium?.copyWith(fontSize: 15),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: AppColors.divider),
+          ),
+          child: Column(
+            children: [
+              for (int i = 0; i < _items.length; i++) ...[
+                _BenefitRow(item: _items[i]),
+                if (i < _items.length - 1)
+                  const Divider(height: 1, indent: 54, endIndent: 16),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BenefitItem {
+  const _BenefitItem(this.icon, this.label);
+  final IconData icon;
+  final String label;
+}
+
+class _BenefitRow extends StatelessWidget {
+  const _BenefitRow({required this.item});
+
+  final _BenefitItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(item.icon, size: 16, color: AppColors.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              item.label,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
+          ),
+          const Icon(Icons.check_circle_rounded,
+              size: 16, color: AppColors.success),
+        ],
       ),
     );
   }
