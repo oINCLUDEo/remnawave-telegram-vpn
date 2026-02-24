@@ -106,12 +106,41 @@ class ApiService {
   static String _extractErrorMessage(http.Response response) {
     try {
       final body = jsonDecode(response.body);
+      
       if (body is Map<String, dynamic>) {
-        return body['detail'] ?? body['message'] ?? 'Unknown error';
+        final detail = body['detail'];
+        
+        // FastAPI validation errors: detail is a List
+        if (detail is List && detail.isNotEmpty) {
+          // Extract first error message
+          if (detail[0] is Map<String, dynamic>) {
+            final firstError = detail[0] as Map<String, dynamic>;
+            final msg = firstError['msg'] ?? 'Validation error';
+            final loc = firstError['loc'];
+            
+            // Include field name if available
+            if (loc is List && loc.length > 1) {
+              final field = loc.last;
+              return '$field: $msg';
+            }
+            return msg;
+          }
+          return 'Validation error';
+        }
+        
+        // Standard error: detail is a String
+        if (detail is String) {
+          return detail;
+        }
+        
+        // Fallback to message field
+        return body['message'] ?? 'Unknown error';
       }
+      
       return 'Unknown error';
     } catch (e) {
-      return 'Failed to parse error response';
+      // Return response body as-is if JSON parsing fails
+      return response.body.isNotEmpty ? response.body : 'Unknown error';
     }
   }
 }
