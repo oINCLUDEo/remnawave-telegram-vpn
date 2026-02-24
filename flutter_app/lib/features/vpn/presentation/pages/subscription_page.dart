@@ -86,30 +86,70 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Page title (no AppBar border) ──
+              // ── Page header ──
               _buildHeader(),
               const SizedBox(height: 12),
-              // ── Benefits list + tariff overlay in a Stack ──
+
+              // ── Benefits area — bounded by Expanded, never bleeds down ──
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Stack(
                     children: [
-                      // Benefits list — fills the stack area and scrolls internally.
-                      // Bottom padding reserves space so last items aren't hidden under tariffs.
-                      Positioned.fill(
-                        child: _buildBenefitsList(),
-                      ),
-                      // Tariff section sits at the bottom and slightly overlaps the benefits
-                      // list via a gradient fade at its top edge.
+                      // Scrollable list fills the Expanded bounds exactly
+                      _buildBenefitsList(),
+                      // Gradient overlay at the bottom of the Expanded area gives
+                      // the "scroll into shadow" effect without any container
+                      // extending beyond this boundary.
                       Positioned(
                         left: 0,
                         right: 0,
                         bottom: 0,
-                        child: _buildTariffSection(),
+                        child: IgnorePointer(
+                          child: Container(
+                            height: 48,
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  AppColors.background.withValues(alpha: 0),
+                                  AppColors.background,
+                                ],
+                              ),
+                              borderRadius: const BorderRadius.only(
+                                bottomLeft: Radius.circular(16),
+                                bottomRight: Radius.circular(16),
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
                     ],
                   ),
+                ),
+              ),
+
+              // ── Tariff box — sits directly on the gradient, no shared container ──
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                child: _buildTariffBox(),
+              ),
+
+              // ── Continue button — directly on gradient background ──
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                child: _buildContinueButton(),
+              ),
+
+              // ── Disclaimer — directly on gradient background ──
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
+                child: Text(
+                  'Отмена в любой момент. Без скрытых условий.',
+                  style:
+                      TextStyle(color: AppColors.textSecondary, fontSize: 11),
+                  textAlign: TextAlign.center,
                 ),
               ),
             ],
@@ -170,16 +210,15 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
 
   // Benefits list in the same style as the server list:
   // rounded container, items with icon + title + subtitle, thin dividers.
+  // Positioned inside an Expanded — the container is strictly bounded.
   Widget _buildBenefitsList() {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF141B2D),
         borderRadius: BorderRadius.circular(16),
       ),
-      // Bottom padding so last items remain visible above the tariff section.
-      // The tariff section is ~292 px tall; we overlap it by 24 px via gradient.
       child: ListView.separated(
-        padding: const EdgeInsets.only(top: 4, bottom: 340),
+        padding: const EdgeInsets.symmetric(vertical: 4),
         itemCount: _benefits.length,
         separatorBuilder: (_, __) => const Divider(
           height: 1,
@@ -234,75 +273,32 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     );
   }
 
-  // Tariff cards + continue button.
-  // The gradient at the top creates a "sliding up over benefits" visual effect.
-  Widget _buildTariffSection() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // Gradient fade — makes the benefits list appear to scroll under the tariff section.
-        Container(
-          height: 28,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                AppColors.background.withValues(alpha: 0),
-                AppColors.background,
-              ],
+  // Tariff cards grouped in their own rounded box — no other container wraps them.
+  Widget _buildTariffBox() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF141B2D),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      padding: const EdgeInsets.all(8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: List.generate(_tariffs.length, (i) {
+          final t = _tariffs[i];
+          return Padding(
+            padding:
+                EdgeInsets.only(bottom: i < _tariffs.length - 1 ? 6 : 0),
+            child: TariffCard(
+              duration: t.duration,
+              price: t.price,
+              pricePerMonth: t.pricePerMonth,
+              discountPercent: t.discount,
+              isSelected: _selectedTariff == i,
+              onTap: () => setState(() => _selectedTariff = i),
             ),
-          ),
-        ),
-        // Solid page-background cover: hides the benefits list (#141B2D) container
-        // that bleeds through via Positioned.fill. Only the tariff cards box itself
-        // has the #141B2D rounded container — the button and text sit on the
-        // plain page background.
-        ColoredBox(
-          color: AppColors.background,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ── Grouped tariff container ──
-              Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF141B2D),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                padding: const EdgeInsets.all(8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: List.generate(_tariffs.length, (i) {
-                    final t = _tariffs[i];
-                    return Padding(
-                      padding: EdgeInsets.only(
-                          bottom: i < _tariffs.length - 1 ? 6 : 0),
-                      child: TariffCard(
-                        duration: t.duration,
-                        price: t.price,
-                        pricePerMonth: t.pricePerMonth,
-                        discountPercent: t.discount,
-                        isSelected: _selectedTariff == i,
-                        onTap: () => setState(() => _selectedTariff = i),
-                      ),
-                    );
-                  }),
-                ),
-              ),
-              const SizedBox(height: 10),
-              _buildContinueButton(),
-              const SizedBox(height: 8),
-              const Text(
-                'Отмена в любой момент. Без скрытых условий.',
-                style:
-                    TextStyle(color: AppColors.textSecondary, fontSize: 11),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
-      ],
+          );
+        }),
+      ),
     );
   }
 
