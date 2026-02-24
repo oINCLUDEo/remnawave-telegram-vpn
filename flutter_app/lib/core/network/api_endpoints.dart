@@ -16,4 +16,5 @@ class ApiEndpoints {
 
   // Subscription / tariffs
   static const String purchaseOptions = '/cabinet/subscription/purchase-options';
+  static const String publicTariffs = '/cabinet/subscription/public-tariffs';
 }

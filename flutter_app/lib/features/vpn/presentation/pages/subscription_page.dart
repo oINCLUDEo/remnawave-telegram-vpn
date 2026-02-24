@@ -303,8 +303,6 @@ class _SubscriptionViewState extends State<_SubscriptionView> {
             ),
           ),
         TariffLoaded() => _buildApiPeriods(state),
-        TariffError(message: final msg) when msg == 'auth_required' =>
-          _buildStaticPeriods(),
         TariffError() => _buildErrorWithRetry(),
         _ => _buildStaticPeriods(),
       },

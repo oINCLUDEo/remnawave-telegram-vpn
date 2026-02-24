@@ -22,9 +22,6 @@ class TariffRepositoryImpl implements TariffRepository {
       );
     } on DioException catch (e) {
       final statusCode = e.response?.statusCode;
-      if (statusCode == 401 || statusCode == 403) {
-        throw const TokenExpiredFailure();
-      }
       if (e.type == DioExceptionType.connectionError ||
           e.type == DioExceptionType.connectionTimeout ||
           e.type == DioExceptionType.receiveTimeout) {

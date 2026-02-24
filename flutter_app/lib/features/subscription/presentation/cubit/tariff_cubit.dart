@@ -12,6 +12,10 @@ class TariffCubit extends Cubit<TariffState> {
   final TariffRepository _repository;
 
   /// Fetch purchase options from the API and emit the appropriate state.
+  ///
+  /// Auth is handled transparently by the datasource:
+  ///   • With a valid token → authenticated endpoint (promo-group discounts applied)
+  ///   • Without a valid token → public endpoint (base prices, no discounts)
   Future<void> loadTariffs() async {
     emit(const TariffLoading());
     try {
@@ -22,7 +26,6 @@ class TariffCubit extends Cubit<TariffState> {
         return;
       }
 
-      // Default: first plan, period closest to 1 month (index 0 after sorting)
       emit(TariffLoaded(
         plans: result.plans,
         salesMode: result.salesMode,
@@ -31,8 +34,6 @@ class TariffCubit extends Cubit<TariffState> {
         selectedPeriodIndex:
             result.plans.first.periods.length > 1 ? 1 : 0,
       ));
-    } on TokenExpiredFailure {
-      emit(const TariffError('auth_required'));
     } on NetworkFailure catch (e) {
       emit(TariffError(e.message));
     } on Failure catch (e) {
