@@ -28,18 +28,18 @@ class TariffCard extends StatelessWidget {
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeInOut,
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(12),
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 250),
               curve: Curves.easeInOut,
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: isSelected
                     ? AppColors.accent.withValues(alpha: 0.12)
                     : AppColors.glass,
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(
                   color: isSelected
                       ? AppColors.accent.withValues(alpha: 0.8)
@@ -68,7 +68,7 @@ class TariffCard extends StatelessWidget {
                             color: isSelected
                                 ? AppColors.accent
                                 : AppColors.textPrimary,
-                            fontSize: 15,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -92,7 +92,7 @@ class TariffCard extends StatelessWidget {
                           color: isSelected
                               ? AppColors.accent
                               : AppColors.textPrimary,
-                          fontSize: 18,
+                            fontSize: 15,
                           fontWeight: FontWeight.w700,
                         ),
                       ),

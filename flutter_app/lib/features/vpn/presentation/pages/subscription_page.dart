@@ -61,10 +61,11 @@ class SubscriptionPage extends StatefulWidget {
 }
 
 class _SubscriptionPageState extends State<SubscriptionPage> {
-  // 3 tariff cards (odd count) — 1 month / 3 months / 12 months
+  // 4 tariff options — 1 / 3 / 6 / 12 months
   static const _tariffs = [
     _Tariff('1 месяц', '299 ₽', '299 ₽/мес', null),
     _Tariff('3 месяца', '749 ₽', '250 ₽/мес', 16),
+    _Tariff('6 месяцев', '1 299 ₽', '217 ₽/мес', 28),
     _Tariff('12 месяцев', '1 999 ₽', '167 ₽/мес', 44),
   ];
 
@@ -178,7 +179,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
       // Bottom padding so last items remain visible above the tariff section.
       // The tariff section is ~292 px tall; we overlap it by 24 px via gradient.
       child: ListView.separated(
-        padding: const EdgeInsets.only(top: 4, bottom: 268),
+        padding: const EdgeInsets.only(top: 4, bottom: 340),
         itemCount: _benefits.length,
         separatorBuilder: (_, __) => const Divider(
           height: 1,
@@ -242,47 +243,51 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
         // Gradient fade — makes the tariff box look like it overlaps the benefits list
         Container(
           height: 28,
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: [Colors.transparent, AppColors.background],
+              colors: [
+                AppColors.background.withValues(alpha: 0),
+                AppColors.background,
+              ],
             ),
           ),
         ),
-        // Solid background section with tariff cards and CTA
+        // ── Grouped tariff container ──
         Container(
-          decoration: const BoxDecoration(color: AppColors.background),
-          padding: const EdgeInsets.only(bottom: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF141B2D),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          padding: const EdgeInsets.all(8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            children: [
-              ...List.generate(_tariffs.length, (i) {
-                final t = _tariffs[i];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: TariffCard(
-                    duration: t.duration,
-                    price: t.price,
-                    pricePerMonth: t.pricePerMonth,
-                    discountPercent: t.discount,
-                    isSelected: _selectedTariff == i,
-                    onTap: () => setState(() => _selectedTariff = i),
-                  ),
-                );
-              }),
-              const SizedBox(height: 4),
-              _buildContinueButton(),
-              const SizedBox(height: 8),
-              const Text(
-                'Отмена в любой момент. Без скрытых условий.',
-                style:
-                    TextStyle(color: AppColors.textSecondary, fontSize: 11),
-                textAlign: TextAlign.center,
-              ),
-            ],
+            children: List.generate(_tariffs.length, (i) {
+              final t = _tariffs[i];
+              return Padding(
+                padding: EdgeInsets.only(bottom: i < _tariffs.length - 1 ? 6 : 0),
+                child: TariffCard(
+                  duration: t.duration,
+                  price: t.price,
+                  pricePerMonth: t.pricePerMonth,
+                  discountPercent: t.discount,
+                  isSelected: _selectedTariff == i,
+                  onTap: () => setState(() => _selectedTariff = i),
+                ),
+              );
+            }),
           ),
         ),
+        const SizedBox(height: 10),
+        _buildContinueButton(),
+        const SizedBox(height: 8),
+        const Text(
+          'Отмена в любой момент. Без скрытых условий.',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 8),
       ],
     );
   }
