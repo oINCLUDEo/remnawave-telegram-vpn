@@ -240,7 +240,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Gradient fade — makes the tariff box look like it overlaps the benefits list
+        // Gradient fade — makes the benefits list appear to scroll under the tariff section.
         Container(
           height: 28,
           decoration: BoxDecoration(
@@ -254,40 +254,54 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
             ),
           ),
         ),
-        // ── Grouped tariff container ──
-        Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF141B2D),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          padding: const EdgeInsets.all(8),
+        // Solid page-background cover: hides the benefits list (#141B2D) container
+        // that bleeds through via Positioned.fill. Only the tariff cards box itself
+        // has the #141B2D rounded container — the button and text sit on the
+        // plain page background.
+        ColoredBox(
+          color: AppColors.background,
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            children: List.generate(_tariffs.length, (i) {
-              final t = _tariffs[i];
-              return Padding(
-                padding: EdgeInsets.only(bottom: i < _tariffs.length - 1 ? 6 : 0),
-                child: TariffCard(
-                  duration: t.duration,
-                  price: t.price,
-                  pricePerMonth: t.pricePerMonth,
-                  discountPercent: t.discount,
-                  isSelected: _selectedTariff == i,
-                  onTap: () => setState(() => _selectedTariff = i),
+            children: [
+              // ── Grouped tariff container ──
+              Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141B2D),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-              );
-            }),
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(_tariffs.length, (i) {
+                    final t = _tariffs[i];
+                    return Padding(
+                      padding: EdgeInsets.only(
+                          bottom: i < _tariffs.length - 1 ? 6 : 0),
+                      child: TariffCard(
+                        duration: t.duration,
+                        price: t.price,
+                        pricePerMonth: t.pricePerMonth,
+                        discountPercent: t.discount,
+                        isSelected: _selectedTariff == i,
+                        onTap: () => setState(() => _selectedTariff = i),
+                      ),
+                    );
+                  }),
+                ),
+              ),
+              const SizedBox(height: 10),
+              _buildContinueButton(),
+              const SizedBox(height: 8),
+              const Text(
+                'Отмена в любой момент. Без скрытых условий.',
+                style:
+                    TextStyle(color: AppColors.textSecondary, fontSize: 11),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+            ],
           ),
         ),
-        const SizedBox(height: 10),
-        _buildContinueButton(),
-        const SizedBox(height: 8),
-        const Text(
-          'Отмена в любой момент. Без скрытых условий.',
-          style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 8),
       ],
     );
   }
