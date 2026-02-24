@@ -6,6 +6,7 @@ import '../di/injection.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
 import '../../features/auth/presentation/pages/login_page.dart';
 import '../../features/auth/presentation/pages/register_page.dart';
+import '../../features/home/presentation/pages/main_shell.dart';
 
 /// Route names.
 abstract class AppRoutes {
@@ -18,7 +19,7 @@ abstract class AppRoutes {
 /// Application router built with go_router.
 GoRouter buildRouter() {
   return GoRouter(
-    initialLocation: AppRoutes.login,
+    initialLocation: AppRoutes.home,
     routes: [
       GoRoute(
         path: AppRoutes.login,
@@ -55,29 +56,10 @@ GoRouter buildRouter() {
       ),
       GoRoute(
         path: AppRoutes.home,
-        builder: (context, state) => const _HomePlaceholderPage(),
+        builder: (context, state) => const MainShell(),
       ),
     ],
   );
-}
-
-/// Placeholder screen shown after a successful login.
-/// Replace with the real Home / Dashboard screen in future sprints.
-class _HomePlaceholderPage extends StatelessWidget {
-  const _HomePlaceholderPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Ulya VPN')),
-      body: const Center(
-        child: Text(
-          '🛡️ Добро пожаловать!\nГлавный экран в разработке.',
-          textAlign: TextAlign.center,
-        ),
-      ),
-    );
-  }
 }
 
 /// Shown after registration when email verification is required.
