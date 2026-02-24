@@ -212,63 +212,63 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
   // rounded container, items with icon + title + subtitle, thin dividers.
   // Positioned inside an Expanded — the container is strictly bounded.
   Widget _buildBenefitsList() {
-    return Container(
-      decoration: BoxDecoration(
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
         color: const Color(0xFF141B2D),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: ListView.separated(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        itemCount: _benefits.length,
-        separatorBuilder: (_, __) => const Divider(
-          height: 1,
-          thickness: 0.5,
-          color: Color(0xFF1E2940),
-          indent: 16,
-          endIndent: 16,
+        child: ListView.builder(
+          padding: const EdgeInsets.symmetric(vertical: 0),
+          itemCount: _benefits.length,
+          itemBuilder: (context, i) {
+            final b = _benefits[i];
+            // Alternating row backgrounds: even = darker base, odd = slightly lighter
+            final rowColor = i.isEven
+                ? const Color(0xFF141B2D)
+                : const Color(0xFF1A2236);
+            return ColoredBox(
+              color: rowColor,
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(b.icon, color: AppColors.accent, size: 18),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            b.title,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            b.subtitle,
+                            style: const TextStyle(
+                                color: AppColors.textSecondary, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
-        itemBuilder: (context, i) {
-          final b = _benefits[i];
-          return Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: AppColors.accent.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(b.icon, color: AppColors.accent, size: 18),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        b.title,
-                        style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        b.subtitle,
-                        style: const TextStyle(
-                            color: AppColors.textSecondary, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
       ),
     );
   }
