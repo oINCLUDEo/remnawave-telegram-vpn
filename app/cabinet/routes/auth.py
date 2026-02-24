@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 from datetime import UTC, datetime
+from typing import Union
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -592,7 +593,7 @@ async def register_email(
     }
 
 
-@router.post('/email/register/standalone', response_model=RegisterResponse | AuthResponse)
+@router.post('/email/register/standalone', response_model=Union[RegisterResponse, AuthResponse])
 async def register_email_standalone(
     request: EmailRegisterStandaloneRequest,
     db: AsyncSession = Depends(get_cabinet_db),

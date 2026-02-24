@@ -2,6 +2,7 @@
 
 import time
 from datetime import UTC, datetime
+from typing import Union
 
 import structlog
 from aiogram import Bot
@@ -115,11 +116,11 @@ async def list_pinned_messages(
     )
 
 
-@router.get('/active', response_model=PinnedMessageResponse | None)
+@router.get('/active', response_model=Union[PinnedMessageResponse, None])
 async def get_active_message(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_cabinet_db),
-) -> PinnedMessageResponse | None:
+) -> Union[PinnedMessageResponse, None]:
     """Get current active pinned message."""
     msg = await get_active_pinned_message(db)
     if not msg:
@@ -265,11 +266,11 @@ async def update_pinned_message_settings(
 # ============ Active Message Actions (before /{message_id} POST routes) ============
 
 
-@router.post('/active/deactivate', response_model=PinnedMessageResponse | None)
+@router.post('/active/deactivate', response_model=Union[PinnedMessageResponse, None])
 async def deactivate_active_message(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_cabinet_db),
-) -> PinnedMessageResponse | None:
+) -> Union[PinnedMessageResponse, None]:
     """Deactivate the current active pinned message without unpinning from users."""
     msg = await deactivate_active_pinned_message(db)
     if not msg:
