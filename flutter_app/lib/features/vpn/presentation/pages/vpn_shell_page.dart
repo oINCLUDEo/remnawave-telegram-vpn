@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../widgets/dot_grid_background.dart';
 import 'vpn_home_page.dart';
 import 'server_selection_page.dart';
 import 'subscription_page.dart';
@@ -243,10 +244,12 @@ class _PlaceholderPage extends StatelessWidget {
           colors: [AppColors.background, AppColors.backgroundDark],
         ),
       ),
-      child: const Center(
-        child: Text(
-          'Скоро',
-          style: TextStyle(color: AppColors.textSecondary, fontSize: 18),
+      child: DotGridBackground(
+        child: const Center(
+          child: Text(
+            'Скоро',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 18),
+          ),
         ),
       ),
     );

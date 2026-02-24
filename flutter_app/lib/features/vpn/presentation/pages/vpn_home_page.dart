@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../widgets/dot_grid_background.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neumorphic_button.dart';
 import '../widgets/signal_indicator.dart';
@@ -35,8 +36,9 @@ class _VpnHomePageState extends State<VpnHomePage> {
             colors: [AppColors.background, AppColors.backgroundDark],
           ),
         ),
-        child: SafeArea(
-          child: LayoutBuilder(
+        child: DotGridBackground(
+          child: SafeArea(
+            child: LayoutBuilder(
             builder: (context, constraints) {
               final h = constraints.maxHeight;
               final w = constraints.maxWidth;
@@ -75,6 +77,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
           ),
         ),
       ),
+    ),
     );
   }
 
