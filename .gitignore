@@ -99,6 +99,10 @@ data/
 *.db
 *.sqlite3
 
+# Un-ignore flutter_app source after the data/ rule above
+!flutter_app/lib/
+!flutter_app/lib/**
+
 # OS files
 .DS_Store
 Thumbs.db
