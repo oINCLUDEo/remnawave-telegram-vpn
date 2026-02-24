@@ -65,19 +65,31 @@ class AuthService {
 
       final data = ApiService.parseResponse(response);
       
-      final accessToken = data['access_token'] as String;
-      final refreshToken = data['refresh_token'] as String;
-      final userData = data['user'] as Map<String, dynamic>;
-      
-      await StorageService.saveTokens(
-        accessToken: accessToken,
-        refreshToken: refreshToken,
-      );
-      
-      final user = User.fromJson(userData);
-      await StorageService.saveUserId(user.id);
-      
-      return AuthResult(success: true, user: user);
+      // Check if response contains tokens (verification disabled or test email)
+      if (data.containsKey('access_token') && data.containsKey('refresh_token')) {
+        // Auth response - user is logged in immediately
+        final accessToken = data['access_token'] as String;
+        final refreshToken = data['refresh_token'] as String;
+        final userData = data['user'] as Map<String, dynamic>;
+        
+        await StorageService.saveTokens(
+          accessToken: accessToken,
+          refreshToken: refreshToken,
+        );
+        
+        final user = User.fromJson(userData);
+        await StorageService.saveUserId(user.id);
+        
+        return AuthResult(success: true, user: user);
+      } else {
+        // Register response - verification required
+        final message = data['message'] as String? ?? 'Registration successful. Please verify your email.';
+        return AuthResult(
+          success: false, 
+          error: message,
+          requiresVerification: data['requires_verification'] as bool? ?? true,
+        );
+      }
     } on ApiException catch (e) {
       return AuthResult(success: false, error: e.message);
     } catch (e) {
@@ -142,10 +154,12 @@ class AuthResult {
   final bool success;
   final User? user;
   final String? error;
+  final bool requiresVerification;
 
   AuthResult({
     required this.success,
     this.user,
     this.error,
+    this.requiresVerification = false,
   });
 }

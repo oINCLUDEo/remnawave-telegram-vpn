@@ -592,7 +592,7 @@ async def register_email(
     }
 
 
-@router.post('/email/register/standalone', response_model=RegisterResponse)
+@router.post('/email/register/standalone', response_model=RegisterResponse | AuthResponse)
 async def register_email_standalone(
     request: EmailRegisterStandaloneRequest,
     db: AsyncSession = Depends(get_cabinet_db),
@@ -601,11 +601,11 @@ async def register_email_standalone(
     Register new account with email and password.
 
     This endpoint creates a new user WITHOUT requiring Telegram authentication.
-    An email verification link will be sent to confirm the email address.
-
-    User must verify email before they can login.
-
-    If TEST_EMAIL is configured, test email accounts are auto-verified.
+    
+    Behavior:
+    - If CABINET_EMAIL_VERIFICATION_ENABLED=false: Returns AuthResponse with tokens (user auto-logged in)
+    - If CABINET_EMAIL_VERIFICATION_ENABLED=true: Sends verification email, returns RegisterResponse
+    - If TEST_EMAIL is configured: Test email accounts are auto-verified and return AuthResponse
     """
     # Check if this is a test email registration
     is_test_email = settings.is_test_email(request.email)
@@ -667,12 +667,21 @@ async def register_email_standalone(
         referred_by_id=referrer.id if referrer else None,
     )
 
-    # Для тестового email - автоматически верифицировать
-    if is_test_email:
+    # Определить нужна ли верификация email
+    verification_enabled = settings.is_cabinet_email_verification_enabled()
+    auto_verify = is_test_email or not verification_enabled
+
+    # Для тестового email или если верификация отключена - автоматически верифицировать
+    if auto_verify:
         user.email_verified = True
         user.email_verified_at = datetime.now(UTC)
+        user.cabinet_last_login = datetime.now(UTC)
         await db.commit()
-        logger.info('Test email auto-verified: user_id', email=request.email, user_id=user.id)
+        
+        if is_test_email:
+            logger.info('Test email auto-verified: user_id', email=request.email, user_id=user.id)
+        else:
+            logger.info('Email auto-verified (verification disabled): user_id', email=request.email, user_id=user.id)
     else:
         # Сгенерировать токен верификации
         verification_token = generate_verification_token()
@@ -683,7 +692,7 @@ async def register_email_standalone(
         await db.commit()
 
         # Отправить email верификации
-        if settings.is_cabinet_email_verification_enabled() and email_service.is_configured():
+        if email_service.is_configured():
             cabinet_url = settings.CABINET_URL
             verification_url = f'{cabinet_url}/verify-email'
             lang = user.language or request.language or 'ru'
@@ -724,13 +733,26 @@ async def register_email_standalone(
             logger.error('Failed to process referral registration', error=e)
             # Не прерываем регистрацию из-за ошибки реферальной системы
 
-    # Для тестового email - сразу можно логиниться (уже verified)
-    # Для обычного email - требуется верификация
-    return RegisterResponse(
-        message='Verification email sent. Please check your inbox.',
-        email=request.email,
-        requires_verification=not is_test_email,
-    )
+    # Если email верифицирован (тестовый или верификация отключена) - вернуть токены
+    # Иначе - вернуть сообщение о необходимости верификации
+    if auto_verify:
+        # Вернуть auth response с токенами (пользователь сразу залогинен)
+        response = _create_auth_response(user)
+        await _store_refresh_token(db, user.id, response.refresh_token)
+        
+        # Process campaign bonus
+        response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
+        if response.campaign_bonus:
+            response.user = _user_to_response(user)
+        
+        return response
+    else:
+        # Вернуть сообщение о верификации
+        return RegisterResponse(
+            message='Verification email sent. Please check your inbox.',
+            email=request.email,
+            requires_verification=True,
+        )
 
 
 @router.post('/email/verify', response_model=AuthResponse)
