@@ -104,10 +104,12 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                       Positioned(
                         left: 0,
                         right: 0,
-                        bottom: 0,
+                        // Extend 16px below the Expanded boundary so the gradient
+                        // fully covers the container's bottom rounded corners.
+                        bottom: -16,
                         child: IgnorePointer(
                           child: Container(
-                            height: 48,
+                            height: 80,
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
                                 begin: Alignment.topCenter,
@@ -116,10 +118,6 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                                   AppColors.background.withValues(alpha: 0),
                                   AppColors.background,
                                 ],
-                              ),
-                              borderRadius: const BorderRadius.only(
-                                bottomLeft: Radius.circular(16),
-                                bottomRight: Radius.circular(16),
                               ),
                             ),
                           ),
@@ -231,7 +229,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
           final b = _benefits[i];
           return Padding(
             padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
                 Container(
