@@ -141,41 +141,31 @@ class _VpnCenterButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      // Extra horizontal padding makes the button feel wider / more spaced
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      // Slightly more horizontal margin than regular items
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
       child: GestureDetector(
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(horizontal: 20),
+          // Narrow fixed-width pill — smaller than before
+          width: 52,
           decoration: BoxDecoration(
-            gradient: isActive
-                ? const LinearGradient(
-                    colors: [AppColors.accent, AppColors.accentDark],
-                  )
-                : null,
-            color: isActive ? null : const Color(0xFF1C2340),
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: isActive
-                ? [
-                    BoxShadow(
-                      color: AppColors.accent.withValues(alpha: 0.35),
-                      blurRadius: 14,
-                      spreadRadius: 0,
-                    ),
-                  ]
-                : null,
-            border: isActive
-                ? null
-                : Border.all(color: AppColors.glassBorder, width: 1),
+            // Always the same dark background; active state is shown via text color only
+            color: const Color(0xFF1C2340),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isActive
+                  ? Colors.white.withValues(alpha: 0.35)
+                  : AppColors.glassBorder,
+              width: 1,
+            ),
           ),
           child: Center(
             child: Text(
               'VPN',
               style: TextStyle(
-                color: isActive
-                    ? const Color(0xFF1A1200)
-                    : Colors.white,
+                // Inactive: muted; active: bright white — no gold
+                color: isActive ? Colors.white : AppColors.textSecondary,
                 fontSize: 12,
                 fontWeight: FontWeight.w800,
                 letterSpacing: 1.2,
