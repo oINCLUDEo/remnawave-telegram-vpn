@@ -14,25 +14,46 @@ class VpnShellPage extends StatefulWidget {
 
 class _VpnShellPageState extends State<VpnShellPage> {
   // Index mapping: 0=Серверы, 1=Premium, 2=VPN(home), 3=Профиль, 4=Настройки
-  // The center item (index 2) is the VPN home page.
-  // Pages are keyed by their actual page index.
   int _currentIndex = 2; // start on VPN home
 
-  // Map from nav index to page widget
-  static final _pages = {
-    0: const ServerSelectionPage(),
-    1: const SubscriptionPage(),
-    2: const VpnHomePage(),
-    // 3 and 4 are placeholders (no separate page yet)
-  };
+  late final PageController _pageController;
 
-  Widget get _currentPage =>
-      _pages[_currentIndex] ?? const _PlaceholderPage();
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(initialPage: 2);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _navigateTo(int index) {
+    setState(() => _currentIndex = index);
+    _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _currentPage,
+      // PageView enables left/right swipe between tabs.
+      body: PageView(
+        controller: _pageController,
+        onPageChanged: (index) => setState(() => _currentIndex = index),
+        children: const [
+          ServerSelectionPage(),
+          SubscriptionPage(),
+          VpnHomePage(),
+          _PlaceholderPage(),
+          _PlaceholderPage(),
+        ],
+      ),
       bottomNavigationBar: _buildBottomNav(),
     );
   }
@@ -60,7 +81,7 @@ class _VpnShellPageState extends State<VpnShellPage> {
                       icon: Icons.language_rounded,
                       label: 'Серверы',
                       isActive: _currentIndex == 0,
-                      onTap: () => setState(() => _currentIndex = 0),
+                      onTap: () => _navigateTo(0),
                     ),
                   ),
                   // Left: Premium
@@ -69,13 +90,13 @@ class _VpnShellPageState extends State<VpnShellPage> {
                       icon: Icons.workspace_premium_rounded,
                       label: 'Premium',
                       isActive: _currentIndex == 1,
-                      onTap: () => setState(() => _currentIndex = 1),
+                      onTap: () => _navigateTo(1),
                     ),
                   ),
                   // Center: VPN (wide, prominent)
                   _VpnCenterButton(
                     isActive: _currentIndex == 2,
-                    onTap: () => setState(() => _currentIndex = 2),
+                    onTap: () => _navigateTo(2),
                   ),
                   // Right: Профиль
                   Expanded(
@@ -83,7 +104,7 @@ class _VpnShellPageState extends State<VpnShellPage> {
                       icon: Icons.person_outline_rounded,
                       label: 'Профиль',
                       isActive: _currentIndex == 3,
-                      onTap: () => setState(() => _currentIndex = 3),
+                      onTap: () => _navigateTo(3),
                     ),
                   ),
                   // Right: Настройки
@@ -92,7 +113,7 @@ class _VpnShellPageState extends State<VpnShellPage> {
                       icon: Icons.settings_outlined,
                       label: 'Настройки',
                       isActive: _currentIndex == 4,
-                      onTap: () => setState(() => _currentIndex = 4),
+                      onTap: () => _navigateTo(4),
                     ),
                   ),
                 ],
