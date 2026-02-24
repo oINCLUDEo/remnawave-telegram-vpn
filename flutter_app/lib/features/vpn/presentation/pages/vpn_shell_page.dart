@@ -119,14 +119,13 @@ class _VpnCenterButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      // Extra horizontal padding to make it feel wider / more spaced
+      // Extra horizontal padding makes the button feel wider / more spaced
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       child: GestureDetector(
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          padding:
-              const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
+          padding: const EdgeInsets.symmetric(horizontal: 20),
           decoration: BoxDecoration(
             gradient: isActive
                 ? const LinearGradient(
@@ -148,29 +147,18 @@ class _VpnCenterButton extends StatelessWidget {
                 ? null
                 : Border.all(color: AppColors.glassBorder, width: 1),
           ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.shield_rounded,
-                size: 20,
+          child: Center(
+            child: Text(
+              'VPN',
+              style: TextStyle(
                 color: isActive
                     ? const Color(0xFF1A1200)
-                    : AppColors.textSecondary,
+                    : Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.2,
               ),
-              const SizedBox(height: 3),
-              Text(
-                'VPN',
-                style: TextStyle(
-                  color: isActive
-                      ? const Color(0xFF1A1200)
-                      : AppColors.textSecondary,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.0,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -195,34 +183,20 @@ class _NavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Active state: brighter white icon + label, no background box.
+    final color = isActive ? Colors.white : AppColors.textSecondary;
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.all(5),
-            decoration: isActive
-                ? BoxDecoration(
-                    color: AppColors.accent.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(10),
-                  )
-                : null,
-            child: Icon(
-              icon,
-              size: 20,
-              color:
-                  isActive ? AppColors.accent : AppColors.textSecondary,
-            ),
-          ),
+          Icon(icon, size: 20, color: color),
           const SizedBox(height: 2),
           Text(
             label,
             style: TextStyle(
-              color:
-                  isActive ? AppColors.accent : AppColors.textSecondary,
+              color: color,
               fontSize: 10,
               fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
             ),
