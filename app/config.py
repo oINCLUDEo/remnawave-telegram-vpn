@@ -2450,9 +2450,28 @@ class Settings(BaseSettings):
         return bool(self.CABINET_ENABLED)
 
     def get_cabinet_jwt_secret(self) -> str:
+        """Get JWT secret for Cabinet authentication.
+        
+        Returns CABINET_JWT_SECRET if set, falls back to BOT_TOKEN,
+        or generates a random secret as last resort.
+        """
         if self.CABINET_JWT_SECRET:
             return self.CABINET_JWT_SECRET
-        return self.BOT_TOKEN
+        
+        if self.BOT_TOKEN:
+            return self.BOT_TOKEN
+        
+        # Generate a random secret as fallback
+        # WARNING: This should only be used for development!
+        # In production, always set CABINET_JWT_SECRET explicitly
+        import secrets
+        random_secret = secrets.token_urlsafe(32)
+        logger.warning(
+            '⚠️  CABINET_JWT_SECRET and BOT_TOKEN are not set! '
+            'Using auto-generated secret. This is NOT recommended for production! '
+            'Please set CABINET_JWT_SECRET in your .env file.'
+        )
+        return random_secret
 
     def get_cabinet_access_token_expire_minutes(self) -> int:
         return max(1, self.CABINET_ACCESS_TOKEN_EXPIRE_MINUTES)
