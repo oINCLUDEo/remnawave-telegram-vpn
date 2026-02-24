@@ -1,5 +1,16 @@
 # Решение проблемы "Please verify your email first"
 
+## ⚠️ ОБНОВЛЕНИЕ (новая версия)
+
+**С последним обновлением backend поведение изменилось:**
+
+- Когда `CABINET_EMAIL_VERIFICATION_ENABLED=false`: Registration endpoint **сразу возвращает токены** и автоматически верифицирует email. Пользователь залогинен немедленно! ✅
+- Когда `CABINET_EMAIL_VERIFICATION_ENABLED=true`: Работает как раньше - требуется верификация email.
+
+Если вы видите ошибку "TypeError: null is not a subtype of type 'String'" - убедитесь что у вас последняя версия Flutter app и backend.
+
+---
+
 ## Проблема
 
 После регистрации через `/cabinet/auth/email/register/standalone` вы не можете войти и получаете ошибку:
