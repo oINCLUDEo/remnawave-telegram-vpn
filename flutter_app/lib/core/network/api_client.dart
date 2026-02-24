@@ -49,9 +49,14 @@ class ApiClient {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    final token = await _storage.readAccessToken();
-    if (token != null) {
-      options.headers['Authorization'] = 'Bearer $token';
+    try {
+      final token = await _storage.readAccessToken();
+      if (token != null) {
+        options.headers['Authorization'] = 'Bearer $token';
+      }
+    } catch (_) {
+      // Storage read failed or timed out; proceed without the token.
+      // The server will return 401 which triggers the refresh flow.
     }
     handler.next(options);
   }
@@ -66,7 +71,13 @@ class ApiClient {
     }
 
     // Attempt silent token refresh.
-    final refreshToken = await _storage.readRefreshToken();
+    final String? refreshToken;
+    try {
+      refreshToken = await _storage.readRefreshToken();
+    } catch (_) {
+      handler.next(error);
+      return;
+    }
     if (refreshToken == null) {
       handler.next(error);
       return;
