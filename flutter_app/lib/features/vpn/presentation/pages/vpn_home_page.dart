@@ -286,18 +286,15 @@ class _VpnHomePageState extends State<VpnHomePage> {
 
   PreferredSizeWidget _buildAppBar() {
     return PreferredSize(
-      preferredSize: const Size.fromHeight(52),
+      // Extra top padding gives the header more breathing room from the status bar
+      preferredSize: const Size.fromHeight(56),
       child: Container(
-        decoration: const BoxDecoration(
-          color: AppColors.background,
-          border: Border(
-            bottom: BorderSide(color: AppColors.glassBorder, width: 1),
-          ),
-        ),
+        // Transparent — blends seamlessly with the body gradient, no visual separator
+        color: Colors.transparent,
         child: SafeArea(
           bottom: false,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
             child: Row(
               children: [
                 SvgPicture.asset(
