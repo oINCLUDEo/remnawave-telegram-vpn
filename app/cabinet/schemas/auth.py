@@ -100,7 +100,9 @@ class UserResponse(BaseModel):
     referral_code: str | None = None
     language: str = 'ru'
     created_at: datetime
+    updated_at: datetime  # Added for Flutter compatibility
     auth_type: str = 'telegram'  # "telegram" или "email"
+    status: str = 'active'  # Added for Flutter compatibility
 
     class Config:
         from_attributes = True

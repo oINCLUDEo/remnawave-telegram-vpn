@@ -37,13 +37,17 @@ class User {
       firstName: json['first_name'] as String?,
       lastName: json['last_name'] as String?,
       email: json['email'] as String?,
-      status: json['status'] as String,
-      language: json['language'] as String,
-      balanceKopeks: json['balance_kopeks'] as int,
-      balanceRubles: (json['balance_rubles'] as num).toDouble(),
+      status: json['status'] as String? ?? 'active',  // Fallback for missing field
+      language: json['language'] as String? ?? 'ru',  // Fallback for missing field
+      balanceKopeks: json['balance_kopeks'] as int? ?? 0,  // Fallback for missing field
+      balanceRubles: (json['balance_rubles'] as num?)?.toDouble() ?? 0.0,  // Fallback for missing field
       referralCode: json['referral_code'] as String?,
-      createdAt: DateTime.parse(json['created_at'] as String),
-      updatedAt: DateTime.parse(json['updated_at'] as String),
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'] as String)
+          : DateTime.now(),  // Fallback for missing field
+      updatedAt: json['updated_at'] != null
+          ? DateTime.parse(json['updated_at'] as String)
+          : DateTime.now(),  // Fallback for missing field
     );
   }
 
