@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_colors.dart';
+
 
 /// Reusable styled text field used on auth screens.
 class AuthTextField extends StatelessWidget {
