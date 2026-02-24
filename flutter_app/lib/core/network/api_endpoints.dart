@@ -3,14 +3,14 @@ class ApiEndpoints {
   ApiEndpoints._();
 
   // Auth
-  static const String registerEmail = '/cabinet/auth/register';
-  static const String loginEmail = '/cabinet/auth/login';
+  static const String registerEmail = '/cabinet/auth/email/register/standalone';
+  static const String loginEmail = '/cabinet/auth/email/login';
   static const String refreshToken = '/cabinet/auth/refresh';
   static const String logout = '/cabinet/auth/logout';
-  static const String verifyEmail = '/cabinet/auth/verify-email';
-  static const String forgotPassword = '/cabinet/auth/forgot-password';
-  static const String resetPassword = '/cabinet/auth/reset-password';
+  static const String verifyEmail = '/cabinet/auth/email/verify';
+  static const String forgotPassword = '/cabinet/auth/password/forgot';
+  static const String resetPassword = '/cabinet/auth/password/reset';
 
   // User profile
-  static const String me = '/cabinet/user/me';
+  static const String me = '/cabinet/auth/me';
 }
