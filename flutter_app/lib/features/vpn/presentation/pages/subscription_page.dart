@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../../../subscription/domain/entities/tariff_period.dart';
+import '../../../subscription/domain/entities/tariff_plan.dart';
+import '../../../subscription/presentation/cubit/tariff_cubit.dart';
+import '../../../subscription/presentation/cubit/tariff_state.dart';
 import '../widgets/tariff_card.dart';
 
-// ── Data models ──────────────────────────────────────────────────────────────
+// ── Static benefit rows (displayed regardless of API state) ──────────────────
 
 class _Benefit {
   const _Benefit({
@@ -43,33 +50,49 @@ const _benefits = [
   ),
 ];
 
-class _Tariff {
-  const _Tariff(this.duration, this.price, this.pricePerMonth, this.discount);
-  final String duration;
-  final String price;
-  final String pricePerMonth;
-  final int? discount;
+// ── Fallback static tariff data (shown when not logged in / API unavailable) ─
+
+class _StaticPeriod {
+  const _StaticPeriod(this.label, this.priceLabel, this.pricePerMonthLabel,
+      this.discountPercent);
+  final String label;
+  final String priceLabel;
+  final String pricePerMonthLabel;
+  final int? discountPercent;
 }
+
+const _staticPeriods = [
+  _StaticPeriod('1 месяц', '299 ₽', '299 ₽/мес', null),
+  _StaticPeriod('3 месяца', '749 ₽', '250 ₽/мес', 16),
+  _StaticPeriod('6 месяцев', '1 299 ₽', '217 ₽/мес', 28),
+  _StaticPeriod('12 месяцев', '1 999 ₽', '167 ₽/мес', 44),
+];
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-class SubscriptionPage extends StatefulWidget {
+/// Wraps [_SubscriptionView] with a [TariffCubit] from the DI container.
+class SubscriptionPage extends StatelessWidget {
   const SubscriptionPage({super.key});
 
   @override
-  State<SubscriptionPage> createState() => _SubscriptionPageState();
+  Widget build(BuildContext context) {
+    return BlocProvider<TariffCubit>(
+      create: (_) => sl<TariffCubit>()..loadTariffs(),
+      child: const _SubscriptionView(),
+    );
+  }
 }
 
-class _SubscriptionPageState extends State<SubscriptionPage> {
-  // 4 tariff options — 1 / 3 / 6 / 12 months
-  static const _tariffs = [
-    _Tariff('1 месяц', '299 ₽', '299 ₽/мес', null),
-    _Tariff('3 месяца', '749 ₽', '250 ₽/мес', 16),
-    _Tariff('6 месяцев', '1 299 ₽', '217 ₽/мес', 28),
-    _Tariff('12 месяцев', '1 999 ₽', '167 ₽/мес', 44),
-  ];
+class _SubscriptionView extends StatefulWidget {
+  const _SubscriptionView();
 
-  int _selectedTariff = 1; // default: 3 months
+  @override
+  State<_SubscriptionView> createState() => _SubscriptionViewState();
+}
+
+class _SubscriptionViewState extends State<_SubscriptionView> {
+  /// Fallback selected index used when API is unavailable.
+  int _staticSelectedIndex = 1;
 
   @override
   Widget build(BuildContext context) {
@@ -83,76 +106,67 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
           ),
         ),
         child: SafeArea(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // ── Page header ──
-              _buildHeader(),
-              const SizedBox(height: 12),
-
-              // ── Benefits area — bounded by Expanded, never bleeds down ──
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Stack(
-                    children: [
-                      // Scrollable list fills the Expanded bounds exactly
-                      _buildBenefitsList(),
-                      // Gradient overlay at the bottom of the Expanded area gives
-                      // the "scroll into shadow" effect without any container
-                      // extending beyond this boundary.
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        // Extend 16px below the Expanded boundary so the gradient
-                        // fully covers the container's bottom rounded corners.
-                        bottom: -16,
-                        child: IgnorePointer(
-                          child: Container(
-                            height: 60,
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                stops: const [0.0, 0.35, 1.0],
-                                colors: [
-                                  AppColors.background.withValues(alpha: 0),
-                                  AppColors.background.withValues(alpha: 0.75),
-                                  AppColors.background,
-                                ],
+          child: BlocBuilder<TariffCubit, TariffState>(
+            builder: (context, state) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeader(),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Stack(
+                        children: [
+                          _buildBenefitsList(),
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            bottom: -16,
+                            child: IgnorePointer(
+                              child: Container(
+                                height: 100,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    stops: const [0.0, 0.45, 1.0],
+                                    colors: [
+                                      AppColors.background
+                                          .withValues(alpha: 0),
+                                      AppColors.background
+                                          .withValues(alpha: 0.85),
+                                      AppColors.background,
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-
-              // ── Tariff box — sits directly on the gradient, no shared container ──
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
-                child: _buildTariffBox(),
-              ),
-
-              // ── Continue button — directly on gradient background ──
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
-                child: _buildContinueButton(),
-              ),
-
-              // ── Disclaimer — directly on gradient background ──
-              const Padding(
-                padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
-                child: Text(
-                  'Отмена в любой момент. Без скрытых условий.',
-                  style:
-                      TextStyle(color: AppColors.textSecondary, fontSize: 11),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                    child: _buildTariffBox(state),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                    child: _buildContinueButton(),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
+                    child: Text(
+                      'Отмена в любой момент. Без скрытых условий.',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 11),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -208,20 +222,16 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     );
   }
 
-  // Benefits list in the same style as the server list:
-  // rounded container, items with icon + title + subtitle, thin dividers.
-  // Positioned inside an Expanded — the container is strictly bounded.
   Widget _buildBenefitsList() {
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
       child: Container(
         color: const Color(0xFF141B2D),
         child: ListView.builder(
-          padding: const EdgeInsets.symmetric(vertical: 0),
+          padding: EdgeInsets.zero,
           itemCount: _benefits.length,
           itemBuilder: (context, i) {
             final b = _benefits[i];
-            // Alternating row backgrounds: even = darker base, odd = slightly lighter
             final rowColor = i.isEven
                 ? const Color(0xFF141B2D)
                 : const Color(0xFF1A2236);
@@ -239,27 +249,25 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                         color: AppColors.accent.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: Icon(b.icon, color: AppColors.accent, size: 18),
+                      child:
+                          Icon(b.icon, color: AppColors.accent, size: 18),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            b.title,
-                            style: const TextStyle(
-                              color: AppColors.textPrimary,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
+                          Text(b.title,
+                              style: const TextStyle(
+                                color: AppColors.textPrimary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              )),
                           const SizedBox(height: 2),
-                          Text(
-                            b.subtitle,
-                            style: const TextStyle(
-                                color: AppColors.textSecondary, fontSize: 12),
-                          ),
+                          Text(b.subtitle,
+                              style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 12)),
                         ],
                       ),
                     ),
@@ -273,31 +281,107 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     );
   }
 
-  // Tariff cards grouped in their own rounded box — no other container wraps them.
-  Widget _buildTariffBox() {
+  Widget _buildTariffBox(TariffState state) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF141B2D),
         borderRadius: BorderRadius.circular(16),
       ),
       padding: const EdgeInsets.all(8),
+      child: switch (state) {
+        TariffLoading() => const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppColors.accent,
+                ),
+              ),
+            ),
+          ),
+        TariffLoaded() => _buildApiPeriods(state),
+        TariffError(message: final msg) when msg == 'auth_required' =>
+          _buildStaticPeriods(),
+        TariffError() => _buildErrorWithRetry(),
+        _ => _buildStaticPeriods(),
+      },
+    );
+  }
+
+  /// Periods fetched from the API for the selected tariff plan.
+  Widget _buildApiPeriods(TariffLoaded state) {
+    final TariffPlan plan = state.selectedPlan;
+    final List<TariffPeriod> periods = plan.periods;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(periods.length, (i) {
+        final p = periods[i];
+        return Padding(
+          padding: EdgeInsets.only(bottom: i < periods.length - 1 ? 6 : 0),
+          child: TariffCard(
+            duration: p.label,
+            price: p.priceLabel,
+            pricePerMonth: p.pricePerMonthLabel,
+            discountPercent: p.discountPercent,
+            isSelected: state.selectedPeriodIndex == i,
+            onTap: () =>
+                context.read<TariffCubit>().selectPeriod(i),
+          ),
+        );
+      }),
+    );
+  }
+
+  /// Static periods shown when API is unavailable or user not authenticated.
+  Widget _buildStaticPeriods() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(_staticPeriods.length, (i) {
+        final t = _staticPeriods[i];
+        return Padding(
+          padding: EdgeInsets.only(
+              bottom: i < _staticPeriods.length - 1 ? 6 : 0),
+          child: TariffCard(
+            duration: t.label,
+            price: t.priceLabel,
+            pricePerMonth: t.pricePerMonthLabel,
+            discountPercent: t.discountPercent,
+            isSelected: _staticSelectedIndex == i,
+            onTap: () => setState(() => _staticSelectedIndex = i),
+          ),
+        );
+      }),
+    );
+  }
+
+  /// Shown when API returned a non-auth error.
+  Widget _buildErrorWithRetry() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        children: List.generate(_tariffs.length, (i) {
-          final t = _tariffs[i];
-          return Padding(
-            padding:
-                EdgeInsets.only(bottom: i < _tariffs.length - 1 ? 6 : 0),
-            child: TariffCard(
-              duration: t.duration,
-              price: t.price,
-              pricePerMonth: t.pricePerMonth,
-              discountPercent: t.discount,
-              isSelected: _selectedTariff == i,
-              onTap: () => setState(() => _selectedTariff = i),
+        children: [
+          const Text(
+            'Не удалось загрузить тарифы',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: () => context.read<TariffCubit>().loadTariffs(),
+            child: Text(
+              'Повторить',
+              style: TextStyle(
+                color: AppColors.accent.withValues(alpha: 0.9),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          );
-        }),
+          ),
+        ],
       ),
     );
   }

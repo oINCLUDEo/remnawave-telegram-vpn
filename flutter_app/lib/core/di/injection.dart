@@ -9,6 +9,10 @@ import '../../features/auth/domain/repositories/auth_repository.dart';
 import '../../features/auth/domain/usecases/login_usecase.dart';
 import '../../features/auth/domain/usecases/register_usecase.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
+import '../../features/subscription/data/datasources/tariff_remote_datasource.dart';
+import '../../features/subscription/data/repositories/tariff_repository_impl.dart';
+import '../../features/subscription/domain/repositories/tariff_repository.dart';
+import '../../features/subscription/presentation/cubit/tariff_cubit.dart';
 
 final sl = GetIt.instance;
 
@@ -56,5 +60,18 @@ void setupDependencies({String? baseUrl}) {
       registerUseCase: sl<RegisterUseCase>(),
       authRepository: sl<AuthRepository>(),
     ),
+  );
+
+  // Subscription / Tariffs — data
+  sl.registerLazySingleton<TariffRemoteDataSource>(
+    () => TariffRemoteDataSource(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<TariffRepository>(
+    () => TariffRepositoryImpl(dataSource: sl<TariffRemoteDataSource>()),
+  );
+
+  // Subscription / Tariffs — presentation
+  sl.registerFactory<TariffCubit>(
+    () => TariffCubit(repository: sl<TariffRepository>()),
   );
 }
