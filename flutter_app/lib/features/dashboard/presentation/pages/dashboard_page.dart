@@ -28,18 +28,35 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   int _currentIndex = 0;
 
+  late final AuthBloc _authBloc;
+  late final SubscriptionBloc _subscriptionBloc;
+
+  @override
+  void initState() {
+    super.initState();
+    _authBloc = sl<AuthBloc>();
+    _subscriptionBloc = sl<SubscriptionBloc>();
+    // Events are dispatched once here, guaranteeing a single load regardless
+    // of how many times build() is called (e.g. on tab-switch setState).
+    _authBloc.add(const LoadProfileRequested());
+    _subscriptionBloc.add(const SubscriptionLoadRequested());
+  }
+
+  @override
+  void dispose() {
+    _authBloc.close();
+    _subscriptionBloc.close();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return MultiBlocProvider(
       providers: [
-        BlocProvider<AuthBloc>(
-          create: (_) =>
-              sl<AuthBloc>()..add(const LoadProfileRequested()),
-        ),
-        BlocProvider<SubscriptionBloc>(
-          create: (_) =>
-              sl<SubscriptionBloc>()..add(const SubscriptionLoadRequested()),
-        ),
+        // .value() wires the already-created blocs into the widget tree
+        // without creating new ones or closing them on widget rebuild.
+        BlocProvider<AuthBloc>.value(value: _authBloc),
+        BlocProvider<SubscriptionBloc>.value(value: _subscriptionBloc),
       ],
       child: BlocListener<AuthBloc, AuthState>(
         listener: (context, state) {

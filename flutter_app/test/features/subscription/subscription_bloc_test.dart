@@ -132,6 +132,24 @@ void main() {
     );
 
     blocTest<SubscriptionBloc, SubscriptionState>(
+      'emits [Loading, Loaded] when renewal-options fails — graceful degradation',
+      setUp: () {
+        when(() => mockGetSubscription()).thenAnswer((_) async => null);
+        when(() => mockGetRenewalOptions())
+            .thenThrow(const ServerFailure('Service unavailable', statusCode: 503));
+      },
+      build: buildBloc,
+      act: (bloc) => bloc.add(const SubscriptionLoadRequested()),
+      expect: () => [
+        const SubscriptionLoading(),
+        const SubscriptionLoaded(
+          subscription: null,
+          renewalOptions: [],
+        ),
+      ],
+    );
+
+    blocTest<SubscriptionBloc, SubscriptionState>(
       'SubscriptionRefreshRequested re-fetches without emitting Loading',
       setUp: () {
         when(() => mockGetSubscription())

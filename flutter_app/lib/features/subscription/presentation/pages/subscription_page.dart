@@ -20,16 +20,6 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
   int? _selectedOptionIndex;
 
   @override
-  void initState() {
-    super.initState();
-    // Only trigger a load if we haven't loaded yet.
-    final state = context.read<SubscriptionBloc>().state;
-    if (state is SubscriptionInitial) {
-      context.read<SubscriptionBloc>().add(const SubscriptionLoadRequested());
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(

@@ -5,8 +5,8 @@ class AppConstants {
   // API
   static const String defaultBaseUrl = 'http://localhost:8081';
   static const String apiPrefix = '';
-  static const int connectTimeoutMs = 15000;
-  static const int receiveTimeoutMs = 30000;
+  static const int connectTimeoutMs = 5000;
+  static const int receiveTimeoutMs = 10000;
 
   // Secure storage keys
   static const String accessTokenKey = 'access_token';

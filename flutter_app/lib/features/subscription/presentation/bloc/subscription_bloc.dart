@@ -38,10 +38,14 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
 
   Future<void> _fetch(Emitter<SubscriptionState> emit) async {
     try {
-      final subFuture = _getSubscription();
-      final optsFuture = _getRenewalOptions();
-      final subscription = await subFuture;
-      final renewalOptions = await optsFuture;
+      final subscription = await _getSubscription();
+      List<RenewalOption> renewalOptions;
+      try {
+        renewalOptions = await _getRenewalOptions();
+      } catch (_) {
+        // Renewal options are non-critical; don't block the subscription display.
+        renewalOptions = const [];
+      }
       emit(SubscriptionLoaded(
         subscription: subscription,
         renewalOptions: renewalOptions,
