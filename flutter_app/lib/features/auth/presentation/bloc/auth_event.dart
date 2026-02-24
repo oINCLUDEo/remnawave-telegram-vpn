@@ -35,3 +35,8 @@ class RegisterSubmitted extends AuthEvent {
 class LogoutRequested extends AuthEvent {
   const LogoutRequested();
 }
+
+/// Triggered to load the authenticated user's profile.
+class LoadProfileRequested extends AuthEvent {
+  const LoadProfileRequested();
+}

@@ -1,6 +1,7 @@
 import 'package:equatable/equatable.dart';
 
 import '../../domain/entities/auth_tokens.dart';
+import '../../domain/entities/user.dart';
 
 abstract class AuthState extends Equatable {
   const AuthState();
@@ -56,4 +57,13 @@ class AuthError extends AuthState {
 
   @override
   List<Object?> get props => [message];
+}
+
+/// Profile loaded successfully.
+class AuthProfileLoaded extends AuthState {
+  const AuthProfileLoaded(this.user);
+  final User user;
+
+  @override
+  List<Object?> get props => [user];
 }

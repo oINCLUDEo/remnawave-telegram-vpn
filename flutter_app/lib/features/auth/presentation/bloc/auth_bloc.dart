@@ -20,6 +20,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<LoginSubmitted>(_onLoginSubmitted);
     on<RegisterSubmitted>(_onRegisterSubmitted);
     on<LogoutRequested>(_onLogoutRequested);
+    on<LoadProfileRequested>(_onLoadProfile);
   }
 
   final LoginUseCase _login;
@@ -70,5 +71,19 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   ) async {
     await _authRepository.logout();
     emit(const AuthLoggedOut());
+  }
+
+  Future<void> _onLoadProfile(
+    LoadProfileRequested event,
+    Emitter<AuthState> emit,
+  ) async {
+    try {
+      final user = await _authRepository.getProfile();
+      emit(AuthProfileLoaded(user));
+    } on Failure catch (f) {
+      emit(AuthError(f.message));
+    } catch (_) {
+      emit(const AuthError('Не удалось загрузить профиль'));
+    }
   }
 }

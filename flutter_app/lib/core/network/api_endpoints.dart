@@ -13,4 +13,9 @@ class ApiEndpoints {
 
   // User profile
   static const String me = '/cabinet/auth/me';
+
+  // Subscription
+  static const String subscription = '/cabinet/subscription';
+  static const String subscriptionRenewalOptions =
+      '/cabinet/subscription/renewal-options';
 }

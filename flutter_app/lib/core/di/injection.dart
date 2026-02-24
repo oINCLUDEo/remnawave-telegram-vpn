@@ -9,6 +9,12 @@ import '../../features/auth/domain/repositories/auth_repository.dart';
 import '../../features/auth/domain/usecases/login_usecase.dart';
 import '../../features/auth/domain/usecases/register_usecase.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
+import '../../features/subscription/data/datasources/subscription_remote_datasource.dart';
+import '../../features/subscription/data/repositories/subscription_repository_impl.dart';
+import '../../features/subscription/domain/repositories/subscription_repository.dart';
+import '../../features/subscription/domain/usecases/get_renewal_options_usecase.dart';
+import '../../features/subscription/domain/usecases/get_subscription_usecase.dart';
+import '../../features/subscription/presentation/bloc/subscription_bloc.dart';
 
 final sl = GetIt.instance;
 
@@ -55,6 +61,32 @@ void setupDependencies({String? baseUrl}) {
       loginUseCase: sl<LoginUseCase>(),
       registerUseCase: sl<RegisterUseCase>(),
       authRepository: sl<AuthRepository>(),
+    ),
+  );
+
+  // Subscription — data
+  sl.registerLazySingleton<SubscriptionRemoteDataSource>(
+    () => SubscriptionRemoteDataSource(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<SubscriptionRepository>(
+    () => SubscriptionRepositoryImpl(
+      remoteDataSource: sl<SubscriptionRemoteDataSource>(),
+    ),
+  );
+
+  // Subscription — domain
+  sl.registerLazySingleton<GetSubscriptionUseCase>(
+    () => GetSubscriptionUseCase(sl<SubscriptionRepository>()),
+  );
+  sl.registerLazySingleton<GetRenewalOptionsUseCase>(
+    () => GetRenewalOptionsUseCase(sl<SubscriptionRepository>()),
+  );
+
+  // Subscription — presentation
+  sl.registerFactory<SubscriptionBloc>(
+    () => SubscriptionBloc(
+      getSubscription: sl<GetSubscriptionUseCase>(),
+      getRenewalOptions: sl<GetRenewalOptionsUseCase>(),
     ),
   );
 }
