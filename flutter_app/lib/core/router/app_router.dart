@@ -6,20 +6,24 @@ import '../di/injection.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
 import '../../features/auth/presentation/pages/login_page.dart';
 import '../../features/auth/presentation/pages/register_page.dart';
+import '../../features/vpn/presentation/pages/vpn_shell_page.dart';
 
 /// Route names.
 abstract class AppRoutes {
   static const login = '/login';
   static const register = '/register';
   static const home = '/home';
+  static const subscription = '/subscription';
+  static const serverSelection = '/servers';
   static const emailSent = '/email-sent';
 }
 
 /// Application router built with go_router.
 GoRouter buildRouter() {
   return GoRouter(
-    initialLocation: AppRoutes.login,
+    initialLocation: AppRoutes.home,
     routes: [
+      // ── Hidden auth routes (kept for future Telegram/Google login) ──
       GoRoute(
         path: AppRoutes.login,
         builder: (context, state) => BlocProvider(
@@ -53,37 +57,17 @@ GoRouter buildRouter() {
           return _EmailSentPage(email: email);
         },
       ),
+      // ── Main app shell ──
       GoRoute(
         path: AppRoutes.home,
-        builder: (context, state) => const _HomePlaceholderPage(),
+        builder: (context, state) => const VpnShellPage(),
       ),
     ],
   );
 }
 
-/// Placeholder screen shown after a successful login.
-/// Replace with the real Home / Dashboard screen in future sprints.
-class _HomePlaceholderPage extends StatelessWidget {
-  const _HomePlaceholderPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Ulya VPN')),
-      body: const Center(
-        child: Text(
-          '🛡️ Добро пожаловать!\nГлавный экран в разработке.',
-          textAlign: TextAlign.center,
-        ),
-      ),
-    );
-  }
-}
-
-/// Shown after registration when email verification is required.
 class _EmailSentPage extends StatelessWidget {
   const _EmailSentPage({required this.email});
-
   final String email;
 
   @override
@@ -94,21 +78,12 @@ class _EmailSentPage extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.mark_email_read_rounded,
-              size: 80,
-              color: Color(0xFF6C63FF),
-            ),
+            const Icon(Icons.mark_email_read_rounded, size: 80, color: Color(0xFF6C63FF)),
             const SizedBox(height: 24),
-            Text(
-              'Подтвердите email',
-              style: Theme.of(context).textTheme.headlineMedium,
-              textAlign: TextAlign.center,
-            ),
+            Text('Подтвердите email', style: Theme.of(context).textTheme.headlineMedium, textAlign: TextAlign.center),
             const SizedBox(height: 12),
             Text(
-              'Мы отправили письмо на\n$email\n'
-              'Перейдите по ссылке в письме, чтобы активировать аккаунт.',
+              'Мы отправили письмо на\n$email\nПерейдите по ссылке в письме, чтобы активировать аккаунт.',
               style: Theme.of(context).textTheme.bodyMedium,
               textAlign: TextAlign.center,
             ),
