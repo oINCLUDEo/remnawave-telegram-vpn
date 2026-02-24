@@ -61,6 +61,9 @@ services:
 
       REDIS_URL: 'redis://redis:6379/0'
 
+      WEB_API_ENABLED: 'true'
+      WEB_API_DOCS_ENABLED: 'true'
+
       TZ: 'Europe/Moscow'
       LOCALES_PATH: '${LOCALES_PATH:-/app/locales}'
     volumes:
