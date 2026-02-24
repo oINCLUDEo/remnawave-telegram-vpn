@@ -109,15 +109,15 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                         bottom: -16,
                         child: IgnorePointer(
                           child: Container(
-                            height: 100,
+                            height: 60,
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
                                 begin: Alignment.topCenter,
                                 end: Alignment.bottomCenter,
-                                stops: const [0.0, 0.45, 1.0],
+                                stops: const [0.0, 0.35, 1.0],
                                 colors: [
                                   AppColors.background.withValues(alpha: 0),
-                                  AppColors.background.withValues(alpha: 0.85),
+                                  AppColors.background.withValues(alpha: 0.75),
                                   AppColors.background,
                                 ],
                               ),
