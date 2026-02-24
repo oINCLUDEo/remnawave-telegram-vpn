@@ -25,6 +25,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: _buildAppBar(),
       body: Container(
         decoration: const BoxDecoration(

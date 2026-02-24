@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../widgets/premium_badge.dart';
@@ -181,41 +180,36 @@ class _ServerSelectionPageState extends State<ServerSelectionPage> {
   PreferredSizeWidget _buildAppBar(BuildContext context) {
     return PreferredSize(
       preferredSize: const Size.fromHeight(56),
-      child: ClipRect(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
-            color: AppColors.background.withValues(alpha: 0.6),
-            child: SafeArea(
-              bottom: false,
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                child: Row(
-                  children: [
-                    if (Navigator.canPop(context))
-                      IconButton(
-                        icon: const Icon(Icons.arrow_back_ios_new_rounded,
-                            color: AppColors.textPrimary, size: 20),
-                        onPressed: () => Navigator.maybePop(context),
-                      )
-                    else
-                      const SizedBox(width: 48),
-                    const Expanded(
-                      child: Text(
-                        'Выбор сервера',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+      child: Container(
+        color: Colors.transparent,
+        child: SafeArea(
+          bottom: false,
+          child: Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            child: Row(
+              children: [
+                if (Navigator.canPop(context))
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                        color: AppColors.textPrimary, size: 20),
+                    onPressed: () => Navigator.maybePop(context),
+                  )
+                else
+                  const SizedBox(width: 48),
+                const Expanded(
+                  child: Text(
+                    'Выбор сервера',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(width: 48),
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 48),
+              ],
             ),
           ),
         ),
