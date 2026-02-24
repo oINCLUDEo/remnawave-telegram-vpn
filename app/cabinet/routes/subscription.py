@@ -40,7 +40,7 @@ from app.utils.cache import RateLimitCache, cache, cache_key
 from app.utils.pricing_utils import format_period_description
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 
-from ..dependencies import get_cabinet_db, get_current_cabinet_user
+from ..dependencies import get_cabinet_db, get_current_cabinet_user, get_optional_cabinet_user
 from ..schemas.subscription import (
     AutopayUpdateRequest,
     DevicePurchaseRequest,
@@ -1509,6 +1509,58 @@ async def _build_tariff_response(
         response['custom_days_discount_percent'] = custom_days_discount_percent
 
     return response
+
+
+@router.get('/public-tariffs')
+async def get_public_tariffs(
+    user: User | None = Depends(get_optional_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> dict[str, Any]:
+    """
+    Get available tariff plans without requiring authentication.
+
+    When called without a valid token the endpoint returns all active tariffs
+    that have no promo-group restriction, with base prices (no discounts).
+    When called with a valid token the behaviour is identical to
+    /purchase-options but limited to tariffs mode only.
+    """
+    try:
+        promo_group_id = None
+        current_tariff_id = None
+        language = 'ru'
+        subscription = None
+
+        if user is not None:
+            promo_group = user.get_primary_promo_group() if hasattr(user, 'get_primary_promo_group') else None
+            if promo_group is None:
+                promo_group = getattr(user, 'promo_group', None)
+            promo_group_id = promo_group.id if promo_group else None
+            language = getattr(user, 'language', 'ru') or 'ru'
+            subscription = await get_subscription_by_user_id(db, user.id)
+            current_tariff_id = subscription.tariff_id if subscription else None
+
+        tariffs = await get_tariffs_for_user(db, promo_group_id)
+
+        tariff_responses = []
+        for tariff in tariffs:
+            tariff_data = await _build_tariff_response(
+                db, tariff, current_tariff_id, language, user, subscription
+            )
+            tariff_responses.append(tariff_data)
+
+        return {
+            'sales_mode': 'tariffs',
+            'tariffs': tariff_responses,
+            'current_tariff_id': current_tariff_id,
+        }
+
+    except Exception as e:
+        logger.error('Failed to build public tariffs', error=e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to load tariffs',
+        )
+
 
 
 @router.get('/purchase-options')
