@@ -49,6 +49,8 @@
 !locales/**
 !.github/
 !.github/**
+!flutter_app/
+!flutter_app/**
 
 # ========== BLACKLIST: игнорируемые внутри папок ==========
 

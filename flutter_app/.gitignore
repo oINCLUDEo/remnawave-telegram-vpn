@@ -1,0 +1,20 @@
+# Flutter / Dart build outputs
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.iml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Android
+android/
+ios/
+linux/
+macos/
+web/
+windows/
