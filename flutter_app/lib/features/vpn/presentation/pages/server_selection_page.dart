@@ -1,8 +1,10 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
-import '../widgets/glass_card.dart';
-import '../widgets/server_tile.dart';
+import '../widgets/premium_badge.dart';
+import '../widgets/signal_indicator.dart';
+
+// ── Data model ──────────────────────────────────────────────────────────────
 
 class _Server {
   const _Server({
@@ -11,28 +13,60 @@ class _Server {
     required this.flag,
     this.isPremium = false,
     required this.signal,
-    this.category = 'all',
   });
   final String name;
   final String country;
   final String flag;
   final bool isPremium;
   final int signal;
-  final String category;
 }
 
-const _servers = [
-  _Server(name: 'Frankfurt #1', country: 'Германия', flag: '🇩🇪', signal: 5),
-  _Server(name: 'Amsterdam #1', country: 'Нидерланды', flag: '🇳🇱', signal: 4),
-  _Server(name: 'Paris #1', country: 'Франция', flag: '🇫🇷', signal: 4),
-  _Server(name: 'London #1', country: 'Великобритания', flag: '🇬🇧', signal: 3, isPremium: true, category: 'premium'),
-  _Server(name: 'New York #1', country: 'США', flag: '🇺🇸', signal: 3, isPremium: true, category: 'premium'),
-  _Server(name: 'Tokyo #1', country: 'Япония', flag: '🇯🇵', signal: 2, isPremium: true, category: 'premium'),
-  _Server(name: 'YouTube EU', country: 'Оптимизирован для YouTube', flag: '▶️', signal: 5, category: 'youtube'),
-  _Server(name: 'YouTube US', country: 'Оптимизирован для YouTube', flag: '▶️', signal: 4, isPremium: true, category: 'youtube'),
-  _Server(name: 'Singapore #1', country: 'Сингапур', flag: '🇸🇬', signal: 3, isPremium: true, category: 'ultra'),
-  _Server(name: 'Dubai #1', country: 'ОАЭ', flag: '🇦🇪', signal: 4, isPremium: true, category: 'ultra'),
+class _Category {
+  const _Category({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.servers,
+  });
+  final String id;
+  final String title;
+  final String subtitle;
+  final List<_Server> servers;
+}
+
+const _categories = [
+  _Category(
+    id: 'whitelist',
+    title: 'Белые списки',
+    subtitle: 'Для доступа везде',
+    servers: [
+      _Server(name: 'Frankfurt #1', country: 'Германия', flag: '🇩🇪', signal: 5),
+      _Server(name: 'Amsterdam #1', country: 'Нидерланды', flag: '🇳🇱', signal: 4),
+      _Server(name: 'Paris #1', country: 'Франция', flag: '🇫🇷', signal: 4),
+    ],
+  ),
+  _Category(
+    id: 'premium',
+    title: 'Premium',
+    subtitle: 'Быстрые серверы',
+    servers: [
+      _Server(name: 'London #1', country: 'Великобритания', flag: '🇬🇧', signal: 3, isPremium: true),
+      _Server(name: 'New York #1', country: 'США', flag: '🇺🇸', signal: 3, isPremium: true),
+      _Server(name: 'Tokyo #1', country: 'Япония', flag: '🇯🇵', signal: 2, isPremium: true),
+    ],
+  ),
+  _Category(
+    id: 'youtube',
+    title: 'YouTube',
+    subtitle: 'Оптимизировано для YouTube',
+    servers: [
+      _Server(name: 'YouTube EU', country: 'Европа', flag: '▶️', signal: 5),
+      _Server(name: 'YouTube US', country: 'США', flag: '▶️', signal: 4, isPremium: true),
+    ],
+  ),
 ];
+
+// ── Page ────────────────────────────────────────────────────────────────────
 
 class ServerSelectionPage extends StatefulWidget {
   const ServerSelectionPage({super.key});
@@ -41,17 +75,20 @@ class ServerSelectionPage extends StatefulWidget {
   State<ServerSelectionPage> createState() => _ServerSelectionPageState();
 }
 
-class _ServerSelectionPageState extends State<ServerSelectionPage>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabController;
+class _ServerSelectionPageState extends State<ServerSelectionPage> {
   final _searchController = TextEditingController();
   String _selectedServer = 'Frankfurt #1';
   String _query = '';
+  // Track which categories are expanded (all expanded by default)
+  final Map<String, bool> _expanded = {
+    'whitelist': true,
+    'premium': true,
+    'youtube': true,
+  };
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
     _searchController.addListener(() {
       setState(() => _query = _searchController.text.toLowerCase());
     });
@@ -59,17 +96,13 @@ class _ServerSelectionPageState extends State<ServerSelectionPage>
 
   @override
   void dispose() {
-    _tabController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  List<_Server> _filtered(String category) {
-    final base = category == 'all'
-        ? _servers
-        : _servers.where((s) => s.category == category).toList();
-    if (_query.isEmpty) return base;
-    return base
+  List<_Server> _filteredServers(List<_Server> servers) {
+    if (_query.isEmpty) return servers;
+    return servers
         .where((s) =>
             s.name.toLowerCase().contains(_query) ||
             s.country.toLowerCase().contains(_query))
@@ -93,12 +126,15 @@ class _ServerSelectionPageState extends State<ServerSelectionPage>
           child: Column(
             children: [
               const SizedBox(height: 12),
-              // Search bar
+              // ── Search bar (plain container, no glass borders) ──
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: GlassCard(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C2340),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                   child: Row(
                     children: [
                       const Icon(Icons.search_rounded,
@@ -115,7 +151,8 @@ class _ServerSelectionPageState extends State<ServerSelectionPage>
                                 color: AppColors.textHint, fontSize: 15),
                             border: InputBorder.none,
                             filled: false,
-                            contentPadding: EdgeInsets.zero,
+                            contentPadding:
+                                EdgeInsets.symmetric(vertical: 10),
                             isDense: true,
                           ),
                         ),
@@ -124,17 +161,14 @@ class _ServerSelectionPageState extends State<ServerSelectionPage>
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
-              // Tab bar
-              _buildTabBar(),
-              const SizedBox(height: 8),
-              // Server list
+              const SizedBox(height: 16),
+              // ── Category list ──
               Expanded(
-                child: TabBarView(
-                  controller: _tabController,
-                  children: ['all', 'premium', 'ultra', 'youtube']
-                      .map((cat) => _buildServerList(cat))
-                      .toList(),
+                child: ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                  itemCount: _categories.length,
+                  itemBuilder: (context, index) =>
+                      _buildCategory(_categories[index]),
                 ),
               ),
             ],
@@ -155,14 +189,18 @@ class _ServerSelectionPageState extends State<ServerSelectionPage>
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                 child: Row(
                   children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back_ios_new_rounded,
-                          color: AppColors.textPrimary, size: 20),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
+                    if (Navigator.canPop(context))
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                            color: AppColors.textPrimary, size: 20),
+                        onPressed: () => Navigator.maybePop(context),
+                      )
+                    else
+                      const SizedBox(width: 48),
                     const Expanded(
                       child: Text(
                         'Выбор сервера',
@@ -185,63 +223,192 @@ class _ServerSelectionPageState extends State<ServerSelectionPage>
     );
   }
 
-  Widget _buildTabBar() {
-    final tabs = ['Все', 'Premium', 'Ultra', 'YouTube'];
+  Widget _buildCategory(_Category cat) {
+    final servers = _filteredServers(cat.servers);
+    final isExpanded = _expanded[cat.id] ?? true;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: GlassCard(
-        padding: const EdgeInsets.all(4),
-        borderRadius: BorderRadius.circular(14),
-        child: TabBar(
-          controller: _tabController,
-          indicator: BoxDecoration(
-            gradient: const LinearGradient(
-                colors: [AppColors.accent, AppColors.accentDark]),
-            borderRadius: BorderRadius.circular(10),
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Category header ──
+          GestureDetector(
+            onTap: () => setState(
+                () => _expanded[cat.id] = !(_expanded[cat.id] ?? true)),
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  // Title + subtitle
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          cat.title,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          cat.subtitle,
+                          style: const TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Server count
+                  Text(
+                    '${servers.length}',
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // Arrow icon
+                  AnimatedRotation(
+                    turns: isExpanded ? 0.25 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    child: const Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppColors.textSecondary,
+                      size: 22,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
-          indicatorSize: TabBarIndicatorSize.tab,
-          labelColor: const Color(0xFF1A1200),
-          unselectedLabelColor: AppColors.textSecondary,
-          labelStyle: const TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w600),
-          unselectedLabelStyle: const TextStyle(fontSize: 12),
-          dividerColor: Colors.transparent,
-          tabs: tabs.map((t) => Tab(text: t, height: 36)).toList(),
-        ),
+          // ── Servers container ──
+          AnimatedCrossFade(
+            firstChild: servers.isEmpty
+                ? const SizedBox.shrink()
+                : _buildServersBox(servers),
+            secondChild: const SizedBox.shrink(),
+            crossFadeState: isExpanded
+                ? CrossFadeState.showFirst
+                : CrossFadeState.showSecond,
+            duration: const Duration(milliseconds: 220),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildServerList(String category) {
-    final servers = _filtered(category);
-    if (servers.isEmpty) {
-      return const Center(
-        child: Text('Серверы не найдены',
-            style: TextStyle(color: AppColors.textSecondary)),
-      );
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-      itemCount: servers.length,
-      itemBuilder: (context, i) {
-        final s = servers[i];
-        return ServerTile(
-          name: s.name,
-          countryCode: s.country,
-          flagEmoji: s.flag,
-          isPremium: s.isPremium,
-          signalLevel: s.signal,
-          isSelected: _selectedServer == s.name,
-          onTap: () {
-            setState(() => _selectedServer = s.name);
-            Future.delayed(const Duration(milliseconds: 200), () {
-              if (context.mounted) {
-                Navigator.of(context).pop({'name': '${s.flag} ${s.name}', 'flag': s.flag});
-              }
-            });
-          },
-        );
+  Widget _buildServersBox(List<_Server> servers) {
+    return Container(
+      decoration: BoxDecoration(
+        // Slightly different from the base background
+        color: const Color(0xFF141B2D),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: List.generate(servers.length, (i) {
+          final s = servers[i];
+          final isLast = i == servers.length - 1;
+          return _buildServerRow(s, showDivider: !isLast);
+        }),
+      ),
+    );
+  }
+
+  Widget _buildServerRow(_Server s, {required bool showDivider}) {
+    final isSelected = _selectedServer == s.name;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _selectedServer = s.name);
+        Future.delayed(const Duration(milliseconds: 180), () {
+          if (mounted) {
+            Navigator.of(context)
+                .pop({'name': '${s.flag} ${s.name}', 'flag': s.flag});
+          }
+        });
       },
+      behavior: HitTestBehavior.opaque,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+            child: Row(
+              children: [
+                // Flag box
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E2940),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Center(
+                    child: Text(s.flag,
+                        style: const TextStyle(fontSize: 20)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // Name + country
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            s.name,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          if (s.isPremium) ...[
+                            const SizedBox(width: 6),
+                            const PremiumBadge(),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        s.country,
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Signal + checkmark
+                SignalIndicator(level: s.signal),
+                if (isSelected) ...[
+                  const SizedBox(width: 8),
+                  const Icon(Icons.check_circle_rounded,
+                      color: AppColors.accent, size: 18),
+                ],
+              ],
+            ),
+          ),
+          // Thin divider (not on last item)
+          if (showDivider)
+            const Divider(
+              height: 1,
+              thickness: 0.5,
+              color: Color(0xFF1E2940),
+              indent: 16,
+              endIndent: 16,
+            ),
+        ],
+      ),
     );
   }
 }

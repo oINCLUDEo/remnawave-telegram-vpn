@@ -13,21 +13,26 @@ class VpnShellPage extends StatefulWidget {
 }
 
 class _VpnShellPageState extends State<VpnShellPage> {
-  int _currentIndex = 0;
+  // Index mapping: 0=Серверы, 1=Premium, 2=VPN(home), 3=Профиль, 4=Настройки
+  // The center item (index 2) is the VPN home page.
+  // Pages are keyed by their actual page index.
+  int _currentIndex = 2; // start on VPN home
 
-  static const _pages = [
-    VpnHomePage(),
-    ServerSelectionPage(),
-    SubscriptionPage(),
-  ];
+  // Map from nav index to page widget
+  static final _pages = {
+    0: const ServerSelectionPage(),
+    1: const SubscriptionPage(),
+    2: const VpnHomePage(),
+    // 3 and 4 are placeholders (no separate page yet)
+  };
+
+  Widget get _currentPage =>
+      _pages[_currentIndex] ?? const _PlaceholderPage();
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _pages,
-      ),
+      body: _currentPage,
       bottomNavigationBar: _buildBottomNav(),
     );
   }
@@ -38,7 +43,7 @@ class _VpnShellPageState extends State<VpnShellPage> {
         filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
         child: Container(
           decoration: BoxDecoration(
-            color: AppColors.backgroundDark.withValues(alpha: 0.8),
+            color: AppColors.backgroundDark.withValues(alpha: 0.85),
             border: const Border(
               top: BorderSide(color: AppColors.glassBorder, width: 1),
             ),
@@ -46,33 +51,49 @@ class _VpnShellPageState extends State<VpnShellPage> {
           child: SafeArea(
             top: false,
             child: SizedBox(
-              height: 60,
+              height: 64,
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _NavItem(
-                    icon: Icons.shield_rounded,
-                    label: 'VPN',
-                    isActive: _currentIndex == 0,
-                    onTap: () => setState(() => _currentIndex = 0),
+                  // Left: Серверы
+                  Expanded(
+                    child: _NavItem(
+                      icon: Icons.language_rounded,
+                      label: 'Серверы',
+                      isActive: _currentIndex == 0,
+                      onTap: () => setState(() => _currentIndex = 0),
+                    ),
                   ),
-                  _NavItem(
-                    icon: Icons.language_rounded,
-                    label: 'Серверы',
-                    isActive: _currentIndex == 1,
-                    onTap: () => setState(() => _currentIndex = 1),
+                  // Left: Premium
+                  Expanded(
+                    child: _NavItem(
+                      icon: Icons.workspace_premium_rounded,
+                      label: 'Premium',
+                      isActive: _currentIndex == 1,
+                      onTap: () => setState(() => _currentIndex = 1),
+                    ),
                   ),
-                  _NavItem(
-                    icon: Icons.workspace_premium_rounded,
-                    label: 'Premium',
+                  // Center: VPN (wide, prominent)
+                  _VpnCenterButton(
                     isActive: _currentIndex == 2,
                     onTap: () => setState(() => _currentIndex = 2),
                   ),
-                  _NavItem(
-                    icon: Icons.settings_rounded,
-                    label: 'Настройки',
-                    isActive: _currentIndex == 3,
-                    onTap: () {},
+                  // Right: Профиль
+                  Expanded(
+                    child: _NavItem(
+                      icon: Icons.person_outline_rounded,
+                      label: 'Профиль',
+                      isActive: _currentIndex == 3,
+                      onTap: () => setState(() => _currentIndex = 3),
+                    ),
+                  ),
+                  // Right: Настройки
+                  Expanded(
+                    child: _NavItem(
+                      icon: Icons.settings_outlined,
+                      label: 'Настройки',
+                      isActive: _currentIndex == 4,
+                      onTap: () => setState(() => _currentIndex = 4),
+                    ),
                   ),
                 ],
               ),
@@ -83,6 +104,81 @@ class _VpnShellPageState extends State<VpnShellPage> {
     );
   }
 }
+
+// ── Centre VPN button ────────────────────────────────────────────────────────
+
+class _VpnCenterButton extends StatelessWidget {
+  const _VpnCenterButton({
+    required this.isActive,
+    required this.onTap,
+  });
+
+  final bool isActive;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      // Extra horizontal padding to make it feel wider / more spaced
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
+          decoration: BoxDecoration(
+            gradient: isActive
+                ? const LinearGradient(
+                    colors: [AppColors.accent, AppColors.accentDark],
+                  )
+                : null,
+            color: isActive ? null : const Color(0xFF1C2340),
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: isActive
+                ? [
+                    BoxShadow(
+                      color: AppColors.accent.withValues(alpha: 0.35),
+                      blurRadius: 14,
+                      spreadRadius: 0,
+                    ),
+                  ]
+                : null,
+            border: isActive
+                ? null
+                : Border.all(color: AppColors.glassBorder, width: 1),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.shield_rounded,
+                size: 20,
+                color: isActive
+                    ? const Color(0xFF1A1200)
+                    : AppColors.textSecondary,
+              ),
+              const SizedBox(height: 3),
+              Text(
+                'VPN',
+                style: TextStyle(
+                  color: isActive
+                      ? const Color(0xFF1A1200)
+                      : AppColors.textSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.0,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Regular nav item ─────────────────────────────────────────────────────────
 
 class _NavItem extends StatelessWidget {
   const _NavItem({
@@ -102,37 +198,60 @@ class _NavItem extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
-      child: SizedBox(
-        width: 72,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              padding: const EdgeInsets.all(6),
-              decoration: isActive
-                  ? BoxDecoration(
-                      color: AppColors.accent.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(10),
-                    )
-                  : null,
-              child: Icon(
-                icon,
-                size: 22,
-                color: isActive ? AppColors.accent : AppColors.textSecondary,
-              ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.all(5),
+            decoration: isActive
+                ? BoxDecoration(
+                    color: AppColors.accent.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  )
+                : null,
+            child: Icon(
+              icon,
+              size: 20,
+              color:
+                  isActive ? AppColors.accent : AppColors.textSecondary,
             ),
-            const SizedBox(height: 2),
-            Text(
-              label,
-              style: TextStyle(
-                color: isActive ? AppColors.accent : AppColors.textSecondary,
-                fontSize: 10,
-                fontWeight:
-                    isActive ? FontWeight.w600 : FontWeight.w400,
-              ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: TextStyle(
+              color:
+                  isActive ? AppColors.accent : AppColors.textSecondary,
+              fontSize: 10,
+              fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Placeholder for not-yet-implemented pages ────────────────────────────────
+
+class _PlaceholderPage extends StatelessWidget {
+  const _PlaceholderPage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppColors.background, AppColors.backgroundDark],
+        ),
+      ),
+      child: const Center(
+        child: Text(
+          'Скоро',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 18),
         ),
       ),
     );

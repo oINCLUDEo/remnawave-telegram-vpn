@@ -11,47 +11,15 @@ class SubscriptionPage extends StatefulWidget {
   State<SubscriptionPage> createState() => _SubscriptionPageState();
 }
 
-class _SubscriptionPageState extends State<SubscriptionPage>
-    with SingleTickerProviderStateMixin {
-  int _planIndex = 0;
-  int _selectedTariff = 2;
-  late final TabController _tabController;
-
-  final _premiumTariffs = const [
+class _SubscriptionPageState extends State<SubscriptionPage> {
+  // 3 tariff cards (odd count) — 1 month / 3 months / 12 months
+  static const _tariffs = [
     _Tariff('1 месяц', '299 ₽', '299 ₽/мес', null),
     _Tariff('3 месяца', '749 ₽', '250 ₽/мес', 16),
-    _Tariff('6 месяцев', '1 299 ₽', '217 ₽/мес', 28),
     _Tariff('12 месяцев', '1 999 ₽', '167 ₽/мес', 44),
   ];
 
-  final _ultraTariffs = const [
-    _Tariff('1 месяц', '499 ₽', '499 ₽/мес', null),
-    _Tariff('3 месяца', '1 299 ₽', '433 ₽/мес', 13),
-    _Tariff('6 месяцев', '2 299 ₽', '383 ₽/мес', 23),
-    _Tariff('12 месяцев', '3 999 ₽', '333 ₽/мес', 33),
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) return;
-      setState(() {
-        _planIndex = _tabController.index;
-        _selectedTariff = 2;
-      });
-    });
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
-  List<_Tariff> get _currentTariffs =>
-      _planIndex == 0 ? _premiumTariffs : _ultraTariffs;
+  int _selectedTariff = 1; // default: 3 months
 
   @override
   Widget build(BuildContext context) {
@@ -72,13 +40,13 @@ class _SubscriptionPageState extends State<SubscriptionPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const SizedBox(height: 16),
-                _buildSegmentedControl(),
-                const SizedBox(height: 28),
+                const SizedBox(height: 20),
+                _buildHeader(),
+                const SizedBox(height: 24),
                 _buildBenefits(),
                 const SizedBox(height: 24),
-                ...List.generate(_currentTariffs.length, (i) {
-                  final t = _currentTariffs[i];
+                ...List.generate(_tariffs.length, (i) {
+                  final t = _tariffs[i];
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: TariffCard(
@@ -122,17 +90,21 @@ class _SubscriptionPageState extends State<SubscriptionPage>
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                 child: Row(
                   children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back_ios_new_rounded,
-                          color: AppColors.textPrimary, size: 20),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
+                    if (Navigator.canPop(context))
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                            color: AppColors.textPrimary, size: 20),
+                        onPressed: () => Navigator.maybePop(context),
+                      )
+                    else
+                      const SizedBox(width: 48),
                     const Expanded(
                       child: Text(
-                        'Подписка',
+                        'Premium',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: AppColors.textPrimary,
@@ -152,74 +124,56 @@ class _SubscriptionPageState extends State<SubscriptionPage>
     );
   }
 
-  Widget _buildSegmentedControl() {
-    return GlassCard(
-      padding: const EdgeInsets.all(4),
-      borderRadius: BorderRadius.circular(14),
-      child: Row(
-        children: ['Premium', 'Ultra'].asMap().entries.map((e) {
-          final selected = _planIndex == e.key;
-          return Expanded(
-            child: GestureDetector(
-              onTap: () {
-                _tabController.animateTo(e.key);
-                setState(() {
-                  _planIndex = e.key;
-                  _selectedTariff = 2;
-                });
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  gradient: selected
-                      ? const LinearGradient(
-                          colors: [AppColors.accent, AppColors.accentDark])
-                      : null,
-                  borderRadius: BorderRadius.circular(10),
-                  boxShadow: selected
-                      ? [
-                          BoxShadow(
-                            color: AppColors.accent.withValues(alpha: 0.3),
-                            blurRadius: 8,
-                          )
-                        ]
-                      : null,
-                ),
-                child: Text(
-                  e.value,
-                  textAlign: TextAlign.center,
+  Widget _buildHeader() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                    colors: [AppColors.accent, AppColors.accentDark]),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.workspace_premium_rounded,
+                  color: Color(0xFF1A1200), size: 24),
+            ),
+            const SizedBox(width: 12),
+            const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Premium',
                   style: TextStyle(
-                    color: selected
-                        ? const Color(0xFF1A1200)
-                        : AppColors.textSecondary,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+                    color: AppColors.accent,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
-              ),
+                Text(
+                  'Безлимитный доступ',
+                  style: TextStyle(
+                      color: AppColors.textSecondary, fontSize: 13),
+                ),
+              ],
             ),
-          );
-        }).toList(),
-      ),
+          ],
+        ),
+      ],
     );
   }
 
   Widget _buildBenefits() {
-    final benefits = _planIndex == 0
-        ? [
-            (Icons.speed_rounded, 'Высокая скорость'),
-            (Icons.all_inclusive_rounded, 'Безлимитный трафик'),
-            (Icons.lock_rounded, 'Шифрование AES-256'),
-            (Icons.devices_rounded, 'До 3 устройств'),
-          ]
-        : [
-            (Icons.rocket_launch_rounded, 'Максимальная скорость'),
-            (Icons.all_inclusive_rounded, 'Безлимитный трафик'),
-            (Icons.security_rounded, 'Шифрование AES-256-GCM'),
-            (Icons.devices_rounded, 'До 5 устройств'),
-            (Icons.star_rounded, 'Эксклюзивные серверы'),
-          ];
+    const benefits = [
+      (Icons.speed_rounded, 'Высокая скорость'),
+      (Icons.all_inclusive_rounded, 'Безлимитный трафик'),
+      (Icons.lock_rounded, 'Шифрование AES-256'),
+      (Icons.devices_rounded, 'До 3 устройств'),
+      (Icons.language_rounded, 'Доступ к Premium серверам'),
+    ];
 
     return GlassCard(
       padding: const EdgeInsets.all(20),
