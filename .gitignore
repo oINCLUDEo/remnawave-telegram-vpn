@@ -49,6 +49,8 @@
 !locales/**
 !.github/
 !.github/**
+!flutter_app/
+!flutter_app/**
 
 # ========== BLACKLIST: игнорируемые внутри папок ==========
 
@@ -96,6 +98,10 @@ data/
 *.log
 *.db
 *.sqlite3
+
+# Un-ignore flutter_app source after the data/ rule above
+!flutter_app/lib/
+!flutter_app/lib/**
 
 # OS files
 .DS_Store
