@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.cabinet.routes import router as cabinet_router
 from app.config import settings
+from app.mobile_api.routes import router as mobile_api_router
 from app.services.disposable_email_service import disposable_email_service
 from app.services.payment_service import PaymentService
 from app.webapi.app import create_web_api_app
@@ -74,6 +75,10 @@ def _create_base_app() -> FastAPI:
                 allow_headers=['*'],
             )
             app.include_router(cabinet_router)
+
+        # Mobile API — always available so the Flutter app can reach it
+        # even when the full admin web API is disabled.
+        app.include_router(mobile_api_router)
 
     _attach_docs_alias(app, app.docs_url)
     return app
