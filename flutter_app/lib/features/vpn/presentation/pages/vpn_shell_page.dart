@@ -129,7 +129,7 @@ class _VpnShellPageState extends State<VpnShellPage> {
 
 // ── Centre VPN button ────────────────────────────────────────────────────────
 
-class _VpnCenterButton extends StatelessWidget {
+class _VpnCenterButton extends StatefulWidget {
   const _VpnCenterButton({
     required this.isActive,
     required this.onTap,
@@ -139,36 +139,72 @@ class _VpnCenterButton extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_VpnCenterButton> createState() => _VpnCenterButtonState();
+}
+
+class _VpnCenterButtonState extends State<_VpnCenterButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 100),
+    );
+    _scale = Tween<double>(begin: 1.0, end: 0.88).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Padding(
-      // Slightly more horizontal margin than regular items
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          // Narrow fixed-width pill — smaller than before
-          width: 52,
-          decoration: BoxDecoration(
-            // Always the same dark background; active state is shown via text color only
-            color: const Color(0xFF1C2340),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isActive
-                  ? Colors.white.withValues(alpha: 0.35)
-                  : AppColors.glassBorder,
-              width: 1,
+    return GestureDetector(
+      onTapDown: (_) => _ctrl.forward(),
+      onTapUp: (_) {
+        _ctrl.reverse();
+        widget.onTap();
+      },
+      onTapCancel: () => _ctrl.reverse(),
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (_, child) => Transform.scale(scale: _scale.value, child: child),
+        child: Padding(
+          // Slightly more horizontal margin than regular items
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            // Narrow fixed-width pill — smaller than before
+            width: 52,
+            decoration: BoxDecoration(
+              // Always the same dark background; active state is shown via text color only
+              color: const Color(0xFF1C2340),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: widget.isActive
+                    ? Colors.white.withValues(alpha: 0.35)
+                    : AppColors.glassBorder,
+                width: 1,
+              ),
             ),
-          ),
-          child: Center(
-            child: Text(
-              'VPN',
-              style: TextStyle(
-                // Inactive: muted; active: bright white — no gold
-                color: isActive ? Colors.white : AppColors.textSecondary,
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1.2,
+            child: Center(
+              child: Text(
+                'VPN',
+                style: TextStyle(
+                  // Inactive: muted; active: bright white — no gold
+                  color: widget.isActive ? Colors.white : AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
               ),
             ),
           ),
@@ -180,7 +216,7 @@ class _VpnCenterButton extends StatelessWidget {
 
 // ── Regular nav item ─────────────────────────────────────────────────────────
 
-class _NavItem extends StatelessWidget {
+class _NavItem extends StatefulWidget {
   const _NavItem({
     required this.icon,
     required this.label,
@@ -194,26 +230,62 @@ class _NavItem extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_NavItem> createState() => _NavItemState();
+}
+
+class _NavItemState extends State<_NavItem>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 100),
+    );
+    _scale = Tween<double>(begin: 1.0, end: 0.88).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     // Active state: brighter white icon + label, no background box.
-    final color = isActive ? Colors.white : AppColors.textSecondary;
+    final color = widget.isActive ? Colors.white : AppColors.textSecondary;
     return GestureDetector(
-      onTap: onTap,
+      onTapDown: (_) => _ctrl.forward(),
+      onTapUp: (_) {
+        _ctrl.reverse();
+        widget.onTap();
+      },
+      onTapCancel: () => _ctrl.reverse(),
       behavior: HitTestBehavior.opaque,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 20, color: color),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 10,
-              fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (_, child) => Transform.scale(scale: _scale.value, child: child),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(widget.icon, size: 20, color: color),
+            const SizedBox(height: 2),
+            Text(
+              widget.label,
+              style: TextStyle(
+                color: color,
+                fontSize: 10,
+                fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w400,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
