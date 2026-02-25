@@ -76,15 +76,20 @@ def _build_tariff(
         '♾️ Безлимит' if tariff.traffic_limit_gb == 0 else f'{tariff.traffic_limit_gb} ГБ'
     )
 
+    allowed_periods: set[int] = set(settings.get_available_subscription_periods())
+
     periods: list[MobileTariffPeriod] = []
     if tariff.period_prices:
         for period_str, price_kopeks in sorted(
             tariff.period_prices.items(), key=lambda x: int(x[0])
         ):
+            period_days = int(period_str)
             if int(price_kopeks) < 0:
                 continue  # negative price means period is disabled
+            if allowed_periods and period_days not in allowed_periods:
+                continue  # period not enabled in AVAILABLE_SUBSCRIPTION_PERIODS
             periods.append(
-                _build_period(int(period_str), int(price_kopeks), promo_group, language)
+                _build_period(period_days, int(price_kopeks), promo_group, language)
             )
 
     return MobileTariff(
