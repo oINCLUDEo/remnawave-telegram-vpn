@@ -14,7 +14,6 @@ class ApiEndpoints {
   // User profile
   static const String me = '/cabinet/auth/me';
 
-  // Subscription / tariffs
-  static const String purchaseOptions = '/cabinet/subscription/purchase-options';
-  static const String publicTariffs = '/cabinet/subscription/public-tariffs';
+  // Mobile API v1 — dedicated endpoints for the Flutter app
+  static const String mobileTariffs = '/mobile/v1/tariffs';
 }
