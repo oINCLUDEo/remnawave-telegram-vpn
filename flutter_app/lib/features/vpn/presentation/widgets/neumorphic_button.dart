@@ -118,16 +118,22 @@ class _NeumorphicButtonState extends State<NeumorphicButton>
               ),
             ),
             const SizedBox(height: 8),
-            Text(
-              widget.isConnected ? 'ПОДКЛЮЧЕНО' : 'НАЖМИТЕ\nДЛЯ ВХОДА',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: widget.isConnected
-                    ? AppColors.signal
-                    : AppColors.textSecondary,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.5,
+            // Fixed-height container prevents the column from re-centering
+            // when text switches between 1 line ("ПОДКЛЮЧЕНО") and 2 lines
+            // ("НАЖМИТЕ\nДЛЯ ВХОДА"), which caused the icon to jump vertically.
+            SizedBox(
+              height: 28,
+              child: Text(
+                widget.isConnected ? 'ПОДКЛЮЧЕНО' : 'НАЖМИТЕ\nДЛЯ ВХОДА',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: widget.isConnected
+                      ? AppColors.signal
+                      : AppColors.textSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.5,
+                ),
               ),
             ),
           ],
