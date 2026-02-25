@@ -311,7 +311,7 @@ async def sync_with_remnawave(db: AsyncSession, remnawave_squads: list[dict]) ->
                 original_name=original_name,
                 country_code=_extract_country_code(original_name),
                 price_kopeks=1000,
-                is_available=False,
+                is_available=True,
             )
             created += 1
 

@@ -2,10 +2,8 @@
 
 GET /mobile/v1/servers
     Public endpoint — no authentication required.
-    Anonymous callers see servers available to the default promo group.
-    Authenticated callers see servers available to their own promo group.
-    Servers are grouped by their ``category`` field and sorted by a
-    canonical display order (whitelist → youtube → premium → general).
+    Returns all available VPN servers grouped by category.
+    Access control is enforced by RemnaWave at connection time.
 """
 
 from __future__ import annotations
@@ -16,8 +14,7 @@ import structlog
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cabinet.dependencies import get_cabinet_db, get_optional_cabinet_user
-from app.database.crud.promo_group import get_default_promo_group
+from app.cabinet.dependencies import get_cabinet_db
 from app.database.crud.server_squad import get_available_server_squads
 from app.mobile_api.schemas import (
     MobileServer,
@@ -78,23 +75,15 @@ def _load_percent(current: int, max_users: int | None) -> int:
     summary='List available VPN servers grouped by category',
 )
 async def get_servers(
-    user=Depends(get_optional_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
 ) -> MobileServersResponse:
-    """Return available VPN servers grouped by category.
+    """Return all available VPN servers grouped by category.
 
-    The server list is filtered by promo group so users only see servers
-    that their subscription tier is allowed to access.  Anonymous callers
-    fall back to the default promo group (the one every new user receives).
+    Servers are fetched without promo-group filtering so the full catalogue
+    is always visible.  Access control (which servers a subscriber can
+    actually connect to) is enforced at connection time by RemnaWave.
     """
-    # Resolve the promo group id to use for server visibility filtering.
-    if user and getattr(user, 'promo_group_id', None):
-        promo_group_id: int | None = user.promo_group_id
-    else:
-        default_pg = await get_default_promo_group(db)
-        promo_group_id = default_pg.id if default_pg else None
-
-    squads = await get_available_server_squads(db, promo_group_id=promo_group_id)
+    squads = await get_available_server_squads(db)
 
     # Group servers by category.
     grouped: dict[str, list[MobileServer]] = defaultdict(list)
