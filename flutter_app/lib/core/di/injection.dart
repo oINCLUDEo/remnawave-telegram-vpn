@@ -13,6 +13,10 @@ import '../../features/subscription/data/datasources/tariff_remote_datasource.da
 import '../../features/subscription/data/repositories/tariff_repository_impl.dart';
 import '../../features/subscription/domain/repositories/tariff_repository.dart';
 import '../../features/subscription/presentation/cubit/tariff_cubit.dart';
+import '../../features/servers/data/datasources/server_remote_datasource.dart';
+import '../../features/servers/data/repositories/server_repository_impl.dart';
+import '../../features/servers/domain/repositories/server_repository.dart';
+import '../../features/servers/presentation/cubit/server_cubit.dart';
 
 final sl = GetIt.instance;
 
@@ -73,5 +77,18 @@ void setupDependencies({String? baseUrl}) {
   // Subscription / Tariffs — presentation
   sl.registerFactory<TariffCubit>(
     () => TariffCubit(repository: sl<TariffRepository>()),
+  );
+
+  // Servers — data
+  sl.registerLazySingleton<ServerRemoteDataSource>(
+    () => ServerRemoteDataSource(apiClient: sl<ApiClient>()),
+  );
+  sl.registerLazySingleton<ServerRepository>(
+    () => ServerRepositoryImpl(dataSource: sl<ServerRemoteDataSource>()),
+  );
+
+  // Servers — presentation
+  sl.registerFactory<ServerCubit>(
+    () => ServerCubit(repository: sl<ServerRepository>()),
   );
 }
