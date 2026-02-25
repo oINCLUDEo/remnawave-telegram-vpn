@@ -2107,6 +2107,8 @@ class ServerSquad(Base):
 
     sort_order = Column(Integer, default=0)
 
+    category = Column(String(50), default='general', nullable=False)
+
     max_users = Column(Integer, nullable=True)
     current_users = Column(Integer, default=0)
 

@@ -246,6 +246,7 @@ async def update_server_squad(db: AsyncSession, server_id: int, **updates) -> Se
         'is_available',
         'sort_order',
         'is_trial_eligible',
+        'category',
     }
 
     filtered_updates = {k: v for k, v in updates.items() if k in valid_fields}

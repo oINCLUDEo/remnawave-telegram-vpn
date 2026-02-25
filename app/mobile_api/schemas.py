@@ -46,3 +46,41 @@ class MobileTariffsResponse(BaseModel):
 
     tariffs: list[MobileTariff]
     current_tariff_id: int | None = None
+
+
+# ─── Servers ─────────────────────────────────────────────────────────────────
+
+class MobileServer(BaseModel):
+    """A single VPN server visible to the mobile client."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    name: str
+    country_code: str | None = None
+    flag: str  # emoji flag derived from country_code, or "🌐" as fallback
+    category: str  # slug: "general", "whitelist", "youtube", "premium", …
+    is_available: bool  # False when server is full or unavailable
+    load_percent: int  # 0–100 based on current_users / max_users
+    quality_level: int  # 1–5 (5 = best); used by SignalIndicator in Flutter
+
+
+class MobileServerCategory(BaseModel):
+    """A named group of servers shown as a collapsible section in the app."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str  # slug, matches MobileServer.category
+    name: str  # display name, e.g. "Белые списки"
+    subtitle: str  # one-liner description, e.g. "Для доступа везде"
+    server_count: int
+    servers: list[MobileServer]
+
+
+class MobileServersResponse(BaseModel):
+    """Top-level response for GET /mobile/v1/servers."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    categories: list[MobileServerCategory]
+    total_count: int
