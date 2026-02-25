@@ -275,17 +275,26 @@ async def main():
 
         bot = None
         dp = None
-        async with timeline.stage('Настройка бота', '🤖', success_message='Бот настроен') as stage:
-            bot, dp = await setup_bot()
-            stage.log('Кеш и FSM подготовлены')
+        if settings.TELEGRAM_BOT_ENABLED:
+            async with timeline.stage('Настройка бота', '🤖', success_message='Бот настроен') as stage:
+                bot, dp = await setup_bot()
+                stage.log('Кеш и FSM подготовлены')
+        else:
+            timeline.add_manual_step(
+                'Настройка бота',
+                '⏭️',
+                'Пропущено',
+                'TELEGRAM_BOT_ENABLED=false (API-only режим)',
+            )
 
-        monitoring_service.bot = bot
-        maintenance_service.set_bot(bot)
-        broadcast_service.set_bot(bot)
-        ban_notification_service.set_bot(bot)
-        traffic_monitoring_scheduler.set_bot(bot)
-        daily_subscription_service.set_bot(bot)
-        telegram_notifier.set_bot(bot)
+        if bot:
+            monitoring_service.bot = bot
+            maintenance_service.set_bot(bot)
+            broadcast_service.set_bot(bot)
+            ban_notification_service.set_bot(bot)
+            traffic_monitoring_scheduler.set_bot(bot)
+            daily_subscription_service.set_bot(bot)
+            telegram_notifier.set_bot(bot)
 
         # Initialize email broadcast service
         from app.cabinet.services.email_service import email_service
@@ -295,66 +304,91 @@ async def main():
 
         from app.services.admin_notification_service import AdminNotificationService
 
-        async with timeline.stage(
-            'Интеграция сервисов',
-            '🔗',
-            success_message='Сервисы подключены',
-        ) as stage:
-            admin_notification_service = AdminNotificationService(bot)
-            version_service.bot = bot
-            version_service.set_notification_service(admin_notification_service)
-            referral_contest_service.set_bot(bot)
-            stage.log(f'Репозиторий версий: {version_service.repo}')
-            stage.log(f'Текущая версия: {version_service.current_version}')
-            stage.success('Мониторинг, уведомления и рассылки подключены')
+        if bot:
+            async with timeline.stage(
+                'Интеграция сервисов',
+                '🔗',
+                success_message='Сервисы подключены',
+            ) as stage:
+                admin_notification_service = AdminNotificationService(bot)
+                version_service.bot = bot
+                version_service.set_notification_service(admin_notification_service)
+                referral_contest_service.set_bot(bot)
+                stage.log(f'Репозиторий версий: {version_service.repo}')
+                stage.log(f'Текущая версия: {version_service.current_version}')
+                stage.success('Мониторинг, уведомления и рассылки подключены')
+        else:
+            timeline.add_manual_step(
+                'Интеграция сервисов',
+                '⏭️',
+                'Пропущено',
+                'Telegram бот не активен',
+            )
 
-        async with timeline.stage(
-            'Сервис бекапов',
-            '🗄️',
-            success_message='Сервис бекапов инициализирован',
-        ) as stage:
-            try:
-                backup_service.bot = bot
-                settings_obj = await backup_service.get_backup_settings()
-                if settings_obj.auto_backup_enabled:
-                    await backup_service.start_auto_backup()
-                    stage.log(
-                        'Автобекапы включены: интервал '
-                        f'{settings_obj.backup_interval_hours}ч, запуск {settings_obj.backup_time}'
-                    )
-                else:
-                    stage.log('Автобекапы отключены настройками')
-                stage.success('Сервис бекапов инициализирован')
-            except Exception as e:
-                stage.warning(f'Ошибка инициализации сервиса бекапов: {e}')
-                logger.error('❌ Ошибка инициализации сервиса бекапов', error=e)
+        if bot:
+            async with timeline.stage(
+                'Сервис бекапов',
+                '🗄️',
+                success_message='Сервис бекапов инициализирован',
+            ) as stage:
+                try:
+                    backup_service.bot = bot
+                    settings_obj = await backup_service.get_backup_settings()
+                    if settings_obj.auto_backup_enabled:
+                        await backup_service.start_auto_backup()
+                        stage.log(
+                            'Автобекапы включены: интервал '
+                            f'{settings_obj.backup_interval_hours}ч, запуск {settings_obj.backup_time}'
+                        )
+                    else:
+                        stage.log('Автобекапы отключены настройками')
+                    stage.success('Сервис бекапов инициализирован')
+                except Exception as e:
+                    stage.warning(f'Ошибка инициализации сервиса бекапов: {e}')
+                    logger.error('❌ Ошибка инициализации сервиса бекапов', error=e)
+        else:
+            timeline.add_manual_step(
+                'Сервис бекапов',
+                '⏭️',
+                'Пропущено',
+                'Telegram бот не активен',
+            )
 
-        async with timeline.stage(
-            'Сервис отчетов',
-            '📊',
-            success_message='Сервис отчетов готов',
-        ) as stage:
-            try:
-                reporting_service.set_bot(bot)
-                await reporting_service.start()
-            except Exception as e:
-                stage.warning(f'Ошибка запуска сервиса отчетов: {e}')
-                logger.error('❌ Ошибка запуска сервиса отчетов', error=e)
+        if bot:
+            async with timeline.stage(
+                'Сервис отчетов',
+                '📊',
+                success_message='Сервис отчетов готов',
+            ) as stage:
+                try:
+                    reporting_service.set_bot(bot)
+                    await reporting_service.start()
+                except Exception as e:
+                    stage.warning(f'Ошибка запуска сервиса отчетов: {e}')
+                    logger.error('❌ Ошибка запуска сервиса отчетов', error=e)
+        else:
+            timeline.add_manual_step(
+                'Сервис отчетов',
+                '⏭️',
+                'Пропущено',
+                'Telegram бот не активен',
+            )
 
-        async with timeline.stage(
-            'Реферальные конкурсы',
-            '🏆',
-            success_message='Сервис конкурсов готов',
-        ) as stage:
-            try:
-                await referral_contest_service.start()
-                if referral_contest_service.is_running():
-                    stage.log('Автосводки по конкурсам запущены')
-                else:
-                    stage.skip('Сервис конкурсов выключен настройками')
-            except Exception as e:
-                stage.warning(f'Ошибка запуска сервиса конкурсов: {e}')
-                logger.error('❌ Ошибка запуска сервиса конкурсов', error=e)
+        if bot:
+            async with timeline.stage(
+                'Реферальные конкурсы',
+                '🏆',
+                success_message='Сервис конкурсов готов',
+            ) as stage:
+                try:
+                    await referral_contest_service.start()
+                    if referral_contest_service.is_running():
+                        stage.log('Автосводки по конкурсам запущены')
+                    else:
+                        stage.skip('Сервис конкурсов выключен настройками')
+                except Exception as e:
+                    stage.warning(f'Ошибка запуска сервиса конкурсов: {e}')
+                    logger.error('❌ Ошибка запуска сервиса конкурсов', error=e)
 
         async with timeline.stage(
             'Ротация игр',
@@ -490,28 +524,36 @@ async def main():
             else:
                 stage.skip('NaloGO отключен настройками')
 
-        async with timeline.stage(
-            'Внешняя админка',
-            '🛡️',
-            success_message='Токен внешней админки готов',
-        ) as stage:
-            try:
-                bot_user = await bot.get_me()
-                token = await ensure_external_admin_token(
-                    bot_user.username,
-                    bot_user.id,
-                )
-                if token:
-                    stage.log('Токен синхронизирован')
-                else:
-                    stage.warning('Не удалось получить токен внешней админки')
-            except Exception as error:  # pragma: no cover - защитный блок
-                stage.warning(f'Ошибка подготовки внешней админки: {error}')
-                logger.error('❌ Ошибка подготовки внешней админки', error=error)
+        if bot:
+            async with timeline.stage(
+                'Внешняя админка',
+                '🛡️',
+                success_message='Токен внешней админки готов',
+            ) as stage:
+                try:
+                    bot_user = await bot.get_me()
+                    token = await ensure_external_admin_token(
+                        bot_user.username,
+                        bot_user.id,
+                    )
+                    if token:
+                        stage.log('Токен синхронизирован')
+                    else:
+                        stage.warning('Не удалось получить токен внешней админки')
+                except Exception as error:  # pragma: no cover - защитный блок
+                    stage.warning(f'Ошибка подготовки внешней админки: {error}')
+                    logger.error('❌ Ошибка подготовки внешней админки', error=error)
+        else:
+            timeline.add_manual_step(
+                'Внешняя админка',
+                '⏭️',
+                'Пропущено',
+                'Telegram бот не активен',
+            )
 
-        bot_run_mode = settings.get_bot_run_mode()
-        polling_enabled = bot_run_mode == 'polling'
-        telegram_webhook_enabled = bot_run_mode == 'webhook'
+        bot_run_mode = settings.get_bot_run_mode() if bot else 'disabled'
+        polling_enabled = bot_run_mode == 'polling' and bot is not None
+        telegram_webhook_enabled = bot_run_mode == 'webhook' and bot is not None
 
         payment_webhooks_enabled = any(
             [
@@ -724,12 +766,13 @@ async def main():
         summary_logged = True
 
         # Отправляем стартовое уведомление в админский чат
-        try:
-            from app.services.startup_notification_service import send_bot_startup_notification
+        if bot:
+            try:
+                from app.services.startup_notification_service import send_bot_startup_notification
 
-            await send_bot_startup_notification(bot)
-        except Exception as startup_notify_error:
-            logger.warning('Не удалось отправить стартовое уведомление', startup_notify_error=startup_notify_error)
+                await send_bot_startup_notification(bot)
+            except Exception as startup_notify_error:
+                logger.warning('Не удалось отправить стартовое уведомление', startup_notify_error=startup_notify_error)
 
         try:
             while not killer.exit:
