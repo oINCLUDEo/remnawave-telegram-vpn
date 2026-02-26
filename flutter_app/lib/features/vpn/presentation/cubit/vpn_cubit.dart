@@ -103,18 +103,26 @@ class VpnCubit extends Cubit<VpnState> {
       );
       final body = (response.data ?? '').trim();
 
-      // Decode base64 → UTF-8 text; fall back to plain text if not base64
+      // Decode base64 → UTF-8 text; fall back to plain text if not base64.
+      // RemnaWave uses URL-safe base64 (RFC 4648 §5: `-` and `_` instead of
+      // `+` and `/`), so we try base64Url first, then standard base64.
       String plainText;
       try {
-        plainText = utf8.decode(base64.decode(body));
+        // Normalize missing padding before decoding
+        final padded = _normalizePadding(body);
+        plainText = utf8.decode(base64Url.decode(padded));
       } catch (_) {
-        plainText = body;
+        try {
+          plainText = utf8.decode(base64.decode(_normalizePadding(body)));
+        } catch (_) {
+          plainText = body; // already plain-text proxy links
+        }
       }
 
       // Split into individual proxy links and parse each one
       final lines = plainText
           .split('\n')
-          .map((l) => l.trim())
+          .map((l) => l.trim().replaceAll('\r', ''))
           .where((l) => l.isNotEmpty)
           .toList();
 
@@ -131,7 +139,8 @@ class VpnCubit extends Cubit<VpnState> {
       if (selected == null) {
         emit(state.copyWith(
           connectionStatus: VpnConnectionStatus.error,
-          error: () => 'Конфигурация VPN недоступна',
+          error: () =>
+              'Не удалось разобрать конфигурацию VPN (${lines.length} строк)',
         ));
         return;
       }
@@ -211,6 +220,13 @@ class VpnCubit extends Cubit<VpnState> {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Adds `=` padding so base64/base64Url decoders don't throw.
+  static String _normalizePadding(String s) {
+    final rem = s.length % 4;
+    if (rem == 0) return s;
+    return s + '=' * (4 - rem);
+  }
 
   String _friendlyDioError(DioException e) {
     if (e.type == DioExceptionType.connectionTimeout ||

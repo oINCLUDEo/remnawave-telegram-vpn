@@ -8,6 +8,7 @@ GET /mobile/v1/profile
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 import structlog
@@ -50,7 +51,11 @@ async def _profile_from_remnawave(user: User) -> MobileProfileResponse | None:
             secret_key=settings.REMNAWAVE_SECRET_KEY,
         )
         async with api:
-            rw_users = await api.get_user_by_telegram_id(int(telegram_id))
+            # Hard 4-second timeout — the RemnaWave API client retries up to 3×
+            # with exponential back-off (7+ s total), which is unacceptable for
+            # a user-facing profile endpoint.
+            async with asyncio.timeout(4.0):
+                rw_users = await api.get_user_by_telegram_id(int(telegram_id))
     except Exception as exc:
         logger.warning('RemnaWave fallback failed for profile', error=str(exc))
         return None
