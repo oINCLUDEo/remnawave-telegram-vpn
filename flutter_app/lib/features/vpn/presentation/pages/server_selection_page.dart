@@ -4,6 +4,7 @@ import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../servers/domain/entities/server_category_entity.dart';
 import '../../../servers/domain/entities/server_entity.dart';
+import '../../../servers/presentation/cubit/selected_server_cubit.dart';
 import '../../../servers/presentation/cubit/server_cubit.dart';
 import '../../../servers/presentation/cubit/server_state.dart';
 import '../widgets/premium_badge.dart';
@@ -339,10 +340,18 @@ class _ServerSelectionViewState extends State<_ServerSelectionView> {
     return GestureDetector(
       onTap: () {
         setState(() => _selectedServer = s.name);
+        final serverName = s.flag.isNotEmpty ? '${s.flag} ${s.name}' : s.name;
+        // Update shared cubit (available when pushed with BlocProvider.value)
+        try {
+          context
+              .read<SelectedServerCubit>()
+              .select(serverName, s.flag.isEmpty ? '🌐' : s.flag);
+        } catch (_) {}
         Future.delayed(const Duration(milliseconds: 180), () {
-          if (mounted) {
+          if (!mounted) return;
+          if (Navigator.of(context).canPop()) {
             Navigator.of(context)
-                .pop({'name': '${s.flag} ${s.name}', 'flag': s.flag});
+                .pop({'name': serverName, 'flag': s.flag});
           }
         });
       },

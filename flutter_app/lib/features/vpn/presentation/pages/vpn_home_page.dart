@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../../../servers/presentation/cubit/selected_server_cubit.dart';
 import '../cubit/vpn_cubit.dart';
 import '../cubit/vpn_state.dart';
 import '../widgets/dot_grid_background.dart';
@@ -34,9 +35,6 @@ class _VpnHomeView extends StatefulWidget {
 }
 
 class _VpnHomeViewState extends State<_VpnHomeView> {
-  String _selectedServer = 'Германия · Frankfurt';
-  String _selectedServerFlag = '🇩🇪';
-
   void _onConnectPressed(BuildContext context) {
     final cubit = context.read<VpnCubit>();
     if (cubit.state.isConnected) {
@@ -230,72 +228,79 @@ class _VpnHomeViewState extends State<_VpnHomeView> {
   }
 
   Widget _buildServerCard(BuildContext context, VpnState state) {
-    return GestureDetector(
-      onTap: () async {
-        final result = await Navigator.of(context).push<Map<String, String>>(
-          MaterialPageRoute(builder: (_) => const ServerSelectionPage()),
-        );
-        if (result != null) {
-          setState(() {
-            _selectedServer = result['name'] ?? _selectedServer;
-            _selectedServerFlag = result['flag'] ?? _selectedServerFlag;
-          });
-        }
-      },
-      child: GlassCard(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Row(
-          children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: AppColors.glassLight,
-                borderRadius: BorderRadius.circular(10),
+    return BlocBuilder<SelectedServerCubit, SelectedServerState>(
+      builder: (context, serverState) {
+        final displayName =
+            serverState.isEmpty ? 'Выберите сервер' : serverState.name;
+        final displayFlag = serverState.flag;
+        return GestureDetector(
+          onTap: () {
+            final serverCubit = context.read<SelectedServerCubit>();
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => BlocProvider.value(
+                  value: serverCubit,
+                  child: const ServerSelectionPage(),
+                ),
               ),
-              child: Center(
-                child: Text(_selectedServerFlag,
-                    style: const TextStyle(fontSize: 18)),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Текущий сервер',
-                      style: TextStyle(
-                          color: AppColors.textSecondary, fontSize: 11)),
-                  const SizedBox(height: 2),
-                  Text(
-                    _selectedServer,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
+            );
+          },
+          child: GlassCard(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.glassLight,
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                ],
-              ),
+                  child: Center(
+                    child: Text(displayFlag,
+                        style: const TextStyle(fontSize: 18)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Текущий сервер',
+                          style: TextStyle(
+                              color: AppColors.textSecondary, fontSize: 11)),
+                      const SizedBox(height: 2),
+                      Text(
+                        displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SignalIndicator(
+                  level: state.isConnected ? 4 : 3,
+                  height: 16,
+                  barWidth: 4,
+                  spacing: 2,
+                  color: state.isConnected
+                      ? AppColors.signal
+                      : AppColors.textSecondary,
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.chevron_right_rounded,
+                    color: AppColors.textSecondary, size: 18),
+              ],
             ),
-            const SizedBox(width: 8),
-            SignalIndicator(
-              level: state.isConnected ? 4 : 3,
-              height: 16,
-              barWidth: 4,
-              spacing: 2,
-              color: state.isConnected
-                  ? AppColors.signal
-                  : AppColors.textSecondary,
-            ),
-            const SizedBox(width: 6),
-            const Icon(Icons.chevron_right_rounded,
-                color: AppColors.textSecondary, size: 18),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 

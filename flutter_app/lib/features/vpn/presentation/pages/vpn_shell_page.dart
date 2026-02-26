@@ -1,10 +1,13 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../../../servers/presentation/cubit/selected_server_cubit.dart';
 import '../widgets/dot_grid_background.dart';
-import 'vpn_home_page.dart';
 import 'server_selection_page.dart';
 import 'subscription_page.dart';
+import 'vpn_home_page.dart';
 
 class VpnShellPage extends StatefulWidget {
   const VpnShellPage({super.key});
@@ -14,7 +17,8 @@ class VpnShellPage extends StatefulWidget {
 }
 
 class _VpnShellPageState extends State<VpnShellPage> {
-  // Index mapping: 0=Серверы, 1=Premium, 2=VPN(home), 3=Профиль, 4=Настройки
+  // Index mapping: 0=Серверы(route), 1=Premium, 2=VPN(home), 3=Профиль, 4=Настройки
+  // PageView has 4 pages: [Premium, VPN, Profile, Settings] → offset = navIndex - 1
   int _currentIndex = 2; // start on VPN home
 
   late final PageController _pageController;
@@ -22,7 +26,8 @@ class _VpnShellPageState extends State<VpnShellPage> {
   @override
   void initState() {
     super.initState();
-    _pageController = PageController(initialPage: 2);
+    // VPN home is nav index 2 → PageView page 1
+    _pageController = PageController(initialPage: 1);
   }
 
   @override
@@ -32,30 +37,57 @@ class _VpnShellPageState extends State<VpnShellPage> {
   }
 
   void _navigateTo(int index) {
-    setState(() => _currentIndex = index);
-    _pageController.animateToPage(
-      index,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeInOut,
-    );
+    if (index == 0) {
+      // Servers: push as a full route so Navigator.pop() works correctly
+      setState(() => _currentIndex = 0);
+      final serverCubit = sl<SelectedServerCubit>();
+      Navigator.of(context)
+          .push<void>(
+        MaterialPageRoute(
+          builder: (_) => BlocProvider.value(
+            value: serverCubit,
+            child: const ServerSelectionPage(),
+          ),
+        ),
+      )
+          .then((_) {
+        // When servers page closes, restore highlighted nav to VPN home
+        if (mounted && _currentIndex == 0) {
+          setState(() => _currentIndex = 2);
+        }
+      });
+    } else {
+      setState(() => _currentIndex = index);
+      // PageView page = navIndex - 1  (Servers nav[0] is not in PageView)
+      _pageController.animateToPage(
+        index - 1,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      // PageView enables left/right swipe between tabs.
-      body: PageView(
-        controller: _pageController,
-        onPageChanged: (index) => setState(() => _currentIndex = index),
-        children: const [
-          ServerSelectionPage(),
-          SubscriptionPage(),
-          VpnHomePage(),
-          _PlaceholderPage(),
-          _PlaceholderPage(),
-        ],
+    return BlocProvider<SelectedServerCubit>(
+      create: (_) => sl<SelectedServerCubit>(),
+      child: Scaffold(
+        // PageView for 4 swipeable pages (Servers opened as a route instead)
+        body: PageView(
+          controller: _pageController,
+          onPageChanged: (page) {
+            // page 0 = nav 1 (Premium), page 1 = nav 2 (VPN), etc.
+            setState(() => _currentIndex = page + 1);
+          },
+          children: const [
+            SubscriptionPage(),
+            VpnHomePage(),
+            _PlaceholderPage(),
+            _PlaceholderPage(),
+          ],
+        ),
+        bottomNavigationBar: _buildBottomNav(),
       ),
-      bottomNavigationBar: _buildBottomNav(),
     );
   }
 
