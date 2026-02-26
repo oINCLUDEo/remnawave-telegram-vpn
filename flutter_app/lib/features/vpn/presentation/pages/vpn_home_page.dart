@@ -47,7 +47,20 @@ class _VpnHomeViewState extends State<_VpnHomeView> {
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<VpnCubit, VpnState>(
+    return BlocConsumer<VpnCubit, VpnState>(
+      listenWhen: (prev, cur) => cur.error != null && cur.error != prev.error,
+      listener: (context, state) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(state.error!),
+            backgroundColor: const Color(0xCC8B0000),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          ),
+        );
+      },
       builder: (context, state) {
         return Scaffold(
           extendBodyBehindAppBar: true,
