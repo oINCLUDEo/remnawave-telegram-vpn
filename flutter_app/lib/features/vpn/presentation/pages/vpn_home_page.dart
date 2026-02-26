@@ -9,6 +9,7 @@ import '../widgets/dot_grid_background.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neumorphic_button.dart';
 import '../widgets/signal_indicator.dart';
+import '../../../settings/presentation/pages/settings_page.dart';
 import 'server_selection_page.dart';
 import 'subscription_page.dart';
 
@@ -391,7 +392,17 @@ class _VpnHomeViewState extends State<_VpnHomeView> {
                 IconButton(
                   icon: const Icon(Icons.settings_outlined,
                       color: AppColors.textSecondary, size: 20),
-                  onPressed: () {},
+                  onPressed: () {
+                    final cubit = context.read<VpnCubit>();
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => BlocProvider.value(
+                          value: cubit,
+                          child: const SettingsPage(),
+                        ),
+                      ),
+                    );
+                  },
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
                 ),
