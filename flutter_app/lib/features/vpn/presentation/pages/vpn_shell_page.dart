@@ -17,8 +17,8 @@ class VpnShellPage extends StatefulWidget {
 }
 
 class _VpnShellPageState extends State<VpnShellPage> {
-  // Index mapping: 0=Серверы(route), 1=Premium, 2=VPN(home), 3=Профиль, 4=Настройки
-  // PageView has 4 pages: [Premium, VPN, Profile, Settings] → offset = navIndex - 1
+  // Index mapping: 0=Серверы, 1=Premium, 2=VPN(home), 3=Профиль, 4=Настройки
+  // PageView pages match nav indices 1:1 (5 pages)
   int _currentIndex = 2; // start on VPN home
 
   late final PageController _pageController;
@@ -26,8 +26,8 @@ class _VpnShellPageState extends State<VpnShellPage> {
   @override
   void initState() {
     super.initState();
-    // VPN home is nav index 2 → PageView page 1
-    _pageController = PageController(initialPage: 1);
+    // VPN home is nav index 2 → PageView page 2
+    _pageController = PageController(initialPage: 2);
   }
 
   @override
@@ -37,34 +37,12 @@ class _VpnShellPageState extends State<VpnShellPage> {
   }
 
   void _navigateTo(int index) {
-    if (index == 0) {
-      // Servers: push as a full route so Navigator.pop() works correctly
-      setState(() => _currentIndex = 0);
-      final serverCubit = sl<SelectedServerCubit>();
-      Navigator.of(context)
-          .push<void>(
-        MaterialPageRoute(
-          builder: (_) => BlocProvider.value(
-            value: serverCubit,
-            child: const ServerSelectionPage(),
-          ),
-        ),
-      )
-          .then((_) {
-        // When servers page closes, restore highlighted nav to VPN home
-        if (mounted && _currentIndex == 0) {
-          setState(() => _currentIndex = 2);
-        }
-      });
-    } else {
-      setState(() => _currentIndex = index);
-      // PageView page = navIndex - 1  (Servers nav[0] is not in PageView)
-      _pageController.animateToPage(
-        index - 1,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    }
+    setState(() => _currentIndex = index);
+    _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
   }
 
   @override
@@ -72,14 +50,14 @@ class _VpnShellPageState extends State<VpnShellPage> {
     return BlocProvider<SelectedServerCubit>(
       create: (_) => sl<SelectedServerCubit>(),
       child: Scaffold(
-        // PageView for 4 swipeable pages (Servers opened as a route instead)
+        // 5 swipeable pages — Серверы is page 0 inside PageView (no route push)
         body: PageView(
           controller: _pageController,
           onPageChanged: (page) {
-            // page 0 = nav 1 (Premium), page 1 = nav 2 (VPN), etc.
-            setState(() => _currentIndex = page + 1);
+            setState(() => _currentIndex = page);
           },
           children: const [
+            ServerSelectionPage(),
             SubscriptionPage(),
             VpnHomePage(),
             _PlaceholderPage(),

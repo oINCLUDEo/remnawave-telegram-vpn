@@ -341,19 +341,15 @@ class _ServerSelectionViewState extends State<_ServerSelectionView> {
       onTap: () {
         setState(() => _selectedServer = s.name);
         final serverName = s.flag.isNotEmpty ? '${s.flag} ${s.name}' : s.name;
-        // Update shared cubit (available when pushed with BlocProvider.value)
+        // Update shared cubit so VpnHomePage server card reflects the choice
         try {
           context
               .read<SelectedServerCubit>()
               .select(serverName, s.flag.isEmpty ? '🌐' : s.flag);
         } catch (_) {}
-        Future.delayed(const Duration(milliseconds: 180), () {
-          if (!mounted) return;
-          if (Navigator.of(context).canPop()) {
-            Navigator.of(context)
-                .pop({'name': serverName, 'flag': s.flag});
-          }
-        });
+        // Navigate back to VPN home (page index 2) via the PageController
+        // We are inside PageView so we do NOT call Navigator.pop().
+        // Swiping or tapping "VPN" in the bottom nav is the natural back action.
       },
       behavior: HitTestBehavior.opaque,
       child: Column(
