@@ -28,6 +28,13 @@ logger = structlog.get_logger(__name__)
 class Settings(BaseSettings):
     TELEGRAM_BOT_ENABLED: bool = True
 
+    # ── Developer / testing mode ───────────────────────────────────────────────
+    # When True, the /mobile/v1/dev/auth endpoint is exposed.  NEVER enable in
+    # production — it issues tokens without any password/OTP check.
+    DEV_MODE: bool = False
+    # Telegram user ID of the dev account.  Required when DEV_MODE=True.
+    DEV_USER_TELEGRAM_ID: int | None = None
+
     BOT_TOKEN: str | None = None
     BOT_USERNAME: str | None = None
     ADMIN_IDS: str = ''
