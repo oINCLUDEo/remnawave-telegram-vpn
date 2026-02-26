@@ -32,6 +32,9 @@ dependencies:
   # SVG rendering
   flutter_svg: ^2.0.10+1
 
+  # Deep-link / URL launching — used to open happ:// scheme for VPN import
+  url_launcher: ^6.3.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

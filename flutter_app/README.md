@@ -84,6 +84,42 @@ flutter test
 
 ---
 
+## VPN Connection via Happ
+
+The app opens the [Happ VPN client](https://happ.app) using a deep link to import the user's subscription:
+
+```
+happ://add/<subscription_url>
+```
+
+### Required native platform configuration
+
+After running `flutter create` / when native directories exist, add the following:
+
+#### Android — `android/app/src/main/AndroidManifest.xml`
+
+Inside the `<manifest>` tag (before `<application>`):
+
+```xml
+<queries>
+  <intent>
+    <action android:name="android.intent.action.VIEW" />
+    <data android:scheme="happ" />
+  </intent>
+</queries>
+```
+
+#### iOS — `ios/Runner/Info.plist`
+
+```xml
+<key>LSApplicationQueriesSchemes</key>
+<array>
+  <string>happ</string>
+</array>
+```
+
+---
+
 ## Roadmap
 
 - [x] Login screen
