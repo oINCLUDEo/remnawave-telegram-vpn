@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../cubit/vpn_cubit.dart';
+import '../cubit/vpn_state.dart';
 import '../widgets/dot_grid_background.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neumorphic_button.dart';
@@ -8,100 +12,128 @@ import '../widgets/signal_indicator.dart';
 import 'server_selection_page.dart';
 import 'subscription_page.dart';
 
-class VpnHomePage extends StatefulWidget {
+/// Entry point: provides [VpnCubit] and immediately loads the profile.
+class VpnHomePage extends StatelessWidget {
   const VpnHomePage({super.key});
 
   @override
-  State<VpnHomePage> createState() => _VpnHomePageState();
+  Widget build(BuildContext context) {
+    return BlocProvider<VpnCubit>(
+      create: (_) => sl<VpnCubit>()..loadProfile(),
+      child: const _VpnHomeView(),
+    );
+  }
 }
 
-class _VpnHomePageState extends State<VpnHomePage> {
-  bool _isConnected = false;
+class _VpnHomeView extends StatefulWidget {
+  const _VpnHomeView();
+
+  @override
+  State<_VpnHomeView> createState() => _VpnHomeViewState();
+}
+
+class _VpnHomeViewState extends State<_VpnHomeView> {
   String _selectedServer = 'Германия · Frankfurt';
   String _selectedServerFlag = '🇩🇪';
-  double _trafficUsed = 0.34;
 
-  void _toggleConnection() => setState(() => _isConnected = !_isConnected);
+  void _onConnectPressed(BuildContext context) {
+    final cubit = context.read<VpnCubit>();
+    if (cubit.state.isConnected) {
+      cubit.disconnect();
+    } else {
+      cubit.connect();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: _buildAppBar(),
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [AppColors.background, AppColors.backgroundDark],
-          ),
-        ),
-        child: DotGridBackground(
-          child: SafeArea(
-            child: LayoutBuilder(
-            builder: (context, constraints) {
-              final h = constraints.maxHeight;
-              final w = constraints.maxWidth;
-              // Button diameter: 50% of screen width, clamped for very small/large screens
-              final btnDiameter = (w * 0.50).clamp(148.0, 195.0);
-              // Vertical gaps proportional to available height
-              final topGap = (h * 0.030).clamp(8.0, 24.0);
-              final midGap = (h * 0.022).clamp(6.0, 16.0);
+    return BlocBuilder<VpnCubit, VpnState>(
+      builder: (context, state) {
+        return Scaffold(
+          extendBodyBehindAppBar: true,
+          appBar: _buildAppBar(state),
+          body: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [AppColors.background, AppColors.backgroundDark],
+              ),
+            ),
+            child: DotGridBackground(
+              child: SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final h = constraints.maxHeight;
+                    final w = constraints.maxWidth;
+                    final btnDiameter = (w * 0.50).clamp(148.0, 195.0);
+                    final midGap = (h * 0.022).clamp(6.0, 16.0);
+                    final topGap = (h * 0.030).clamp(8.0, 24.0);
 
-              return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Column(
-                  children: [
-                    // Space above pushes all content toward the bottom navigation bar
-                    const Spacer(),
-                    Center(
-                      child: NeumorphicButton(
-                        isConnected: _isConnected,
-                        onPressed: _toggleConnection,
-                        diameter: btnDiameter,
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Column(
+                        children: [
+                          const Spacer(),
+                          Center(
+                            child: NeumorphicButton(
+                              isConnected: state.isConnected,
+                              onPressed: () => _onConnectPressed(context),
+                              diameter: btnDiameter,
+                            ),
+                          ),
+                          SizedBox(height: midGap),
+                          _buildStatusSection(state),
+                          SizedBox(height: midGap),
+                          _buildTrafficCard(state),
+                          const SizedBox(height: 8),
+                          _buildServerCard(context, state),
+                          const SizedBox(height: 8),
+                          _buildPremiumCard(context),
+                          SizedBox(height: topGap),
+                        ],
                       ),
-                    ),
-                    SizedBox(height: midGap),
-                    _buildStatusSection(),
-                    SizedBox(height: midGap),
-                    _buildTrafficCard(),
-                    const SizedBox(height: 8),
-                    _buildServerCard(context),
-                    const SizedBox(height: 8),
-                    _buildPremiumCard(context),
-                    SizedBox(height: topGap),
-                  ],
+                    );
+                  },
                 ),
-              );
-            },
+              ),
+            ),
           ),
-        ),
-      ),
-    ),
+        );
+      },
     );
   }
 
-  // Fixed-height status section prevents layout shifts on connect/disconnect.
-  Widget _buildStatusSection() {
+  Widget _buildStatusSection(VpnState state) {
+    final isConnected = state.isConnected;
+    final isLaunching = state.isLaunching;
     return SizedBox(
       height: 36,
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 400),
         child: Column(
-          key: ValueKey(_isConnected),
+          key: ValueKey('$isConnected-$isLaunching'),
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              _isConnected ? 'Защищено' : 'Не подключено',
+              isLaunching
+                  ? 'Подключение...'
+                  : isConnected
+                      ? 'Защищено'
+                      : 'Не подключено',
               style: TextStyle(
-                color: _isConnected ? AppColors.signal : AppColors.textSecondary,
+                color: isConnected
+                    ? AppColors.signal
+                    : isLaunching
+                        ? AppColors.accent
+                        : AppColors.textSecondary,
                 fontSize: 20,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.5,
               ),
             ),
-            if (_isConnected)
+            if (isConnected)
               const Text(
                 'Ваше соединение зашифровано',
                 style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
@@ -112,7 +144,17 @@ class _VpnHomePageState extends State<VpnHomePage> {
     );
   }
 
-  Widget _buildTrafficCard() {
+  Widget _buildTrafficCard(VpnState state) {
+    final profile = state.profile;
+    final usedLabel = profile?.trafficUsedLabel ?? '0.0 ГБ';
+    final limitLabel = profile?.trafficLimitLabel ?? '— ГБ';
+    final fraction = profile?.trafficFraction ?? 0.0;
+    final remainingGb = profile != null && profile.trafficLimitGb > 0
+        ? '${(profile.trafficLimitGb - profile.trafficUsedGb).clamp(0, double.infinity).toStringAsFixed(0)} ГБ осталось'
+        : profile?.isUnlimitedTraffic == true
+            ? '∞ ГБ осталось'
+            : '— ГБ осталось';
+
     return GlassCard(
       padding: const EdgeInsets.all(14),
       child: Column(
@@ -120,13 +162,15 @@ class _VpnHomePageState extends State<VpnHomePage> {
         children: [
           Row(
             children: [
-              const Icon(Icons.data_usage_rounded, color: AppColors.accent, size: 18),
+              const Icon(Icons.data_usage_rounded,
+                  color: AppColors.accent, size: 18),
               const SizedBox(width: 6),
               const Text('Трафик',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                  style: TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12)),
               const Spacer(),
               Text(
-                '${(100 - _trafficUsed * 100).toStringAsFixed(0)} ГБ осталось',
+                remainingGb,
                 style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 12,
@@ -138,22 +182,23 @@ class _VpnHomePageState extends State<VpnHomePage> {
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: LinearProgressIndicator(
-              value: _trafficUsed,
+              value: fraction,
               minHeight: 6,
               backgroundColor: AppColors.glassBorder,
-              valueColor: const AlwaysStoppedAnimation<Color>(AppColors.accent),
+              valueColor:
+                  const AlwaysStoppedAnimation<Color>(AppColors.accent),
             ),
           ),
           const SizedBox(height: 6),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '${(_trafficUsed * 100).toStringAsFixed(0)} ГБ использовано',
-                style: const TextStyle(color: AppColors.textSecondary, fontSize: 11),
-              ),
-              const Text('100 ГБ',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+              Text('$usedLabel использовано',
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 11)),
+              Text(limitLabel,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 11)),
             ],
           ),
         ],
@@ -161,7 +206,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
     );
   }
 
-  Widget _buildServerCard(BuildContext context) {
+  Widget _buildServerCard(BuildContext context, VpnState state) {
     return GestureDetector(
       onTap: () async {
         final result = await Navigator.of(context).push<Map<String, String>>(
@@ -178,7 +223,6 @@ class _VpnHomePageState extends State<VpnHomePage> {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
           children: [
-            // Smaller flag box (36×36) to give more room to text
             Container(
               width: 36,
               height: 36,
@@ -214,13 +258,14 @@ class _VpnHomePageState extends State<VpnHomePage> {
               ),
             ),
             const SizedBox(width: 8),
-            // Smaller signal indicator to avoid overlap with text
             SignalIndicator(
-              level: _isConnected ? 4 : 3,
+              level: state.isConnected ? 4 : 3,
               height: 16,
               barWidth: 4,
               spacing: 2,
-              color: _isConnected ? AppColors.signal : AppColors.textSecondary,
+              color: state.isConnected
+                  ? AppColors.signal
+                  : AppColors.textSecondary,
             ),
             const SizedBox(width: 6),
             const Icon(Icons.chevron_right_rounded,
@@ -239,8 +284,8 @@ class _VpnHomePageState extends State<VpnHomePage> {
       child: GlassCard(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         color: AppColors.accent.withValues(alpha: 0.08),
-        border:
-            Border.all(color: AppColors.accent.withValues(alpha: 0.3), width: 1),
+        border: Border.all(
+            color: AppColors.accent.withValues(alpha: 0.3), width: 1),
         child: Row(
           children: [
             Container(
@@ -274,8 +319,8 @@ class _VpnHomePageState extends State<VpnHomePage> {
                     'Безлимитный трафик · Быстрые серверы',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style:
-                        TextStyle(color: AppColors.textSecondary, fontSize: 11),
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11),
                   ),
                 ],
               ),
@@ -288,12 +333,10 @@ class _VpnHomePageState extends State<VpnHomePage> {
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar(VpnState state) {
     return PreferredSize(
-      // Extra top padding gives the header more breathing room from the status bar
       preferredSize: const Size.fromHeight(56),
       child: Container(
-        // Transparent — blends seamlessly with the body gradient, no visual separator
         color: Colors.transparent,
         child: SafeArea(
           bottom: false,
@@ -304,13 +347,15 @@ class _VpnHomePageState extends State<VpnHomePage> {
                 SvgPicture.asset(
                   'assets/images/logo.svg',
                   height: 26,
-                  colorFilter:
-                      const ColorFilter.mode(Colors.white, BlendMode.srcIn),
+                  colorFilter: const ColorFilter.mode(
+                      Colors.white, BlendMode.srcIn),
                 ),
                 const Spacer(),
                 SignalIndicator(
-                  level: _isConnected ? 4 : 0,
-                  color: _isConnected ? AppColors.signal : AppColors.textSecondary,
+                  level: state.isConnected ? 4 : 0,
+                  color: state.isConnected
+                      ? AppColors.signal
+                      : AppColors.textSecondary,
                 ),
                 const SizedBox(width: 14),
                 IconButton(
@@ -336,3 +381,4 @@ class _VpnHomePageState extends State<VpnHomePage> {
     );
   }
 }
+
