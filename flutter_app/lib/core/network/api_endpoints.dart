@@ -18,4 +18,5 @@ class ApiEndpoints {
   static const String mobileTariffs = '/mobile/v1/tariffs';
   static const String mobileServers = '/mobile/v1/servers';
   static const String mobileProfile = '/mobile/v1/profile';
+  static const String mobileVpnConfig = '/mobile/v1/vpn-config';
 }

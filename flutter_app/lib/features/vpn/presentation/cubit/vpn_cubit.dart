@@ -94,47 +94,28 @@ class VpnCubit extends Cubit<VpnState> {
         return;
       }
 
-      // Fetch the Remnawave subscription URL.
-      // The response body is base64-encoded text — one proxy link per line
-      // (vmess://, vless://, trojan://, etc.)
-      final response = await Dio().get<String>(
-        subscriptionUrl,
-        options: Options(responseType: ResponseType.plain),
-      );
-      final body = (response.data ?? '').trim();
-
-      // Decode base64 → UTF-8 text; fall back to plain text if not base64.
-      // RemnaWave uses MIME base64 (line breaks every 76 chars) or URL-safe
-      // base64.  Strip ALL whitespace before padding normalisation so that
-      // embedded `\n` / `\r` don't cause decode failures.
-      String plainText;
-      final compactBody = body.replaceAll(RegExp(r'\s'), '');
+      // Strategy 1: Ask the backend to decode the subscription server-side.
+      // The backend fetches the Remnawave sub URL, decodes base64, and returns
+      // clean proxy links.  Falls back to direct fetch if backend returns empty.
+      List<String> candidateLinks = [];
       try {
-        // URL-safe base64 first (RFC 4648 §5: `-` and `_`)
-        plainText = utf8.decode(base64Url.decode(_normalizePadding(compactBody)));
+        candidateLinks = await dataSource.getVpnConfig();
       } catch (_) {
-        try {
-          // Standard base64 fallback (`+` and `/`)
-          plainText = utf8.decode(base64.decode(_normalizePadding(compactBody)));
-        } catch (_) {
-          plainText = body; // already plain-text proxy links
-        }
+        // Backend unavailable or 404 — try direct fetch below
       }
 
-      // Split into individual proxy links.
-      // Only lines that start with a known VPN scheme are candidate configs.
-      const _knownSchemes = [
-        'vless://', 'vmess://', 'trojan://', 'ss://',
-        'hysteria2://', 'tuic://',
-      ];
-      final lines = plainText
-          .split('\n')
-          .map((l) => l.trim().replaceAll('\r', ''))
-          .where((l) => l.isNotEmpty)
-          .toList();
-      final candidateLinks = lines
-          .where((l) => _knownSchemes.any(l.startsWith))
-          .toList();
+      // Strategy 2: fetch the subscription URL directly from the device.
+      if (candidateLinks.isEmpty) {
+        final response = await Dio().get<String>(
+          subscriptionUrl,
+          options: Options(
+            responseType: ResponseType.plain,
+            headers: {'User-Agent': 'v2rayN/6.0'},
+          ),
+        );
+        final body = (response.data ?? '').trim();
+        candidateLinks = _parseSubscriptionBody(body);
+      }
 
       V2RayURL? selected;
       for (final link in candidateLinks) {
@@ -154,8 +135,7 @@ class VpnCubit extends Cubit<VpnState> {
           connectionStatus: VpnConnectionStatus.error,
           error: () =>
               'Не удалось разобрать конфигурацию VPN '
-              '(всего строк: ${lines.length}, '
-              'VPN-ссылок: ${candidateLinks.length})',
+              '(VPN-ссылок: ${candidateLinks.length})',
         ));
         return;
       }
@@ -235,6 +215,42 @@ class VpnCubit extends Cubit<VpnState> {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  static const _knownSchemes = [
+    'vless://', 'vmess://', 'trojan://', 'ss://',
+    'hysteria2://', 'tuic://', 'hysteria://',
+  ];
+
+  /// Decode a raw subscription response body into a list of proxy link strings.
+  ///
+  /// Handles MIME base64 (line-wrapped every 76 chars), URL-safe base64
+  /// (RFC 4648 §5), and plain-text proxy link lists.
+  static List<String> _parseSubscriptionBody(String body) {
+    // Strip ALL whitespace so MIME \n line-wrapping doesn't break decoders.
+    final compact = body.replaceAll(RegExp(r'\s'), '');
+
+    String? plainText;
+    for (final tryDecode in [base64Url.decode, base64.decode]) {
+      try {
+        final bytes = tryDecode(_normalizePadding(compact));
+        final decoded = utf8.decode(bytes);
+        // Only accept the decoded result if it contains at least one link
+        if (_knownSchemes.any(decoded.contains)) {
+          plainText = decoded;
+          break;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    plainText ??= body; // already plain-text proxy links
+
+    return plainText
+        .split('\n')
+        .map((l) => l.trim().replaceAll('\r', ''))
+        .where((l) => _knownSchemes.any(l.startsWith))
+        .toList();
+  }
 
   /// Adds `=` padding so base64/base64Url decoders don't throw.
   static String _normalizePadding(String s) {

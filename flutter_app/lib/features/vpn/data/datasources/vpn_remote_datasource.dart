@@ -24,4 +24,23 @@ class VpnRemoteDataSource {
     );
     return VpnProfileModel.fromJson(response.data!);
   }
+
+  /// Fetches the user's parsed VPN proxy links via the backend proxy.
+  ///
+  /// The backend fetches the Remnawave subscription URL server-side,
+  /// decodes it, and returns a clean list of vless:// / vmess:// etc. links.
+  /// Returns an empty list if the endpoint returns 404 (no subscription).
+  Future<List<String>> getVpnConfig() async {
+    try {
+      final response = await apiClient.dio.get<Map<String, dynamic>>(
+        ApiEndpoints.mobileVpnConfig,
+      );
+      final data = response.data ?? {};
+      final raw = data['proxy_links'] as List<dynamic>? ?? [];
+      return raw.cast<String>();
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return [];
+      rethrow;
+    }
+  }
 }
