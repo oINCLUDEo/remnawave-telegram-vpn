@@ -17,4 +17,5 @@ class ApiEndpoints {
   // Mobile API v1 — dedicated endpoints for the Flutter app
   static const String mobileTariffs = '/mobile/v1/tariffs';
   static const String mobileServers = '/mobile/v1/servers';
+  static const String mobileProfile = '/mobile/v1/profile';
 }

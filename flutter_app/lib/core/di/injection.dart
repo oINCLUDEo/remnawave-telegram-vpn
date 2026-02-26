@@ -17,6 +17,8 @@ import '../../features/servers/data/datasources/server_remote_datasource.dart';
 import '../../features/servers/data/repositories/server_repository_impl.dart';
 import '../../features/servers/domain/repositories/server_repository.dart';
 import '../../features/servers/presentation/cubit/server_cubit.dart';
+import '../../features/vpn/data/datasources/vpn_remote_datasource.dart';
+import '../../features/vpn/presentation/cubit/vpn_cubit.dart';
 
 final sl = GetIt.instance;
 
@@ -90,5 +92,15 @@ void setupDependencies({String? baseUrl}) {
   // Servers — presentation
   sl.registerFactory<ServerCubit>(
     () => ServerCubit(repository: sl<ServerRepository>()),
+  );
+
+  // VPN — data
+  sl.registerLazySingleton<VpnRemoteDataSource>(
+    () => VpnRemoteDataSource(apiClient: sl<ApiClient>()),
+  );
+
+  // VPN — presentation
+  sl.registerFactory<VpnCubit>(
+    () => VpnCubit(dataSource: sl<VpnRemoteDataSource>()),
   );
 }
