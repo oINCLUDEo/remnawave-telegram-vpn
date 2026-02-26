@@ -7,6 +7,8 @@ the mobile client actually needs are exposed.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -84,3 +86,20 @@ class MobileServersResponse(BaseModel):
 
     categories: list[MobileServerCategory]
     total_count: int
+
+
+# ─── Profile ──────────────────────────────────────────────────────────────────
+
+class MobileProfileResponse(BaseModel):
+    """Top-level response for GET /mobile/v1/profile (requires auth)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    username: str | None = None
+    subscription_url: str | None = None  # happ://add/<url> target
+    traffic_used_gb: float  # GB actually consumed
+    traffic_limit_gb: int  # 0 means unlimited
+    traffic_used_percent: float  # 0–100
+    expires_at: datetime | None = None
+    is_active: bool
+    status: str  # "active" | "trial" | "expired" | "disabled" | "no_subscription"
