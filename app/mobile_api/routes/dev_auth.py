@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cabinet.dependencies import get_cabinet_db
 from app.config import settings
-from app.database.crud.user import get_user_by_telegram_id
+from app.database.crud.user import create_user, get_user_by_telegram_id
 
 logger = structlog.get_logger(__name__)
 
@@ -46,9 +46,16 @@ async def dev_auth(
 
     user = await get_user_by_telegram_id(db, telegram_id)
     if user is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f'Dev user with telegram_id={telegram_id} not found in database',
+        logger.warning(
+            'Dev user not found — auto-creating in DEV_MODE',
+            telegram_id=telegram_id,
+        )
+        user = await create_user(
+            db,
+            telegram_id=telegram_id,
+            first_name='Dev',
+            last_name='User',
+            username=f'dev_{telegram_id}',
         )
 
     # Issue a 30-day token so the dev doesn't need to refresh constantly
