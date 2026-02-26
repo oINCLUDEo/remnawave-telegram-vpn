@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_v2ray/flutter_v2ray.dart';
@@ -92,9 +94,41 @@ class VpnCubit extends Cubit<VpnState> {
         return;
       }
 
-      // Fetch subscription and parse proxy configs
-      final configs = await FlutterV2ray.parseUrl(subscriptionUrl);
-      if (configs.isEmpty) {
+      // Fetch the Remnawave subscription URL.
+      // The response body is base64-encoded text — one proxy link per line
+      // (vmess://, vless://, trojan://, etc.)
+      final response = await Dio().get<String>(
+        subscriptionUrl,
+        options: Options(responseType: ResponseType.plain),
+      );
+      final body = (response.data ?? '').trim();
+
+      // Decode base64 → UTF-8 text; fall back to plain text if not base64
+      String plainText;
+      try {
+        plainText = utf8.decode(base64.decode(body));
+      } catch (_) {
+        plainText = body;
+      }
+
+      // Split into individual proxy links and parse each one
+      final lines = plainText
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+
+      V2RayURL? selected;
+      for (final link in lines) {
+        try {
+          selected = FlutterV2ray.parseFromURL(link);
+          break; // use first valid config
+        } catch (_) {
+          continue;
+        }
+      }
+
+      if (selected == null) {
         emit(state.copyWith(
           connectionStatus: VpnConnectionStatus.error,
           error: () => 'Конфигурация VPN недоступна',
@@ -102,15 +136,12 @@ class VpnCubit extends Cubit<VpnState> {
         return;
       }
 
-      // Pick the first available config (TODO: allow server selection)
-      final selected = configs.first;
-
       await _v2ray.startV2Ray(
         remark: selected.remark,
-        config: selected.getFullConfig(bypassSubnets: []),
+        config: selected.getFullConfiguration(),
+        blockedApps: null,
+        bypassSubnets: null,
         proxyOnly: false,
-        bypassSubnets: [],
-        notificationDisconnectButtonName: 'Отключить',
       );
 
       emit(state.copyWith(
