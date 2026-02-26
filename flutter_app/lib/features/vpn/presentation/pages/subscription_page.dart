@@ -30,8 +30,8 @@ const _benefits = [
   ),
   _Benefit(
     icon: Icons.all_inclusive_rounded,
-    title: 'Безлимитный трафик',
-    subtitle: 'Без ограничений по скорости и объёму',
+    title: 'Никаких ограничений',
+    subtitle: 'На полной мощности',
   ),
   _Benefit(
     icon: Icons.lock_rounded,
@@ -40,7 +40,7 @@ const _benefits = [
   ),
   _Benefit(
     icon: Icons.devices_rounded,
-    title: 'До 3 устройств',
+    title: 'До 5 устройств',
     subtitle: 'Подключайте несколько устройств одновременно',
   ),
   _Benefit(
@@ -62,7 +62,7 @@ class _StaticPeriod {
 }
 
 const _staticPeriods = [
-  _StaticPeriod('1 месяц', '299 ₽', '299 ₽/мес', null),
+  _StaticPeriod('1 месяц', '199 ₽', '199 ₽/мес', null),
   _StaticPeriod('3 месяца', '749 ₽', '250 ₽/мес', 16),
   _StaticPeriod('6 месяцев', '1 299 ₽', '217 ₽/мес', 28),
   _StaticPeriod('12 месяцев', '1 999 ₽', '167 ₽/мес', 44),
@@ -322,7 +322,7 @@ class _SubscriptionViewState extends State<_SubscriptionView> {
           child: TariffCard(
             duration: p.label,
             price: p.priceLabel,
-            pricePerMonth: p.pricePerMonthLabel,
+            pricePerMonth: "${p.pricePerMonthLabel}/мес",
             discountPercent: p.discountPercent,
             isSelected: state.selectedPeriodIndex == i,
             onTap: () =>
