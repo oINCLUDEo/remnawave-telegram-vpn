@@ -32,8 +32,8 @@ dependencies:
   # SVG rendering
   flutter_svg: ^2.0.10+1
 
-  # Deep-link / URL launching — used to open happ:// scheme for VPN import
-  url_launcher: ^6.3.1
+  # In-app VPN tunnel — Xray/V2Ray core for VLESS/VMess/Trojan/SS protocols
+  flutter_v2ray: ^1.3.5
 
 dev_dependencies:
   flutter_test:

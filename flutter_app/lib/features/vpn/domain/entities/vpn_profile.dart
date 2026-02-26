@@ -16,7 +16,7 @@ class VpnProfile extends Equatable {
   final String? username;
 
   /// Full Remnawave subscription URL, e.g. https://sub.example.com/AbCd
-  /// Passed directly to Happ as: happ://add/<subscriptionUrl>
+  /// Fetched and parsed by flutter_v2ray to start the in-app VPN tunnel.
   final String? subscriptionUrl;
 
   final double trafficUsedGb;

@@ -84,13 +84,18 @@ flutter test
 
 ---
 
-## VPN Connection via Happ
+## In-App VPN Connection (flutter_v2ray)
 
-The app opens the [Happ VPN client](https://happ.app) using a deep link to import the user's subscription:
+The app routes traffic through the device's VPN API directly — no external app is needed.  
+It uses the [`flutter_v2ray`](https://pub.dev/packages/flutter_v2ray) package which bundles the **Xray core** and supports VLESS, VMess, Trojan, Shadowsocks, and other protocols compatible with Remnawave/Xray panels.
 
-```
-happ://add/<subscription_url>
-```
+### Connection flow
+
+1. User taps **Connect**
+2. `VpnCubit.connect()` calls `GET /mobile/v1/profile` to get the subscription URL
+3. `FlutterV2ray.parseUrl(subscriptionUrl)` fetches the Remnawave subscription endpoint and parses all available proxy configs
+4. `flutterV2ray.startV2Ray(config)` hands the config to the Xray core and starts the VPN tunnel via the platform VPN API
+5. Speed/status updates are streamed via `onStatusChanged` callback
 
 ### Required native platform configuration
 
@@ -98,35 +103,55 @@ After running `flutter create` / when native directories exist, add the followin
 
 #### Android — `android/app/src/main/AndroidManifest.xml`
 
-Inside the `<manifest>` tag (before `<application>`):
+Add inside `<manifest>` (before `<application>`):
 
 ```xml
-<queries>
-  <intent>
-    <action android:name="android.intent.action.VIEW" />
-    <data android:scheme="happ" />
-  </intent>
-</queries>
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+```
+
+Add inside `<application>`:
+
+```xml
+<service
+    android:name="com.github.blueboytm.flutter_v2ray.v2ray.services.V2RayVpnService"
+    android:permission="android.permission.BIND_VPN_SERVICE"
+    android:exported="true"
+    android:foregroundServiceType="specialUse">
+    <intent-filter>
+        <action android:name="android.net.VpnService" />
+    </intent-filter>
+    <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="VPN" />
+</service>
 ```
 
 #### iOS — `ios/Runner/Info.plist`
 
 ```xml
-<key>LSApplicationQueriesSchemes</key>
-<array>
-  <string>happ</string>
-</array>
+<key>NSLocalNetworkUsageDescription</key>
+<string>Используется для VPN-туннелирования трафика</string>
 ```
+
+iOS also requires a **Network Extension target** in Xcode for full tunnel support.  
+Follow the [flutter_v2ray iOS setup guide](https://pub.dev/packages/flutter_v2ray#ios-setup).
 
 ---
 
 ## Roadmap
 
-- [x] Login screen
-- [x] Registration screen (with email verification flow)
-- [ ] Email verification screen
-- [ ] Dashboard / Home screen
-- [ ] Subscription management screen
-- [ ] Profile screen
-- [ ] VPN connection control
+- [x] Login screen (hidden from user flow, kept for future auth)
+- [x] Registration screen (hidden from user flow, kept for future auth)
+- [x] Home screen with VPN connect/disconnect button
+- [x] Subscription management screen (Premium paywall)
+- [x] Server selection screen (collapsible categories)
+- [x] In-app VPN tunnel via flutter_v2ray + Xray core
+- [x] Real traffic stats from /mobile/v1/profile
+- [x] Real tariffs from /mobile/v1/tariffs
+- [x] Real server list from /mobile/v1/servers
+- [ ] Server selection → connect to selected server
+- [ ] Profile / account screen
 - [ ] Payment integration (YooKassa / Telegram Stars)
+- [ ] iOS Network Extension target setup

@@ -40,7 +40,7 @@ class _VpnHomeViewState extends State<_VpnHomeView> {
     final cubit = context.read<VpnCubit>();
     if (cubit.state.isConnected) {
       cubit.disconnect();
-    } else {
+    } else if (!cubit.state.isConnecting && !cubit.state.isDisconnecting) {
       cubit.connect();
     }
   }
@@ -106,26 +106,29 @@ class _VpnHomeViewState extends State<_VpnHomeView> {
 
   Widget _buildStatusSection(VpnState state) {
     final isConnected = state.isConnected;
-    final isLaunching = state.isLaunching;
+    final isConnecting = state.isConnecting;
+    final isDisconnecting = state.isDisconnecting;
     return SizedBox(
       height: 36,
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 400),
         child: Column(
-          key: ValueKey('$isConnected-$isLaunching'),
+          key: ValueKey('${state.connectionStatus}'),
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              isLaunching
+              isConnecting
                   ? 'Подключение...'
-                  : isConnected
-                      ? 'Защищено'
-                      : 'Не подключено',
+                  : isDisconnecting
+                      ? 'Отключение...'
+                      : isConnected
+                          ? 'Защищено'
+                          : 'Не подключено',
               style: TextStyle(
                 color: isConnected
                     ? AppColors.signal
-                    : isLaunching
+                    : isConnecting
                         ? AppColors.accent
                         : AppColors.textSecondary,
                 fontSize: 20,
@@ -133,7 +136,13 @@ class _VpnHomeViewState extends State<_VpnHomeView> {
                 letterSpacing: 0.5,
               ),
             ),
-            if (isConnected)
+            if (isConnected && state.downloadSpeed.isNotEmpty)
+              Text(
+                '↓ ${state.downloadSpeed}  ↑ ${state.uploadSpeed}',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11),
+              )
+            else if (isConnected)
               const Text(
                 'Ваше соединение зашифровано',
                 style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
