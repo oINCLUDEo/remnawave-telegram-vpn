@@ -104,33 +104,46 @@ class VpnCubit extends Cubit<VpnState> {
       final body = (response.data ?? '').trim();
 
       // Decode base64 → UTF-8 text; fall back to plain text if not base64.
-      // RemnaWave uses URL-safe base64 (RFC 4648 §5: `-` and `_` instead of
-      // `+` and `/`), so we try base64Url first, then standard base64.
+      // RemnaWave uses MIME base64 (line breaks every 76 chars) or URL-safe
+      // base64.  Strip ALL whitespace before padding normalisation so that
+      // embedded `\n` / `\r` don't cause decode failures.
       String plainText;
+      final compactBody = body.replaceAll(RegExp(r'\s'), '');
       try {
-        // Normalize missing padding before decoding
-        final padded = _normalizePadding(body);
-        plainText = utf8.decode(base64Url.decode(padded));
+        // URL-safe base64 first (RFC 4648 §5: `-` and `_`)
+        plainText = utf8.decode(base64Url.decode(_normalizePadding(compactBody)));
       } catch (_) {
         try {
-          plainText = utf8.decode(base64.decode(_normalizePadding(body)));
+          // Standard base64 fallback (`+` and `/`)
+          plainText = utf8.decode(base64.decode(_normalizePadding(compactBody)));
         } catch (_) {
           plainText = body; // already plain-text proxy links
         }
       }
 
-      // Split into individual proxy links and parse each one
+      // Split into individual proxy links.
+      // Only lines that start with a known VPN scheme are candidate configs.
+      const _knownSchemes = [
+        'vless://', 'vmess://', 'trojan://', 'ss://',
+        'hysteria2://', 'tuic://',
+      ];
       final lines = plainText
           .split('\n')
           .map((l) => l.trim().replaceAll('\r', ''))
           .where((l) => l.isNotEmpty)
           .toList();
+      final candidateLinks = lines
+          .where((l) => _knownSchemes.any(l.startsWith))
+          .toList();
 
       V2RayURL? selected;
-      for (final link in lines) {
+      for (final link in candidateLinks) {
         try {
-          selected = FlutterV2ray.parseFromURL(link);
-          break; // use first valid config
+          final parsed = FlutterV2ray.parseFromURL(link);
+          if (parsed.configType != 'ERROR') {
+            selected = parsed;
+            break; // use first valid config
+          }
         } catch (_) {
           continue;
         }
@@ -140,7 +153,9 @@ class VpnCubit extends Cubit<VpnState> {
         emit(state.copyWith(
           connectionStatus: VpnConnectionStatus.error,
           error: () =>
-              'Не удалось разобрать конфигурацию VPN (${lines.length} строк)',
+              'Не удалось разобрать конфигурацию VPN '
+              '(всего строк: ${lines.length}, '
+              'VPN-ссылок: ${candidateLinks.length})',
         ));
         return;
       }
