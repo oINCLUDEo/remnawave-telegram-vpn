@@ -74,10 +74,18 @@ class VpnCubit extends Cubit<VpnState> {
 
   /// Starts the in-app VPN tunnel using the Remnawave subscription URL.
   ///
-  /// [preferredMatchKey] is an optional hint (typically a config profile
-  /// name) used to select the most appropriate config from the subscription
-  /// for the server chosen in the UI. When null, the first valid config is
-  /// used as before.
+  /// Connection flow:
+  ///   1. Request Android VPN permission.
+  ///   2. Try GET /mobile/v1/vpn-config (backend decodes base64 server-side).
+  ///   3. If empty/fails, fetch [subscriptionUrl] directly from the device
+  ///      and decode with [_parseSubscriptionBody].
+  ///   4. Parse each proxy link with [FlutterV2ray.parseFromURL].
+  ///   5. Prefer the config whose remark contains [preferredMatchKey].
+  ///   6. Start V2Ray tunnel via [FlutterV2ray.startV2Ray].
+  ///
+  /// [preferredMatchKey] — optional hint (typically the server squad name)
+  /// used to choose the best proxy from the subscription. Falls back to the
+  /// first valid config when null or unmatched.
   Future<void> connect({String? preferredMatchKey}) async {
     final subscriptionUrl = state.profile?.subscriptionUrl;
     if (subscriptionUrl == null || subscriptionUrl.isEmpty) {
@@ -93,99 +101,82 @@ class VpnCubit extends Cubit<VpnState> {
     try {
       await _ensureInitialized();
 
-      // Request VPN permission (Android only; no-op on iOS)
+      // Request VPN permission (Android only; no-op on iOS).
       if (!await _v2ray.requestPermission()) {
         emit(state.copyWith(
-          connectionStatus: VpnConnectionStatus.error,
+          connectionStatus: VpnConnectionStatus.disconnected,
           error: () => 'Разрешение на VPN не предоставлено',
         ));
         return;
       }
 
-      // Resolve subscription URL:
-      // - absolute URLs (with scheme) are fetched directly;
-      // - relative URLs are fetched via [ApiClient] so the JWT token
-      //   is attached automatically.
-      final uri = Uri.tryParse(subscriptionUrl);
-      if (uri == null) {
-        emit(state.copyWith(
-          connectionStatus: VpnConnectionStatus.error,
-          error: () => 'Некорректный адрес подписки VPN',
-        ));
-        return;
-      }
-
-      final bool isAbsolute = uri.hasScheme;
-      final dio = isAbsolute ? Dio() : apiClient.dio;
-      final targetUrl = isAbsolute ? subscriptionUrl : subscriptionUrl;
-
-      // Fetch the Remnawave subscription content.
-      // The response body is base64-encoded text — one proxy link per line
-      // (vmess://, vless://, trojan://, etc.)
-      final response = await dio.get<String>(
-        targetUrl,
-        options: Options(responseType: ResponseType.plain),
-      );
-      final body = (response.data ?? '').trim();
-
-      // Treat the body as a (potentially base64-encoded) list of subscription
-      // links (vmess://, vless://, trojan://, etc.) and select the best match
-      // for the chosen server, then build a full configuration via
-      // [V2RayURL.getFullConfiguration] exactly as in the flutter_v2ray
-      // reference example.
-
-      // Decode base64 → UTF-8 text; fall back to plain text if not base64.
-      // RemnaWave uses URL-safe base64 (RFC 4648 §5: `-` and `_` instead of
-      // `+` and `/`), so we try base64Url first, then standard base64.
-      String plainText;
+      // ── Strategy 1: backend proxy endpoint ──────────────────────────────
+      // GET /mobile/v1/vpn-config — server fetches the subscription,
+      // decodes base64 and returns clean proxy links. Most reliable because
+      // it avoids mobile network quirks.
+      List<String> candidateLinks = [];
       try {
         candidateLinks = await dataSource.getVpnConfig();
       } catch (_) {
-        // Backend unavailable or 404 — try direct fetch below
+        // Backend unavailable or no subscription → try direct fetch.
       }
 
-      // Split into individual proxy links
-      final lines = plainText
-          .split('\n')
-          .map((l) => l.trim().replaceAll('\r', ''))
-          .where((l) => l.isNotEmpty)
-          .toList();
+      // ── Strategy 2: direct fetch from the device ─────────────────────────
+      // Fetch the Remnawave subscription URL from the user's device and
+      // decode it locally. Handles MIME base64 (line-wrapped at 76 chars),
+      // URL-safe base64 (RFC 4648 §5: `-`/`_`), and plain-text link lists.
+      if (candidateLinks.isEmpty) {
+        final response = await Dio().get<String>(
+          subscriptionUrl,
+          options: Options(
+            responseType: ResponseType.plain,
+            headers: {'User-Agent': 'v2rayN/6.0'},
+            sendTimeout: const Duration(seconds: 15),
+            receiveTimeout: const Duration(seconds: 15),
+          ),
+        );
+        final body = (response.data ?? '').trim();
+        candidateLinks = _parseSubscriptionBody(body);
+      }
 
-      if (lines.isEmpty) {
+      if (candidateLinks.isEmpty) {
         emit(state.copyWith(
-          connectionStatus: VpnConnectionStatus.error,
-          error: () => 'Сервер вернул пустую VPN-конфигурацию. '
-              'Проверьте, что подписка активна и RemnaWave возвращает конфигурацию.',
+          connectionStatus: VpnConnectionStatus.disconnected,
+          error: () =>
+              'Не удалось получить конфигурацию VPN. '
+              'Убедитесь, что подписка активна и сервер доступен.',
         ));
         return;
       }
 
-      // Parse all valid links into V2RayURL descriptors.
+      // ── Parse proxy links into V2RayURL descriptors ───────────────────────
       final parsedConfigs = <V2RayURL>[];
-      for (final link in lines) {
+      for (final link in candidateLinks) {
         try {
           parsedConfigs.add(FlutterV2ray.parseFromURL(link));
         } catch (_) {
-          continue;
+          // Skip unsupported or malformed links.
         }
       }
 
       if (parsedConfigs.isEmpty) {
         emit(state.copyWith(
-          connectionStatus: VpnConnectionStatus.error,
+          connectionStatus: VpnConnectionStatus.disconnected,
           error: () =>
-              'Не удалось разобрать ни одну ссылку VPN. Формат ссылок не поддерживается или повреждён.',
+              'Ни одна VPN-ссылка не поддерживается '
+              '(${candidateLinks.length} ссылок получено)',
         ));
         return;
       }
 
-      // Choose the config whose remark matches the selected server,
-      // falling back to the first one.
+      // ── Select the best matching config ───────────────────────────────────
+      // Prefer a config whose remark contains the selected server name.
+      // Falls back to the first config in the list.
       V2RayURL selected = parsedConfigs.first;
-      final key = (preferredMatchKey ?? '').toLowerCase();
+      final key = (preferredMatchKey ?? '').toLowerCase().trim();
       if (key.isNotEmpty) {
         for (final cfg in parsedConfigs) {
-          final remark = (cfg.remark ?? '').toLowerCase();
+          final remark = cfg.remark.toLowerCase();
           if (remark.contains(key)) {
             selected = cfg;
             break;
@@ -193,24 +184,31 @@ class VpnCubit extends Cubit<VpnState> {
         }
       }
 
-      // Optionally, we could tweak inbound/dns/log here, similar to the
-      // flutter_v2ray reference, but for now we use the config exactly as
-      // generated by [getFullConfiguration].
+      // ── Build full V2Ray JSON and start the tunnel ─────────────────────────
+      final config = selected.getFullConfiguration();
+      if (config.isEmpty) {
+        emit(state.copyWith(
+          connectionStatus: VpnConnectionStatus.disconnected,
+          error: () =>
+              'Не удалось сформировать конфигурацию для "${selected.remark}"',
+        ));
+        return;
+      }
 
       await _v2ray.startV2Ray(
         remark: selected.remark,
-        config: selected.getFullConfiguration(),
+        config: config,
         blockedApps: null,
         bypassSubnets: null,
         proxyOnly: false,
       );
 
-      emit(state.copyWith(
-        activeConfigRemark: selected.remark,
-      ));
+      // _onV2RayStatusChanged will fire CONNECTED when the tunnel is up.
+      // Emit remark immediately so the UI shows the server name.
+      emit(state.copyWith(activeConfigRemark: selected.remark));
     } catch (e) {
       emit(state.copyWith(
-        connectionStatus: VpnConnectionStatus.error,
+        connectionStatus: VpnConnectionStatus.disconnected,
         error: () => 'Ошибка подключения: $e',
       ));
     }
