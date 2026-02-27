@@ -11,6 +11,7 @@ class ServerModel extends ServerEntity {
     required super.isAvailable,
     required super.loadPercent,
     required super.qualityLevel,
+    super.matchKey,
   });
 
   factory ServerModel.fromJson(Map<String, dynamic> json) {
@@ -23,6 +24,7 @@ class ServerModel extends ServerEntity {
       isAvailable: json['is_available'] as bool,
       loadPercent: json['load_percent'] as int,
       qualityLevel: json['quality_level'] as int,
+      matchKey: json['match_key'] as String?,
     );
   }
 }

@@ -30,6 +30,24 @@ class SecureStorageService {
     ]);
   }
 
+  /// Saves only the access token and clears any stored refresh token.
+  ///
+  /// Used for DEV-mode tokens issued by `/mobile/v1/dev/auth`, which are
+  /// long-lived and do not support refresh.
+  Future<void> saveAccessTokenOnly(String accessToken) async {
+    await Future.wait([
+      _storage.write(
+        key: AppConstants.accessTokenKey,
+        value: accessToken,
+        aOptions: _options,
+      ),
+      _storage.delete(
+        key: AppConstants.refreshTokenKey,
+        aOptions: _options,
+      ),
+    ]);
+  }
+
   Future<String?> readAccessToken() =>
       _storage.read(key: AppConstants.accessTokenKey, aOptions: _options);
 

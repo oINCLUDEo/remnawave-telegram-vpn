@@ -52,10 +52,7 @@ class _SettingsPageState extends State<SettingsPage> {
         throw Exception('Сервер не вернул токен');
       }
 
-      await sl<SecureStorageService>().saveTokens(
-        accessToken: token,
-        refreshToken: '',
-      );
+      await sl<SecureStorageService>().saveAccessTokenOnly(token);
 
       // Reload the VPN profile with the new token.
       if (mounted) {

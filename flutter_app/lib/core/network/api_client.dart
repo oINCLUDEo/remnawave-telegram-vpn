@@ -67,7 +67,7 @@ class ApiClient {
 
     // Attempt silent token refresh.
     final refreshToken = await _storage.readRefreshToken();
-    if (refreshToken == null) {
+    if (refreshToken == null || refreshToken.isEmpty) {
       handler.next(error);
       return;
     }
