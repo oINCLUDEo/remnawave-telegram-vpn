@@ -139,15 +139,9 @@ class VpnCubit extends Cubit<VpnState> {
       // `+` and `/`), so we try base64Url first, then standard base64.
       String plainText;
       try {
-        // Normalize missing padding before decoding
-        final padded = _normalizePadding(body);
-        plainText = utf8.decode(base64Url.decode(padded));
+        candidateLinks = await dataSource.getVpnConfig();
       } catch (_) {
-        try {
-          plainText = utf8.decode(base64.decode(_normalizePadding(body)));
-        } catch (_) {
-          plainText = body; // already plain-text proxy links
-        }
+        // Backend unavailable or 404 — try direct fetch below
       }
 
       // Split into individual proxy links
@@ -283,6 +277,42 @@ class VpnCubit extends Cubit<VpnState> {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  static const _knownSchemes = [
+    'vless://', 'vmess://', 'trojan://', 'ss://',
+    'hysteria2://', 'tuic://', 'hysteria://',
+  ];
+
+  /// Decode a raw subscription response body into a list of proxy link strings.
+  ///
+  /// Handles MIME base64 (line-wrapped every 76 chars), URL-safe base64
+  /// (RFC 4648 §5), and plain-text proxy link lists.
+  static List<String> _parseSubscriptionBody(String body) {
+    // Strip ALL whitespace so MIME \n line-wrapping doesn't break decoders.
+    final compact = body.replaceAll(RegExp(r'\s'), '');
+
+    String? plainText;
+    for (final tryDecode in [base64Url.decode, base64.decode]) {
+      try {
+        final bytes = tryDecode(_normalizePadding(compact));
+        final decoded = utf8.decode(bytes);
+        // Only accept the decoded result if it contains at least one link
+        if (_knownSchemes.any(decoded.contains)) {
+          plainText = decoded;
+          break;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    plainText ??= body; // already plain-text proxy links
+
+    return plainText
+        .split('\n')
+        .map((l) => l.trim().replaceAll('\r', ''))
+        .where((l) => _knownSchemes.any(l.startsWith))
+        .toList();
+  }
 
   /// Adds `=` padding so base64/base64Url decoders don't throw.
   static String _normalizePadding(String s) {
