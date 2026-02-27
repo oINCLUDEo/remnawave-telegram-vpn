@@ -11,8 +11,8 @@ build/
 .vscode/
 *.swp
 
-# Android
-android/
+# Android — tracked because flutter_v2ray requires specific manifest changes
+# android/   ← DO NOT ignore; manifest must declare VPN service + permissions
 ios/
 linux/
 macos/

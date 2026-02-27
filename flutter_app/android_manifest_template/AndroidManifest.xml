@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  AndroidManifest.xml  —  ulya_vpn                                       ║
+  ║                                                                          ║
+  ║  КОПИРУЙТЕ ЭТОТ ФАЙЛ В: android/app/src/main/AndroidManifest.xml        ║
+  ║                                                                          ║
+  ║  Обязательные изменения для flutter_v2ray:                               ║
+  ║   1. INTERNET + FOREGROUND_SERVICE permissions                           ║
+  ║   2. V2RayVpnService declaration with BIND_VPN_SERVICE                  ║
+  ║   3. android:usesCleartextTraffic="true" (for localhost dev backend)     ║
+  ║                                                                          ║
+  ║  Без пункта 2 VPN-туннель поднимается, но Xray-core не запускается —    ║
+  ║  Android показывает "Подключено" + время, но трафик не идёт.            ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ── Permissions ──────────────────────────────────────────────────── -->
+
+    <!-- Network access for the app and Xray core -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Keeps the V2Ray foreground service alive when screen is off.
+         WITHOUT this, Android kills the Xray process after a few seconds →
+         VPN shows connected but 0 bytes transferred. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Android 14+ requires this for specialUse foreground services -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Optional: prevents battery optimiser from killing the VPN service -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- ── Application ──────────────────────────────────────────────────── -->
+    <application
+        android:label="Ulya VPN"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true"
+        android:usesCleartextTraffic="true">
+
+        <!-- ── Flutter activity ─────────────────────────────────────────── -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. -->
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ── flutter_v2ray VPN Service ────────────────────────────────── -->
+        <!--
+          CRITICAL: This declaration is required for flutter_v2ray to work.
+          Without it, the Xray core foreground service cannot bind to the
+          Android VPN API, so traffic is silently dropped.
+
+          android:name must match the class inside flutter_v2ray 1.0.x.
+          If you see "Service not found" in logcat, check the exact class name
+          with: aapt dump xmltree <apk> AndroidManifest.xml | grep V2Ray
+        -->
+        <service
+            android:name="com.github.blueboytm.flutter_v2ray.v2ray.services.V2RayVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <!-- Required on Android 14+ for specialUse foreground services -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="VPN" />
+        </service>
+
+        <!-- Don't delete the meta-data below. This is used by the Flutter tool
+             to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+    </application>
+
+    <!-- ── Queries (Android 11+) ────────────────────────────────────────── -->
+    <!-- Allows the app to query for installed packages if needed -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+        </intent>
+    </queries>
+
+</manifest>
