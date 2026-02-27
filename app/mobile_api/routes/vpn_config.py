@@ -83,13 +83,19 @@ def _decode_subscription_body(raw: str) -> list[str]:
     ]
 
 
-async def _fetch_subscription_content(url: str) -> str:
-    """HTTP GET the subscription URL and return the raw response body."""
+async def _fetch_subscription_content(url: str, hwid: str | None = None) -> str:
+    """HTTP GET the subscription URL and return the raw response body.
+
+    ``hwid`` is passed as ``X-HWID`` so Remnawave returns actual content
+    instead of an empty body (it uses HWID for device tracking / limits).
+    """
     timeout = aiohttp.ClientTimeout(total=10, connect=5)
-    headers = {
+    headers: dict[str, str] = {
         'User-Agent': 'v2rayN/6.0',
         'Accept': '*/*',
     }
+    if hwid:
+        headers['X-HWID'] = hwid
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url, headers=headers) as resp:
             resp.raise_for_status()
@@ -147,7 +153,7 @@ async def get_vpn_config(
         )
 
     try:
-        raw_body = await _fetch_subscription_content(sub_url)
+        raw_body = await _fetch_subscription_content(sub_url, hwid=f'ulya-vpn-mobile-user-{user.id}')
     except aiohttp.ClientResponseError as exc:
         logger.error('Failed to fetch subscription content', url=sub_url, status=exc.status)
         raise HTTPException(

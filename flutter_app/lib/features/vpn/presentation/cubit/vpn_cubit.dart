@@ -121,20 +121,35 @@ class VpnCubit extends Cubit<VpnState> {
         // Backend unavailable or no subscription → try direct fetch.
       }
 
-      // ── Strategy 2: direct fetch from the device ─────────────────────────
-      // Fetch the Remnawave subscription URL from the user's device and
-      // decode it locally. Handles MIME base64 (line-wrapped at 76 chars),
-      // URL-safe base64 (RFC 4648 §5: `-`/`_`), and plain-text link lists.
+      // ── Strategy 2: fetch subscription (relative → backend proxy, absolute → direct) ──
+      // When subscription_url is a relative path (e.g. "/mobile/v1/profile/subscription")
+      // the backend is acting as a proxy that adds HWID + JWT. Use apiClient.dio so it
+      // inherits the base URL and Bearer token automatically.
+      // When subscription_url is an absolute external URL (e.g. "https://sub.example.com/…")
+      // use a plain Dio instance with User-Agent.
       if (candidateLinks.isEmpty) {
-        final response = await Dio().get<String>(
-          subscriptionUrl,
-          options: Options(
-            responseType: ResponseType.plain,
-            headers: {'User-Agent': 'v2rayN/6.0'},
-            sendTimeout: const Duration(seconds: 15),
-            receiveTimeout: const Duration(seconds: 15),
-          ),
-        );
+        final isRelative = subscriptionUrl.startsWith('/');
+        Response<String> response;
+        if (isRelative) {
+          response = await apiClient.dio.get<String>(
+            subscriptionUrl,
+            options: Options(
+              responseType: ResponseType.plain,
+              sendTimeout: const Duration(seconds: 15),
+              receiveTimeout: const Duration(seconds: 15),
+            ),
+          );
+        } else {
+          response = await Dio().get<String>(
+            subscriptionUrl,
+            options: Options(
+              responseType: ResponseType.plain,
+              headers: {'User-Agent': 'v2rayN/6.0'},
+              sendTimeout: const Duration(seconds: 15),
+              receiveTimeout: const Duration(seconds: 15),
+            ),
+          );
+        }
         final body = (response.data ?? '').trim();
         candidateLinks = _parseSubscriptionBody(body);
       }
