@@ -37,7 +37,7 @@ class VpnCubit extends Cubit<VpnState> {
   Future<void> _ensureInitialized() async {
     if (_v2rayInitialized) return;
     await _v2ray.initializeV2Ray(
-      notificationIconResourceType: 'drawable',
+      notificationIconResourceType: 'mipmap',
       notificationIconResourceName: 'ic_launcher',
     );
     _v2rayInitialized = true;
@@ -214,9 +214,9 @@ class VpnCubit extends Cubit<VpnState> {
       await _v2ray.startV2Ray(
         remark: selected.remark,
         config: config,
-        blockedApps: null,
-        bypassSubnets: null,
         proxyOnly: false,
+        bypassSubnets: [],
+        notificationDisconnectButtonName: 'DISCONNECT',
       );
 
       // _onV2RayStatusChanged will fire CONNECTED when the tunnel is up.
@@ -282,9 +282,9 @@ class VpnCubit extends Cubit<VpnState> {
       await _v2ray.startV2Ray(
         remark: remark,
         config: config,
-        blockedApps: null,
-        bypassSubnets: null,
         proxyOnly: false,
+        bypassSubnets: [],
+        notificationDisconnectButtonName: 'DISCONNECT',
       );
 
       emit(state.copyWith(activeConfigRemark: remark));
@@ -370,9 +370,9 @@ class VpnCubit extends Cubit<VpnState> {
       await _v2ray.startV2Ray(
         remark: parsed.remark,
         config: config,
-        blockedApps: null,
-        bypassSubnets: null,
         proxyOnly: false,
+        bypassSubnets: [],
+        notificationDisconnectButtonName: 'DISCONNECT',
       );
 
       emit(state.copyWith(activeConfigRemark: parsed.remark));
@@ -437,8 +437,8 @@ class VpnCubit extends Cubit<VpnState> {
 
     emit(state.copyWith(
       connectionStatus: newStatus,
-      downloadSpeed: status.download.toString(),
-      uploadSpeed: status.upload.toString(),
+      downloadSpeed: status.downloadSpeed.toString(),
+      uploadSpeed: status.uploadSpeed.toString(),
       connectionDuration: status.duration,
       error: stateStr == 'ERROR' ? () => 'Ошибка VPN соединения' : null,
     ));
