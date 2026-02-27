@@ -340,12 +340,10 @@ class _ServerSelectionViewState extends State<_ServerSelectionView> {
     return GestureDetector(
       onTap: () {
         setState(() => _selectedServer = s.name);
-        final serverName = s.flag.isNotEmpty ? '${s.flag} ${s.name}' : s.name;
-        // Update shared cubit so VpnHomePage server card reflects the choice
+        // Update shared cubit so VpnHomePage server card and VpnCubit
+        // know which concrete server/profile the user picked.
         try {
-          context
-              .read<SelectedServerCubit>()
-              .select(serverName, s.flag.isEmpty ? '🌐' : s.flag);
+          context.read<SelectedServerCubit>().select(s);
         } catch (_) {}
         // Navigate back to VPN home (page index 2) via the PageController
         // We are inside PageView so we do NOT call Navigator.pop().

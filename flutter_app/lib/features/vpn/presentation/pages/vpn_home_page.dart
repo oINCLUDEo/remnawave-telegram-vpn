@@ -40,7 +40,11 @@ class _VpnHomeViewState extends State<_VpnHomeView> {
     if (cubit.state.isConnected) {
       cubit.disconnect();
     } else if (!cubit.state.isConnecting && !cubit.state.isDisconnecting) {
-      cubit.connect();
+      // If the user selected a specific server, pass its matchKey
+      // so VpnCubit can prefer the corresponding config from the
+      // RemnaWave subscription.
+      final selected = context.read<SelectedServerCubit>().state;
+      cubit.connect(preferredMatchKey: selected.matchKey);
     }
   }
 

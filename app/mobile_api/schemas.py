@@ -65,6 +65,9 @@ class MobileServer(BaseModel):
     is_available: bool  # False when server is full or unavailable
     load_percent: int  # 0–100 based on current_users / max_users
     quality_level: int  # 1–5 (5 = best); used by SignalIndicator in Flutter
+    # Optional key used by the mobile client to prefer a matching config
+    # from the RemnaWave subscription (typically the config profile name).
+    match_key: str | None = None
 
 
 class MobileServerCategory(BaseModel):

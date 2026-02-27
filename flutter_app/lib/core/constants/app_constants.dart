@@ -3,7 +3,7 @@ class AppConstants {
   AppConstants._();
 
   // API
-  static const String defaultBaseUrl = 'http://localhost:8081';
+  static const String defaultBaseUrl = 'http://192.168.0.100:8081';
   static const String apiPrefix = '';
   static const int connectTimeoutMs = 15000;
   static const int receiveTimeoutMs = 30000;

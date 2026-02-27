@@ -105,6 +105,9 @@ void setupDependencies({String? baseUrl}) {
 
   // VPN — presentation
   sl.registerFactory<VpnCubit>(
-    () => VpnCubit(dataSource: sl<VpnRemoteDataSource>()),
+    () => VpnCubit(
+      dataSource: sl<VpnRemoteDataSource>(),
+      apiClient: sl<ApiClient>(),
+    ),
   );
 }

@@ -11,6 +11,7 @@ class ServerEntity extends Equatable {
     required this.isAvailable,
     required this.loadPercent,
     required this.qualityLevel,
+    this.matchKey,
   });
 
   final int id;
@@ -32,6 +33,10 @@ class ServerEntity extends Equatable {
   /// 1–5 quality indicator (5 = best). Maps directly to SignalIndicator.level.
   final int qualityLevel;
 
+  /// Optional key used to pick the best matching config from the
+  /// RemnaWave subscription (typically the config profile name).
+  final String? matchKey;
+
   @override
   List<Object?> get props => [
         id,
@@ -42,5 +47,6 @@ class ServerEntity extends Equatable {
         isAvailable,
         loadPercent,
         qualityLevel,
+        matchKey,
       ];
 }
