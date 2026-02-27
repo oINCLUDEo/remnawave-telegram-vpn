@@ -229,6 +229,70 @@ class VpnCubit extends Cubit<VpnState> {
     }
   }
 
+  /// Connects directly with a single pre-decoded proxy link, bypassing all
+  /// subscription fetching and base64 decoding.
+  ///
+  /// Use this to verify that [FlutterV2ray] itself works before debugging
+  /// subscription parsing issues.
+  Future<void> connectDirect(String proxyLink) async {
+    if (proxyLink.trim().isEmpty) {
+      emit(state.copyWith(error: () => 'Ссылка не должна быть пустой'));
+      return;
+    }
+
+    emit(state.copyWith(
+      connectionStatus: VpnConnectionStatus.connecting,
+      error: () => null,
+    ));
+
+    try {
+      await _ensureInitialized();
+
+      if (!await _v2ray.requestPermission()) {
+        emit(state.copyWith(
+          connectionStatus: VpnConnectionStatus.disconnected,
+          error: () => 'Разрешение на VPN не предоставлено',
+        ));
+        return;
+      }
+
+      final V2RayURL parsed;
+      try {
+        parsed = FlutterV2ray.parseFromURL(proxyLink.trim());
+      } catch (e) {
+        emit(state.copyWith(
+          connectionStatus: VpnConnectionStatus.disconnected,
+          error: () => 'Не удалось разобрать ссылку: $e',
+        ));
+        return;
+      }
+
+      final config = parsed.getFullConfiguration();
+      if (config.isEmpty) {
+        emit(state.copyWith(
+          connectionStatus: VpnConnectionStatus.disconnected,
+          error: () => 'getFullConfiguration() вернул пустую строку для "${parsed.remark}"',
+        ));
+        return;
+      }
+
+      await _v2ray.startV2Ray(
+        remark: parsed.remark,
+        config: config,
+        blockedApps: null,
+        bypassSubnets: null,
+        proxyOnly: false,
+      );
+
+      emit(state.copyWith(activeConfigRemark: parsed.remark));
+    } catch (e) {
+      emit(state.copyWith(
+        connectionStatus: VpnConnectionStatus.disconnected,
+        error: () => 'Ошибка connectDirect: $e',
+      ));
+    }
+  }
+
   /// Stops the in-app VPN tunnel.
   Future<void> disconnect() async {
     emit(state.copyWith(

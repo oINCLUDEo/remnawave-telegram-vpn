@@ -7,6 +7,7 @@ import '../../../../core/network/api_client.dart';
 import '../../../../core/storage/secure_storage_service.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../vpn/presentation/cubit/vpn_cubit.dart';
+import '../../../vpn/presentation/cubit/vpn_state.dart';
 import '../../../vpn/presentation/widgets/glass_card.dart';
 
 /// App settings screen.
@@ -21,10 +22,34 @@ class SettingsPage extends StatefulWidget {
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
+// Hardcoded test vless link — used to verify flutter_v2ray works independently
+// of subscription fetching. Replace with any working vless/vmess/trojan link.
+const _kTestLink =
+    'vless://8a3f9a02-8202-4100-8083-b3b9b3e325c2@ee01-server.ulya.space:443'
+    '?security=reality&type=tcp&headerType=&path=&host='
+    '&flow=xtls-rprx-vision&sni=cloudflare.com&fp='
+    '&pbk=b8SpqC5IqVGD5D1TatWNDrtykWvwHWKLoDAOdU2hXks'
+    '&sid=#%F0%9F%87%AA%F0%9F%87%AA%20%D0%AD%D1%81%D1%82%D0%BE%D0%BD%D0%B8%D1%8F%20%231';
+
 class _SettingsPageState extends State<SettingsPage> {
   bool _isLoading = false;
   String? _message;
   bool _isSuccess = false;
+
+  // Test-connection card state
+  late final TextEditingController _linkController;
+
+  @override
+  void initState() {
+    super.initState();
+    _linkController = TextEditingController(text: _kTestLink);
+  }
+
+  @override
+  void dispose() {
+    _linkController.dispose();
+    super.dispose();
+  }
 
   Future<void> _fetchDevToken() async {
     setState(() {
@@ -249,6 +274,132 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                     ],
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              // ── Test VPN connection ───────────────────────────────────────
+              const _SectionHeader(label: 'Тест VPN'),
+              const SizedBox(height: 8),
+              GlassCard(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Прямое подключение',
+                      style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Проверить что flutter_v2ray работает, минуя получение подписки. '
+                      'Вставьте vless:// или vmess:// ссылку и нажмите Подключить.',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _linkController,
+                      style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 12,
+                          fontFamily: 'monospace'),
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor:
+                            AppColors.backgroundDark.withValues(alpha: 0.5),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.1)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.1)),
+                        ),
+                        hintText: 'vless://...',
+                        hintStyle: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 12),
+                        contentPadding: const EdgeInsets.all(10),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    BlocBuilder<VpnCubit, VpnState>(
+                      builder: (context, vpnState) {
+                        final isConnecting = vpnState.connectionStatus ==
+                            VpnConnectionStatus.connecting;
+                        final isConnected = vpnState.connectionStatus ==
+                            VpnConnectionStatus.connected;
+                        return Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: isConnecting
+                                    ? null
+                                    : () => isConnected
+                                        ? context.read<VpnCubit>().disconnect()
+                                        : context
+                                            .read<VpnCubit>()
+                                            .connectDirect(
+                                                _linkController.text),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: isConnected
+                                      ? Colors.redAccent
+                                      : AppColors.signal,
+                                  disabledBackgroundColor:
+                                      AppColors.signal.withValues(alpha: 0.4),
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 12),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius:
+                                          BorderRadius.circular(12)),
+                                ),
+                                child: Text(
+                                  isConnecting
+                                      ? 'Подключение…'
+                                      : isConnected
+                                          ? 'Отключить'
+                                          : 'Подключить напрямую',
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13),
+                                ),
+                              ),
+                            ),
+                            if (vpnState.connectionStatus ==
+                                VpnConnectionStatus.connected) ...[
+                              const SizedBox(width: 10),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: AppColors.signal
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                      color: AppColors.signal
+                                          .withValues(alpha: 0.4)),
+                                ),
+                                child: Text(
+                                  vpnState.activeConfigRemark ?? 'Подключено',
+                                  style: const TextStyle(
+                                      color: AppColors.signal,
+                                      fontSize: 11),
+                                ),
+                              ),
+                            ],
+                          ],
+                        );
+                      },
+                    ),
                   ],
                 ),
               ),
