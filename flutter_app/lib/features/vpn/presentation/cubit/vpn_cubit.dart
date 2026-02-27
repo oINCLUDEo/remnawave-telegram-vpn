@@ -230,6 +230,95 @@ class VpnCubit extends Cubit<VpnState> {
     }
   }
 
+  /// Connects with a raw pre-built V2Ray JSON config string, bypassing
+  /// both subscription fetching AND URL parsing / [V2RayURL.getFullConfiguration].
+  ///
+  /// Use this when you have a known-good JSON config and want to verify
+  /// that [FlutterV2ray.startV2Ray] and the Xray core itself work correctly.
+  Future<void> connectWithRawConfig(String jsonConfig) async {
+    if (jsonConfig.trim().isEmpty) {
+      emit(state.copyWith(error: () => 'JSON конфиг не должен быть пустым'));
+      return;
+    }
+
+    emit(state.copyWith(
+      connectionStatus: VpnConnectionStatus.connecting,
+      error: () => null,
+    ));
+
+    try {
+      await _ensureInitialized();
+
+      if (!await _v2ray.requestPermission()) {
+        emit(state.copyWith(
+          connectionStatus: VpnConnectionStatus.disconnected,
+          error: () => 'Разрешение на VPN не предоставлено',
+        ));
+        return;
+      }
+
+      // Patch even manually provided configs (empty fp, etc.)
+      final config = _patchConfig(jsonConfig.trim());
+
+      // Extract a remark from the outbound tag or address for display.
+      String remark = 'raw-config';
+      try {
+        final dynamic decoded = jsonDecode(config);
+        if (decoded is Map<String, dynamic>) {
+          final outbounds = decoded['outbounds'] as List?;
+          final first = outbounds?.firstWhere(
+            (o) => o is Map && (o as Map)['tag'] == 'proxy',
+            orElse: () => outbounds?.isNotEmpty == true ? outbounds!.first : null,
+          );
+          if (first is Map<String, dynamic>) {
+            final vnext = (first['settings']?['vnext'] as List?)?.firstOrNull;
+            if (vnext is Map<String, dynamic>) {
+              remark = vnext['address']?.toString() ?? remark;
+            }
+          }
+        }
+      } catch (_) {}
+
+      await _v2ray.startV2Ray(
+        remark: remark,
+        config: config,
+        blockedApps: null,
+        bypassSubnets: null,
+        proxyOnly: false,
+      );
+
+      emit(state.copyWith(activeConfigRemark: remark));
+    } catch (e) {
+      emit(state.copyWith(
+        connectionStatus: VpnConnectionStatus.disconnected,
+        error: () => 'Ошибка connectWithRawConfig: $e',
+      ));
+    }
+  }
+
+  /// Returns the V2Ray JSON config that would be generated from [proxyLink]
+  /// (after [_patchConfig] is applied), without actually starting the tunnel.
+  ///
+  /// Returns an error string prefixed with "ERROR:" when parsing fails.
+  String getConfigPreview(String proxyLink) {
+    if (proxyLink.trim().isEmpty) return 'ERROR: пустая ссылка';
+    try {
+      final parsed = FlutterV2ray.parseFromURL(proxyLink.trim());
+      final raw = parsed.getFullConfiguration();
+      if (raw.isEmpty) return 'ERROR: getFullConfiguration() вернул пустую строку';
+      final patched = _patchConfig(raw);
+      // Pretty-print for readability
+      try {
+        final dynamic decoded = jsonDecode(patched);
+        return const JsonEncoder.withIndent('  ').convert(decoded);
+      } catch (_) {
+        return patched;
+      }
+    } catch (e) {
+      return 'ERROR: $e';
+    }
+  }
+
   /// Connects directly with a single pre-decoded proxy link, bypassing all
   /// subscription fetching and base64 decoding.
   ///

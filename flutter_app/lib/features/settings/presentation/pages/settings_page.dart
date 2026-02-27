@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../../core/di/injection.dart';
@@ -38,16 +39,20 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // Test-connection card state
   late final TextEditingController _linkController;
+  // Raw JSON config card state
+  late final TextEditingController _rawConfigController;
 
   @override
   void initState() {
     super.initState();
     _linkController = TextEditingController(text: _kTestLink);
+    _rawConfigController = TextEditingController();
   }
 
   @override
   void dispose() {
     _linkController.dispose();
+    _rawConfigController.dispose();
     super.dispose();
   }
 
@@ -331,6 +336,38 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                     ),
                     const SizedBox(height: 12),
+                    // ── Show generated config button ──────────────────────
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          final preview = context
+                              .read<VpnCubit>()
+                              .getConfigPreview(_linkController.text);
+                          showDialog<void>(
+                            context: context,
+                            builder: (_) => _ConfigPreviewDialog(
+                              config: preview,
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.code_rounded, size: 16,
+                            color: AppColors.textSecondary),
+                        label: const Text(
+                          'Показать сгенерированный конфиг',
+                          style: TextStyle(
+                              color: AppColors.textSecondary, fontSize: 12),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          side: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.15)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     BlocBuilder<VpnCubit, VpnState>(
                       builder: (context, vpnState) {
                         final isConnecting = vpnState.connectionStatus ==
@@ -406,6 +443,105 @@ class _SettingsPageState extends State<SettingsPage> {
 
               const SizedBox(height: 24),
 
+              // ── Raw JSON config ───────────────────────────────────────────
+              const _SectionHeader(label: 'Сырой JSON конфиг'),
+              const SizedBox(height: 8),
+              GlassCard(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Подключить с JSON напрямую',
+                      style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Вставьте готовый V2Ray JSON конфиг. '
+                      'Минует parseFromURL и getFullConfiguration — '
+                      'чистая проверка startV2Ray.',
+                      style:
+                          TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _rawConfigController,
+                      style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 11,
+                          fontFamily: 'monospace'),
+                      maxLines: 6,
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor:
+                            AppColors.backgroundDark.withValues(alpha: 0.5),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.1)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.1)),
+                        ),
+                        hintText: '{ "log": {...}, "inbounds": [...], ... }',
+                        hintStyle: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 11),
+                        contentPadding: const EdgeInsets.all(10),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    BlocBuilder<VpnCubit, VpnState>(
+                      builder: (context, vpnState) {
+                        final isConnecting = vpnState.connectionStatus ==
+                            VpnConnectionStatus.connecting;
+                        final isConnected = vpnState.connectionStatus ==
+                            VpnConnectionStatus.connected;
+                        return SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: isConnecting
+                                ? null
+                                : () => isConnected
+                                    ? context.read<VpnCubit>().disconnect()
+                                    : context
+                                        .read<VpnCubit>()
+                                        .connectWithRawConfig(
+                                            _rawConfigController.text),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor:
+                                  isConnected ? Colors.redAccent : AppColors.accent,
+                              disabledBackgroundColor:
+                                  AppColors.accent.withValues(alpha: 0.4),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                            ),
+                            child: Text(
+                              isConnecting
+                                  ? 'Подключение…'
+                                  : isConnected
+                                      ? 'Отключить'
+                                      : 'Подключить с JSON',
+                              style: const TextStyle(
+                                  color: Colors.black87,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
               // ── Instructions ─────────────────────────────────────────────
               GlassCard(
                 padding: const EdgeInsets.all(16),
@@ -470,6 +606,103 @@ class _SectionHeader extends StatelessWidget {
           fontSize: 11,
           fontWeight: FontWeight.w600,
           letterSpacing: 1.2,
+        ),
+      ),
+    );
+  }
+}
+
+/// Dialog that displays a V2Ray JSON config with copy-to-clipboard support.
+class _ConfigPreviewDialog extends StatelessWidget {
+  const _ConfigPreviewDialog({required this.config});
+  final String config;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppColors.background,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Сгенерированный конфиг',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy_rounded,
+                      color: AppColors.textSecondary, size: 18),
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: config));
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Конфиг скопирован'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  tooltip: 'Скопировать',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.5,
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.backgroundDark,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              child: Scrollbar(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(12),
+                  child: SelectableText(
+                    config,
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 10,
+                      fontFamily: 'monospace',
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.accent,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+                child: const Text('Закрыть',
+                    style: TextStyle(
+                        color: Colors.black87, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ],
         ),
       ),
     );
