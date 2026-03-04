@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.cabinet.routes import router as cabinet_router
 from app.config import settings
+from app.mobile_api.routes.servers import router as mobile_servers_router
 from app.services.disposable_email_service import disposable_email_service
 from app.services.payment_service import PaymentService
 from app.webapi.app import create_web_api_app
@@ -107,6 +108,9 @@ def create_unified_app(
     app.state.bot = bot
     app.state.dispatcher = dispatcher
     app.state.payment_service = payment_service
+
+    # Mobile API – always mounted, no auth required
+    app.include_router(mobile_servers_router, prefix='/mobile/v1', tags=['mobile'])
 
     payments_router = payments.create_payment_router(bot, payment_service)
     if payments_router:
