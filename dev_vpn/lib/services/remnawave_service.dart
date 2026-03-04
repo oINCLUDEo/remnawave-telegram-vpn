@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/app_config.dart';
 import '../models/server_node.dart';
 import '../models/subscription_info.dart';
 
@@ -129,6 +130,44 @@ class RemnawaveService {
     } catch (e) {
       debugPrint('RemnawaveService: fetchNodes error: $e');
       return await _loadFromCache();
+    }
+  }
+
+  // ── Public server catalog (no subscription required) ─────────────────────
+
+  /// Fetches the public server catalog from the Bedolaga backend.
+  ///
+  /// Called when the user has no personal subscription URL.
+  /// Servers are visible but not connectable:
+  /// ``isDisabled`` is always ``true`` and ``link`` is always ``null``.
+  ///
+  /// Returns an empty list on any network or parsing error.
+  static Future<List<ServerNode>> fetchPublicServers() async {
+    final uri = Uri.tryParse(
+      '${AppConfig.backendBaseUrl}/mobile/v1/servers',
+    );
+    if (uri == null) return [];
+
+    try {
+      final response = await http.get(uri).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode != 200) {
+        debugPrint(
+          'RemnawaveService: public servers returned ${response.statusCode}',
+        );
+        return [];
+      }
+
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      final rawList = json['servers'] as List<dynamic>? ?? [];
+      final nodes = rawList
+          .map((e) => ServerNode.fromJson(e as Map<String, dynamic>))
+          .toList();
+      debugPrint('RemnawaveService: loaded ${nodes.length} public servers');
+      return nodes;
+    } catch (e) {
+      debugPrint('RemnawaveService: fetchPublicServers error: $e');
+      return [];
     }
   }
 

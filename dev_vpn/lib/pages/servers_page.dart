@@ -50,11 +50,18 @@ class _ServersPageState extends State<ServersPage> {
     final subUrl = await RemnawaveService.getSubscriptionUrl();
 
     if (subUrl.isEmpty) {
+      // No personal subscription — fetch the public server catalog from the
+      // Bedolaga backend so the user can see available servers.
+      final publicNodes = await RemnawaveService.fetchPublicServers();
+
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _noSubscription = true;
-        _nodes = [];
+        _noSubscription = publicNodes.isEmpty;
+        _nodes = publicNodes;
+
+        final uuids = publicNodes.map((e) => e.uuid).toSet();
+        _pings.removeWhere((k, _) => !uuids.contains(k));
       });
       return;
     }
