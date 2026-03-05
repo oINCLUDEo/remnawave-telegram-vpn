@@ -281,6 +281,26 @@ async def delete_server_squad(db: AsyncSession, server_id: int) -> bool:
     return True
 
 
+async def _get_or_create_default_promo_group(db: AsyncSession) -> PromoGroup:
+    """Возвращает дефолтную промогруппу, создавая её при отсутствии."""
+    result = await db.execute(select(PromoGroup).where(PromoGroup.is_default.is_(True)).limit(1))
+    existing = result.scalars().first()
+    if existing is not None:
+        return existing
+
+    default_group = PromoGroup(
+        name='Базовый юзер',
+        server_discount_percent=0,
+        traffic_discount_percent=0,
+        device_discount_percent=0,
+        is_default=True,
+    )
+    db.add(default_group)
+    await db.flush()
+    logger.info('✅ Создана дефолтная промогруппа для серверов')
+    return default_group
+
+
 async def sync_with_remnawave(db: AsyncSession, remnawave_squads: list[dict]) -> tuple[int, int, int]:
     created = 0
     updated = 0
@@ -293,6 +313,11 @@ async def sync_with_remnawave(db: AsyncSession, remnawave_squads: list[dict]) ->
 
     remnawave_uuids = {squad['uuid'] for squad in remnawave_squads}
 
+    # Ensure a default promo group exists before creating any new server squads.
+    # On a fresh install the promo_groups table may be empty, which would cause
+    # create_server_squad to raise ValueError.
+    default_promo_group: PromoGroup | None = None
+
     for squad in remnawave_squads:
         squad_uuid = squad['uuid']
         original_name = squad.get('name', f'Squad {squad_uuid[:8]}')
@@ -303,6 +328,8 @@ async def sync_with_remnawave(db: AsyncSession, remnawave_squads: list[dict]) ->
                 server.original_name = original_name
                 updated += 1
         else:
+            if default_promo_group is None:
+                default_promo_group = await _get_or_create_default_promo_group(db)
             await create_server_squad(
                 db=db,
                 squad_uuid=squad_uuid,
@@ -311,6 +338,7 @@ async def sync_with_remnawave(db: AsyncSession, remnawave_squads: list[dict]) ->
                 country_code=_extract_country_code(original_name),
                 price_kopeks=1000,
                 is_available=False,
+                promo_group_ids=[default_promo_group.id],
             )
             created += 1
 
