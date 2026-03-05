@@ -1,6 +1,7 @@
 /// Application-wide configuration constants.
 ///
-/// The developer MUST update [panelBaseUrl] before distributing the app.
+/// The developer MUST update [panelBaseUrl] and [backendBaseUrl] before
+/// distributing the app.
 /// These values are compiled into the binary — they are NOT user-editable
 /// and should never contain admin API keys or other admin secrets.
 class AppConfig {
@@ -12,6 +13,16 @@ class AppConfig {
   ///
   /// Set this to your panel URL before building the release APK/IPA.
   static const String panelBaseUrl = 'https://panel.example.com';
+
+  /// Base URL of the Bedolaga backend (without trailing slash).
+  ///
+  /// Used by the mobile app to fetch the public server catalog when the user
+  /// has no personal subscription URL yet.
+  ///
+  /// Example: `'https://bot.example.com'`
+  ///
+  /// Set this to your Bedolaga backend URL before building the release APK/IPA.
+  static const String backendBaseUrl = 'https://bot.example.com';
 
   /// Package names excluded from VPN tunnel by default (on first launch).
   static const List<String> defaultBlockedApps = [

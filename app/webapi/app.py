@@ -22,6 +22,7 @@ from .routes import (
     media,
     menu_layout,
     miniapp,
+    mobile_api,
     pages,
     partners,
     pinned_messages,
@@ -122,6 +123,14 @@ OPENAPI_TAGS = [
     {
         'name': 'miniapp',
         'description': 'Endpoint для Telegram Mini App с информацией о подписке пользователя.',
+    },
+    {
+        'name': 'mobile',
+        'description': (
+            'Публичный API для Flutter-клиента. '
+            'Предоставляет каталог серверов без аутентификации: '
+            'серверы видны, но подключение не предоставляется.'
+        ),
     },
     {
         'name': 'partners',
@@ -246,6 +255,7 @@ def create_web_api_app() -> FastAPI:
     app.include_router(remnawave.router, prefix='/remnawave', tags=['remnawave'])
     app.include_router(media.router, tags=['media'])
     app.include_router(miniapp.router, prefix='/miniapp', tags=['miniapp'])
+    app.include_router(mobile_api.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(partners.router, prefix='/partners', tags=['partners'])
     app.include_router(polls.router, prefix='/polls', tags=['polls'])
     app.include_router(logs.router, prefix='/logs', tags=['logs'])
