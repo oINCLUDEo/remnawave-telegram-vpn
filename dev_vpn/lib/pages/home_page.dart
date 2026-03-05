@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/server_node.dart';
 import '../models/subscription_info.dart';
 import '../services/remnawave_service.dart';
+import '../services/selected_server_state.dart';
 import '../theme/app_colors.dart';
 import '../utils/speed_calculator.dart';
 import 'config_editor_page.dart';
@@ -30,6 +31,8 @@ class _HomePageState extends State<HomePage>
   List<ServerNode> _nodes = [];
   ServerNode? _selectedNode;
   bool _isLoadingNodes = false;
+  /// true when [_nodes] was loaded from the public catalog (no subscription URL).
+  bool _isPublicCatalog = false;
   SubscriptionInfo? _subscriptionInfo;
 
   // ── Анимация ─────────────────────────────────────────────────────────────
@@ -67,6 +70,7 @@ class _HomePageState extends State<HomePage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    selectedServerNotifier.addListener(_onSelectedServerChanged);
 
     _pulseCtrl = AnimationController(
       duration: const Duration(seconds: 2),
@@ -80,6 +84,15 @@ class _HomePageState extends State<HomePage>
 
     _v2ray = FlutterV2ray();
     _init();
+  }
+
+  /// Called when [ServersPage] updates the selection.
+  void _onSelectedServerChanged() {
+    if (!mounted) return;
+    final node = selectedServerNotifier.value;
+    if (node?.uuid != _selectedNode?.uuid) {
+      setState(() => _selectedNode = node);
+    }
   }
 
   Future<void> _init() async {
@@ -120,6 +133,7 @@ class _HomePageState extends State<HomePage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    selectedServerNotifier.removeListener(_onSelectedServerChanged);
     _statusSub?.cancel();
     _pulseCtrl.dispose();
     super.dispose();
@@ -130,13 +144,26 @@ class _HomePageState extends State<HomePage>
   Future<void> _loadNodes() async {
     if (!mounted) return;
     setState(() => _isLoadingNodes = true);
-    final nodes = await RemnawaveService.fetchNodes();
+
+    final subUrl = await RemnawaveService.getSubscriptionUrl();
+    final List<ServerNode> nodes;
+    final bool isPublic;
+
+    if (subUrl.isEmpty) {
+      nodes = await RemnawaveService.fetchPublicServers();
+      isPublic = true;
+    } else {
+      nodes = await RemnawaveService.fetchNodes();
+      isPublic = false;
+    }
+
     if (!mounted) return;
     final prefs = await SharedPreferences.getInstance();
     final savedUuid = prefs.getString('selected_node_uuid');
     setState(() {
       _nodes = nodes;
-      _subscriptionInfo = RemnawaveService.lastSubscriptionInfo;
+      _isPublicCatalog = isPublic;
+      _subscriptionInfo = isPublic ? null : RemnawaveService.lastSubscriptionInfo;
       _isLoadingNodes = false;
       if (_selectedNode != null) {
         _selectedNode = nodes.cast<ServerNode?>().firstWhere(
@@ -149,6 +176,12 @@ class _HomePageState extends State<HomePage>
               (n) => n?.uuid == savedUuid,
           orElse: () => null,
         );
+      }
+      // Sync restored selection with the shared notifier so ServersPage
+      // reflects the same selected server.
+      if (_selectedNode != null &&
+          selectedServerNotifier.value?.uuid != _selectedNode!.uuid) {
+        selectedServerNotifier.value = _selectedNode;
       }
     });
   }
@@ -164,8 +197,15 @@ class _HomePageState extends State<HomePage>
     }
 
     final node = _selectedNode;
-    if (node == null || node.link == null) {
+    if (node == null) {
       _snack('Сначала выберите сервер');
+      return;
+    }
+
+    // Public catalog servers have no link — connection is not possible.
+    if (node.isDisabled || node.link == null) {
+      _snack('Этот сервер доступен только для предпросмотра. '
+          'Оформите подписку в Telegram-боте для подключения.');
       return;
     }
 
@@ -273,6 +313,35 @@ class _HomePageState extends State<HomePage>
                     ],
                   ),
                 ),
+                // Banner for public catalog mode.
+                if (_isPublicCatalog)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: Colors.orange.withValues(alpha: 0.25)),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline,
+                              size: 14, color: Colors.orange[300]),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Публичный каталог. Для подключения нужна подписка.',
+                              style: TextStyle(
+                                  color: Colors.orange[300], fontSize: 11),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 const Divider(height: 1),
                 Expanded(
                   child: _nodes.isEmpty
@@ -325,6 +394,8 @@ class _HomePageState extends State<HomePage>
                         child: ListTile(
                           onTap: () async {
                             setState(() => _selectedNode = node);
+                            // Sync selection with ServersPage.
+                            selectedServerNotifier.value = node;
                             final prefs =
                             await SharedPreferences.getInstance();
                             await prefs.setString(
@@ -355,21 +426,24 @@ class _HomePageState extends State<HomePage>
                               if (isSel)
                                 const Icon(Icons.check_circle,
                                     color: Color(0xFF6C5CE7))
+                              else if (_isPublicCatalog)
+                                const Icon(Icons.lock_outline,
+                                    size: 16, color: Colors.grey)
                               else
-                                _protocolBadge(
-                                    node.protocol ?? ''),
-                              IconButton(
-                                icon: const Icon(
-                                    Icons.code_outlined,
-                                    size: 18,
-                                    color: Colors.white38),
-                                tooltip: 'Конфиг',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: () {
-                                  Navigator.pop(ctx);
-                                  _openConfigEditor(node);
-                                },
-                              ),
+                                _protocolBadge(node.protocol ?? ''),
+                              if (!_isPublicCatalog)
+                                IconButton(
+                                  icon: const Icon(
+                                      Icons.code_outlined,
+                                      size: 18,
+                                      color: Colors.white38),
+                                  tooltip: 'Конфиг',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () {
+                                    Navigator.pop(ctx);
+                                    _openConfigEditor(node);
+                                  },
+                                ),
                             ],
                           ),
                         ),

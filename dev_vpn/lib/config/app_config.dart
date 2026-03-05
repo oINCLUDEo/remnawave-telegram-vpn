@@ -1,8 +1,9 @@
 /// Application-wide configuration constants.
 ///
-/// The developer MUST update [panelBaseUrl] before distributing the app.
-/// These values are compiled into the binary — they are NOT user-editable
-/// and should never contain admin API keys or other admin secrets.
+/// The developer MUST update [panelBaseUrl] and [backendBaseUrl] before
+/// distributing the app.  These values are compiled into the binary — they
+/// are NOT user-editable and should never contain admin API keys or other
+/// admin secrets.
 class AppConfig {
   AppConfig._();
 
@@ -12,6 +13,14 @@ class AppConfig {
   ///
   /// Set this to your panel URL before building the release APK/IPA.
   static const String panelBaseUrl = 'https://panel.example.com';
+
+  /// Base URL of the Bedolaga bot backend (without trailing slash).
+  ///
+  /// Used for the public mobile API endpoint (`/mobile/v1/servers`).
+  /// Set this to your backend URL before building the release APK/IPA.
+  ///
+  /// Example: `'https://bot-api.example.com'`
+  static const String backendBaseUrl = 'https://api.example.com';
 
   /// Package names excluded from VPN tunnel by default (on first launch).
   static const List<String> defaultBlockedApps = [
