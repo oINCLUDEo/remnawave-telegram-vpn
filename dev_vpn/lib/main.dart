@@ -1,10 +1,16 @@
 import 'dart:ui';
+
 import 'package:flutter/material.dart';
+
 import 'pages/home_page.dart';
 import 'pages/servers_page.dart';
 import 'pages/settings_page.dart';
+import 'services/auth_state.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Restore previous auth session (if any) before rendering.
+  await loadAuthState();
   runApp(const UlyaVpnApp());
 }
 

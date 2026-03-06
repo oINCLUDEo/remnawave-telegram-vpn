@@ -700,6 +700,11 @@ class Settings(BaseSettings):
     EXTERNAL_ADMIN_TOKEN: str | None = None
     EXTERNAL_ADMIN_TOKEN_BOT_ID: int | None = None
 
+    # Mobile app Telegram authentication settings
+    # Use a SEPARATE test bot for mobile auth — never the main BOT_TOKEN.
+    MOBILE_AUTH_BOT_TOKEN: str | None = None
+    MOBILE_AUTH_BOT_USERNAME: str | None = None
+
     # Cabinet (Personal Account) settings
     CABINET_ENABLED: bool = False
     CABINET_JWT_SECRET: str | None = None
@@ -2447,6 +2452,15 @@ class Settings(BaseSettings):
     # Cabinet methods
     def is_cabinet_enabled(self) -> bool:
         return bool(self.CABINET_ENABLED)
+
+    # Mobile auth methods
+    def get_mobile_auth_bot_token(self) -> str | None:
+        """Return the dedicated mobile-auth bot token, or None if not configured."""
+        return self.MOBILE_AUTH_BOT_TOKEN or None
+
+    def is_mobile_auth_enabled(self) -> bool:
+        """True only when a dedicated mobile-auth bot token is configured."""
+        return bool(self.MOBILE_AUTH_BOT_TOKEN)
 
     def get_cabinet_jwt_secret(self) -> str:
         if self.CABINET_JWT_SECRET:

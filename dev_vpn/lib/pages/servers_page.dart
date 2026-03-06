@@ -5,9 +5,11 @@ import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/server_node.dart';
+import '../services/auth_state.dart';
 import '../services/remnawave_service.dart';
 import '../services/selected_server_state.dart';
 import '../theme/app_colors.dart';
+import 'auth_bottom_sheet.dart';
 
 class ServersPage extends StatefulWidget {
   final VoidCallback onGoToHome;
@@ -46,17 +48,25 @@ class _ServersPageState extends State<ServersPage> {
   void initState() {
     super.initState();
     selectedServerNotifier.addListener(_onSelectionChanged);
+    authStateNotifier.addListener(_onAuthChanged);
     _loadNodes();
   }
 
   @override
   void dispose() {
     selectedServerNotifier.removeListener(_onSelectionChanged);
+    authStateNotifier.removeListener(_onAuthChanged);
     super.dispose();
   }
 
   void _onSelectionChanged() {
     if (mounted) setState(() {});
+  }
+
+  /// Reload nodes when the user logs in so that subscription servers replace
+  /// the public catalog automatically.
+  void _onAuthChanged() {
+    _loadNodes();
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -148,6 +158,12 @@ class _ServersPageState extends State<ServersPage> {
     final selectedUuid = selectedServerNotifier.value?.uuid;
 
     Future<void> onSelect(ServerNode node) async {
+      if (_isPublicCatalog) {
+        // Tapping a catalog server prompts authentication.
+        // The _onAuthChanged listener handles the reload after successful login.
+        await showAuthBottomSheet(context);
+        return;
+      }
       selectedServerNotifier.value = node;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('selected_node_uuid', node.uuid);
