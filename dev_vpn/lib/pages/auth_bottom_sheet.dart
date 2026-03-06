@@ -1,13 +1,11 @@
-import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 
-import '../config/app_config.dart';
 import '../services/auth_service.dart';
 
 /// Shows a modal bottom sheet that explains why auth is needed and triggers
-/// the Telegram Login Widget flow.
+/// the Telegram deep-link login flow.
 ///
 /// Completes with `true` when the user successfully logged in,
 /// `false` / null when dismissed without logging in.
@@ -16,6 +14,7 @@ Future<bool> showAuthBottomSheet(BuildContext context) async {
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
+    isDismissible: true,
     builder: (ctx) => const _AuthBottomSheet(),
   );
   return result ?? false;
@@ -23,8 +22,92 @@ Future<bool> showAuthBottomSheet(BuildContext context) async {
 
 // ── Bottom sheet ─────────────────────────────────────────────────────────────
 
-class _AuthBottomSheet extends StatelessWidget {
+class _AuthBottomSheet extends StatefulWidget {
   const _AuthBottomSheet();
+
+  @override
+  State<_AuthBottomSheet> createState() => _AuthBottomSheetState();
+}
+
+enum _AuthStep {
+  idle,       // initial — "Login" button visible
+  opening,    // waiting for deep-link launch
+  waiting,    // Telegram opened, polling…
+  error,      // something failed
+}
+
+class _AuthBottomSheetState extends State<_AuthBottomSheet> {
+  _AuthStep _step = _AuthStep.idle;
+  String? _errorMessage;
+  String? _token;
+  StreamSubscription<AuthResult>? _pollSub;
+
+  @override
+  void dispose() {
+    _pollSub?.cancel();
+    super.dispose();
+  }
+
+  // ── Login button handler ──────────────────────────────────────────────────
+
+  Future<void> _onLoginTap() async {
+    if (_step != _AuthStep.idle && _step != _AuthStep.error) return;
+
+    setState(() {
+      _step = _AuthStep.opening;
+      _errorMessage = null;
+    });
+
+    final token = await AuthService.startLogin(
+      onError: (msg) {
+        if (mounted) {
+          setState(() {
+            _step = _AuthStep.error;
+            _errorMessage = msg;
+          });
+        }
+      },
+    );
+
+    if (token == null || !mounted) return;
+
+    _token = token;
+    setState(() => _step = _AuthStep.waiting);
+    _startPolling(token);
+  }
+
+  void _startPolling(String token) {
+    _pollSub?.cancel();
+    _pollSub = AuthService.pollStatus(token).listen(
+      (result) {
+        if (!mounted) {
+          _pollSub?.cancel();
+          return;
+        }
+        if (result.success) {
+          _pollSub?.cancel();
+          Navigator.pop(context, true);
+        } else if (result.error != null) {
+          _pollSub?.cancel();
+          setState(() {
+            _step = _AuthStep.error;
+            _errorMessage = result.error;
+          });
+        }
+        // AuthResult.pending — keep polling, no UI change needed
+      },
+      onError: (Object e) {
+        if (mounted) {
+          setState(() {
+            _step = _AuthStep.error;
+            _errorMessage = 'Ошибка соединения. Попробуйте снова.';
+          });
+        }
+      },
+    );
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -51,7 +134,8 @@ class _AuthBottomSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 24),
-            // Icon
+
+            // ── Icon ──────────────────────────────────────────────────────
             Container(
               width: 72,
               height: 72,
@@ -59,27 +143,38 @@ class _AuthBottomSheet extends StatelessWidget {
                 color: const Color(0xFF6C5CE7).withValues(alpha: 0.15),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
-                Icons.lock_person_outlined,
+              child: Icon(
+                _step == _AuthStep.waiting
+                    ? Icons.telegram
+                    : Icons.lock_person_outlined,
                 size: 36,
-                color: Color(0xFF6C5CE7),
+                color: _step == _AuthStep.waiting
+                    ? const Color(0xFF229ED9)
+                    : const Color(0xFF6C5CE7),
               ),
             ),
+
             const SizedBox(height: 20),
-            const Text(
-              'Нужна авторизация',
-              style: TextStyle(
+
+            // ── Title ────────────────────────────────────────────────────
+            Text(
+              _step == _AuthStep.waiting
+                  ? 'Ожидаем подтверждения…'
+                  : 'Нужна авторизация',
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
               ),
             ),
+
             const SizedBox(height: 10),
+
+            // ── Body text ────────────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Text(
-                'Для подключения к VPN-серверам необходима активная подписка. '
-                'Войдите через Telegram, чтобы использовать свой аккаунт.',
+                _buildBodyText(),
                 style: TextStyle(
                   color: Colors.grey[400],
                   fontSize: 14,
@@ -88,256 +183,167 @@ class _AuthBottomSheet extends StatelessWidget {
                 textAlign: TextAlign.center,
               ),
             ),
+
             const SizedBox(height: 28),
+
+            // ── Action area ──────────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: () async {
-                    final loggedIn = await Navigator.push<bool>(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const _TelegramAuthWebViewPage(),
-                      ),
-                    );
-                    if (context.mounted) {
-                      Navigator.pop(context, loggedIn ?? false);
-                    }
-                  },
-                  icon: const Icon(Icons.telegram, size: 20),
-                  label: const Text(
-                    'Войти через Telegram',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                  ),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF229ED9), // Telegram blue
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                ),
-              ),
+              child: _buildActionArea(),
             ),
+
+            // ── Subscription info row ────────────────────────────────────
             const SizedBox(height: 12),
-            // Subscription info row
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.amber.withValues(alpha: 0.07),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Colors.amber.withValues(alpha: 0.2),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.info_outline,
-                      size: 16,
-                      color: Colors.amber[300],
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Подписка приобретается в Telegram-боте. '
-                        'Если она уже есть — войдите в аккаунт.',
-                        style: TextStyle(
-                          color: Colors.amber[300],
-                          fontSize: 12,
-                          height: 1.4,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              child: _buildInfoRow(),
             ),
+
             const SizedBox(height: 24),
           ],
         ),
       ),
     );
   }
-}
 
-// ── WebView page ──────────────────────────────────────────────────────────────
+  // ── Body text ─────────────────────────────────────────────────────────────
 
-/// Full-screen page hosting the Telegram Login Widget via a WebView.
-class _TelegramAuthWebViewPage extends StatefulWidget {
-  const _TelegramAuthWebViewPage();
-
-  @override
-  State<_TelegramAuthWebViewPage> createState() =>
-      _TelegramAuthWebViewPageState();
-}
-
-class _TelegramAuthWebViewPageState extends State<_TelegramAuthWebViewPage> {
-  late final WebViewController _controller;
-  bool _isLoading = true;
-  String? _error;
-  bool _isAuthenticating = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (_) => setState(() => _isLoading = true),
-          onPageFinished: (_) => setState(() => _isLoading = false),
-          onWebResourceError: (err) {
-            if (mounted) {
-              setState(() {
-                _isLoading = false;
-                _error = 'Не удалось загрузить страницу авторизации.\n'
-                    'Проверьте интернет-соединение.';
-              });
-            }
-          },
-        ),
-      )
-      ..addJavaScriptChannel(
-        'TelegramAuthChannel',
-        onMessageReceived: _onTelegramAuthData,
-      )
-      ..loadRequest(
-        Uri.parse('${AppConfig.backendBaseUrl}/mobile/v1/auth/widget-page'),
-      );
-  }
-
-  Future<void> _onTelegramAuthData(JavaScriptMessage message) async {
-    if (_isAuthenticating) return;
-    setState(() => _isAuthenticating = true);
-
-    try {
-      final data = jsonDecode(message.message) as Map<String, dynamic>;
-      final error = await AuthService.loginWithWidgetData(data);
-      if (!mounted) return;
-
-      if (error == null) {
-        // Success
-        Navigator.pop(context, true);
-      } else {
-        setState(() {
-          _isAuthenticating = false;
-          _error = error;
-        });
-      }
-    } on Exception catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isAuthenticating = false;
-        _error = 'Ошибка авторизации: $e';
-      });
+  String _buildBodyText() {
+    switch (_step) {
+      case _AuthStep.idle:
+        return 'Для подключения к VPN-серверам необходима активная подписка. '
+            'Войдите через Telegram одним касанием.';
+      case _AuthStep.opening:
+        return 'Открываем Telegram…';
+      case _AuthStep.waiting:
+        return 'Telegram открыт. Нажмите «Старт» в боте — '
+            'авторизация завершится автоматически.';
+      case _AuthStep.error:
+        return _errorMessage ?? 'Произошла ошибка. Попробуйте снова.';
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F0F1A),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF171A21),
-        foregroundColor: Colors.white,
-        title: const Text(
-          'Войти через Telegram',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => Navigator.pop(context, false),
-        ),
-        elevation: 0,
-      ),
-      body: Stack(
-        children: [
-          if (_error != null)
-            _ErrorView(
-              message: _error!,
-              onRetry: () {
-                setState(() => _error = null);
-                _controller.reload();
+  // ── Action area ───────────────────────────────────────────────────────────
+
+  Widget _buildActionArea() {
+    switch (_step) {
+      case _AuthStep.idle:
+        return _LoginButton(onTap: _onLoginTap);
+      case _AuthStep.opening:
+        return const _LoadingRow(label: 'Открываем Telegram…');
+      case _AuthStep.waiting:
+        return Column(
+          children: [
+            const _LoadingRow(label: 'Ожидаем подтверждения…'),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () {
+                _pollSub?.cancel();
+                setState(() {
+                  _step = _AuthStep.idle;
+                  _errorMessage = null;
+                  _token = null;
+                });
               },
-            )
-          else
-            WebViewWidget(controller: _controller),
-          if (_isLoading && _error == null)
-            const Center(
-              child: CircularProgressIndicator(
-                color: Color(0xFF6C5CE7),
+              child: const Text(
+                'Отмена',
+                style: TextStyle(color: Colors.grey),
               ),
             ),
-          if (_isAuthenticating)
-            Container(
-              color: Colors.black54,
-              child: const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(color: Color(0xFF6C5CE7)),
-                    SizedBox(height: 16),
-                    Text(
-                      'Проверка данных…',
-                      style: TextStyle(color: Colors.white70, fontSize: 14),
-                    ),
-                  ],
-                ),
+          ],
+        );
+      case _AuthStep.error:
+        return _LoginButton(onTap: _onLoginTap, label: 'Попробовать снова');
+    }
+  }
+
+  // ── Info row ──────────────────────────────────────────────────────────────
+
+  Widget _buildInfoRow() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, size: 16, color: Colors.amber[300]),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'В будущем подписку можно будет купить прямо в приложении. '
+              'Если подписка уже есть — просто войдите в аккаунт.',
+              style: TextStyle(
+                color: Colors.amber[300],
+                fontSize: 12,
+                height: 1.4,
               ),
             ),
+          ),
         ],
       ),
     );
   }
 }
 
-// ── Error view ────────────────────────────────────────────────────────────────
+// ── Shared widgets ────────────────────────────────────────────────────────────
 
-class _ErrorView extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
+class _LoginButton extends StatelessWidget {
+  final VoidCallback onTap;
+  final String label;
 
-  const _ErrorView({required this.message, required this.onRetry});
+  const _LoginButton({
+    required this.onTap,
+    this.label = 'Войти через Telegram',
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off, size: 48, color: Colors.grey[600]),
-            const SizedBox(height: 16),
-            Text(
-              message,
-              style: TextStyle(
-                color: Colors.grey[400],
-                fontSize: 14,
-                height: 1.5,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Повторить'),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF6C5CE7),
-              ),
-            ),
-          ],
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.icon(
+        onPressed: onTap,
+        icon: const Icon(Icons.telegram, size: 20),
+        label: Text(
+          label,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        style: FilledButton.styleFrom(
+          backgroundColor: const Color(0xFF229ED9), // Telegram blue
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _LoadingRow extends StatelessWidget {
+  final String label;
+
+  const _LoadingRow({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: Color(0xFF6C5CE7),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 14)),
+      ],
     );
   }
 }

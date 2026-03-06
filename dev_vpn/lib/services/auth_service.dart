@@ -1,64 +1,156 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_config.dart';
 import 'auth_state.dart';
 import 'remnawave_service.dart';
 
-/// Service that calls the mobile auth backend endpoints and updates
-/// [authStateNotifier] on success.
+/// Result of an auth initiation or poll.
+class AuthResult {
+  const AuthResult._({required this.success, this.error, this.state});
+
+  final bool success;
+  final String? error;
+  final AuthState? state;
+
+  static const AuthResult pending = AuthResult._(success: false);
+
+  factory AuthResult.failed(String message) =>
+      AuthResult._(success: false, error: message);
+
+  factory AuthResult.done(AuthState state) =>
+      AuthResult._(success: true, state: state);
+}
+
+/// Service that handles the Telegram deep-link auth flow:
+///
+/// 1. Call [startLogin] — calls `/mobile/v1/auth/init`, opens Telegram deep-link.
+/// 2. Stream [pollStatus] — polls `/mobile/v1/auth/check/{token}` every
+///    [pollInterval] until verified, expired, or cancelled.
+/// 3. On success, updates [authStateNotifier] and [RemnawaveService].
 class AuthService {
   AuthService._();
 
-  // ── API endpoint ──────────────────────────────────────────────────────────
+  static const Duration pollInterval = Duration(seconds: 2);
+  static const Duration pollTimeout = Duration(minutes: 5);
 
-  static String get _authEndpoint =>
-      '${AppConfig.backendBaseUrl}/mobile/v1/auth/telegram/widget';
+  static String get _baseUrl => '${AppConfig.backendBaseUrl}/mobile/v1/auth';
 
-  // ── Login ─────────────────────────────────────────────────────────────────
+  // ── Init ──────────────────────────────────────────────────────────────────
 
-  /// Authenticate with Telegram Login Widget data received from the WebView.
+  /// Call the init endpoint and open Telegram.
   ///
-  /// Returns `null` on success (state is updated via [authStateNotifier]).
-  /// Returns a localised error message string on failure.
-  static Future<String?> loginWithWidgetData(
-    Map<String, dynamic> widgetData,
-  ) async {
+  /// Returns the token string on success, or null with [onError] called on failure.
+  static Future<String?> startLogin({
+    required void Function(String message) onError,
+  }) async {
     try {
       final response = await http
           .post(
-            Uri.parse(_authEndpoint),
+            Uri.parse('$_baseUrl/init'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(widgetData),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
-        final body = jsonDecode(response.body) as Map<String, dynamic>;
-        return await _applyAuthResponse(body);
-      }
-
-      if (response.statusCode == 401) {
-        return 'Данные авторизации Telegram недействительны или устарели.';
-      }
-      if (response.statusCode == 403) {
-        return 'Учётная запись заблокирована.';
-      }
-      if (response.statusCode == 503) {
-        return 'Авторизация через Telegram временно недоступна.';
+      if (response.statusCode != 200) {
+        onError('Ошибка сервера (${response.statusCode}). Попробуйте позже.');
+        return null;
       }
 
-      return 'Ошибка сервера (${response.statusCode}). Попробуйте позже.';
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final token = body['token'] as String?;
+      final deepLink = body['deep_link'] as String?;
+
+      if (token == null || deepLink == null) {
+        onError('Неверный ответ сервера.');
+        return null;
+      }
+
+      final uri = Uri.parse(deepLink);
+      final canOpen = await canLaunchUrl(uri);
+      if (!canOpen) {
+        // Fallback: use https link
+        final fallback = Uri.parse(deepLink.replaceFirst('tg://resolve?domain=', 'https://t.me/').replaceAll('&start=', '?start='));
+        if (!await launchUrl(fallback, mode: LaunchMode.externalApplication)) {
+          onError('Не удалось открыть Telegram. Установите приложение Telegram.');
+          return null;
+        }
+      } else {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+
+      return token;
     } on Exception catch (e) {
-      return 'Не удалось подключиться к серверу: $e';
+      onError('Ошибка соединения с сервером: $e');
+      return null;
     }
   }
 
-  /// Apply a successful auth response: persist auth state and subscription URL.
+  // ── Poll ──────────────────────────────────────────────────────────────────
+
+  /// Poll the check endpoint until verified, expired or [timeout].
   ///
-  /// Returns `null` on success, or an error string if the response is malformed.
+  /// Emits `AuthResult.pending` on each "pending" response.
+  /// Completes with `AuthResult.done` on success or `AuthResult.failed` otherwise.
+  static Stream<AuthResult> pollStatus(String token) async* {
+    final deadline = DateTime.now().add(pollTimeout);
+
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(pollInterval);
+
+      try {
+        final response = await http
+            .get(Uri.parse('$_baseUrl/check/$token'))
+            .timeout(const Duration(seconds: 8));
+
+        if (response.statusCode != 200) {
+          yield AuthResult.failed('Ошибка сервера (${response.statusCode}).');
+          return;
+        }
+
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final statusStr = body['status'] as String? ?? 'pending';
+
+        if (statusStr == 'expired') {
+          yield AuthResult.failed('Время авторизации истекло. Попробуйте снова.');
+          return;
+        }
+
+        if (statusStr == 'verified') {
+          final authMap = body['auth'] as Map<String, dynamic>?;
+          if (authMap == null) {
+            yield AuthResult.failed('Неверный ответ сервера.');
+            return;
+          }
+
+          final result = await _applyAuthResponse(authMap);
+          if (result != null) {
+            yield AuthResult.failed(result);
+          } else {
+            yield AuthResult.done(authStateNotifier.value);
+          }
+          return;
+        }
+
+        // status == 'pending'
+        yield AuthResult.pending;
+      } on Exception catch (e) {
+        yield AuthResult.failed('Ошибка соединения: $e');
+        return;
+      }
+    }
+
+    yield AuthResult.failed('Время ожидания истекло. Попробуйте снова.');
+  }
+
+  // ── Internal helpers ──────────────────────────────────────────────────────
+
+  /// Persist the auth response and update global state.
+  ///
+  /// Returns `null` on success, or an error string.
   static Future<String?> _applyAuthResponse(Map<String, dynamic> body) async {
     try {
       final userMap = body['user'] as Map<String, dynamic>?;
@@ -66,24 +158,20 @@ class AuthService {
 
       final newState = AuthState(
         isLoggedIn: true,
-        telegramId: userMap['telegram_id'] as int?,
+        telegramId: (userMap['telegram_id'] as num?)?.toInt(),
         firstName: userMap['first_name'] as String?,
         lastName: userMap['last_name'] as String?,
         username: userMap['username'] as String?,
         subscriptionUrl: body['subscription_url'] as String?,
       );
 
-      // Persist auth state (user info only — not the subscription URL).
       await saveAuthState(newState);
 
-      // If the backend returned a subscription URL, store it so that
-      // RemnawaveService.getSubscriptionUrl() picks it up on the next load.
       final subUrl = body['subscription_url'] as String?;
       if (subUrl != null && subUrl.isNotEmpty) {
         await RemnawaveService.saveSubscriptionUrl(subUrl);
       }
 
-      // Broadcast the new state globally.
       authStateNotifier.value = newState;
       return null; // success
     } on Exception catch (e) {
@@ -96,7 +184,6 @@ class AuthService {
   /// Clear the authenticated session and subscription URL.
   static Future<void> logout() async {
     await clearAuthState();
-    // Remove subscription URL so the app falls back to public catalog.
     await RemnawaveService.saveSubscriptionUrl('');
   }
 }
