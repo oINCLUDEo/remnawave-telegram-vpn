@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,9 +10,14 @@ import '../services/selected_server_state.dart';
 import '../theme/app_colors.dart';
 
 class ServersPage extends StatefulWidget {
+  final VoidCallback onGoToHome;
   final VoidCallback? onGoToSettings;
 
-  const ServersPage({super.key, this.onGoToSettings});
+  const ServersPage({
+    required this.onGoToHome,
+    required this.onGoToSettings,
+    super.key,
+  });
 
   @override
   State<ServersPage> createState() => _ServersPageState();
@@ -19,6 +26,7 @@ class ServersPage extends StatefulWidget {
 class _ServersPageState extends State<ServersPage> {
   List<ServerNode> _nodes = [];
   bool _loading = true;
+
   /// true when servers are loaded from the public catalog (no subscription URL).
   bool _isPublicCatalog = false;
 
@@ -143,6 +151,7 @@ class _ServersPageState extends State<ServersPage> {
       selectedServerNotifier.value = node;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('selected_node_uuid', node.uuid);
+      widget.onGoToHome();
     }
 
     void addSection({
@@ -181,7 +190,7 @@ class _ServersPageState extends State<ServersPage> {
               expanded: expanded,
               nodes: nodes,
               pings: _pings,
-              onPing: _pingNode,
+              onPing: _tcpPingNode,
               color: color,
               selectedUuid: selectedUuid,
               onSelect: onSelect,
@@ -288,6 +297,63 @@ class _ServersPageState extends State<ServersPage> {
     if (mounted) setState(() => _pingAllInProgress = false);
   }
 
+  Future<int?> tcpPing(String host, int port,
+      {Duration timeout = const Duration(seconds: 2)}) async {
+    final stopwatch = Stopwatch()..start();
+
+    try {
+      final socket = await Socket.connect(
+        host,
+        port,
+        timeout: timeout,
+      );
+
+      stopwatch.stop();
+      socket.destroy();
+
+      return stopwatch.elapsedMilliseconds;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _tcpPingNode(ServerNode node) async {
+    if (node.link == null) return;
+
+    setState(() => _pings[node.uuid] = -2);
+
+    try {
+      final uri = Uri.parse(node.link!);
+      final host = uri.host;
+      final port = uri.hasPort ? uri.port : 443;
+
+      final ms = await tcpPing(host, port);
+
+      if (mounted) {
+        setState(() => _pings[node.uuid] = ms ?? -1);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _pings[node.uuid] = -1);
+      }
+    }
+  }
+
+  Future<void> tcpPingAll() async {
+    const maxConcurrent = 5;
+
+    final queue = _nodes.where((n) => n.link != null).toList();
+
+    Future<void> worker() async {
+      while (queue.isNotEmpty) {
+        final node = queue.removeLast();
+        await _tcpPingNode(node);
+      }
+    }
+
+    await Future.wait(List.generate(maxConcurrent, (_) => worker()));
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -359,9 +425,12 @@ class _ServersPageState extends State<ServersPage> {
                                   )
                                 : const Icon(Icons.speed_outlined),
                             // Ping is only useful for subscription servers that have links.
-                            onPressed: (_loading || _pingAllInProgress || _isPublicCatalog)
+                            onPressed:
+                                (_loading ||
+                                    _pingAllInProgress ||
+                                    _isPublicCatalog)
                                 ? null
-                                : _pingAll,
+                                : tcpPingAll,
                             tooltip: 'Пинг всех',
                           ),
                         ),
@@ -388,9 +457,7 @@ class _ServersPageState extends State<ServersPage> {
             if (!_loading && _isPublicCatalog && _nodes.isNotEmpty)
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                sliver: SliverToBoxAdapter(
-                  child: _buildPublicCatalogBanner(),
-                ),
+                sliver: SliverToBoxAdapter(child: _buildPublicCatalogBanner()),
               ),
             if (_loading)
               const SliverFillRemaining(
@@ -436,7 +503,6 @@ class _ServersPageState extends State<ServersPage> {
       ),
     );
   }
-
 
   String _pluralServers(int n) {
     final mod10 = n % 10;
@@ -795,8 +861,10 @@ class _NodeTile extends StatelessWidget {
       color: isSelected
           ? const Color(0xFF6C5CE7).withValues(alpha: 0.08)
           : Colors.transparent,
+      borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: onSelect,
+        borderRadius: BorderRadius.circular(14),
         splashColor: const Color(0xFF6C5CE7).withValues(alpha: 0.1),
         highlightColor: Colors.transparent,
         child: Padding(

@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import PERIOD_PRICES, settings
-from app.database.crud.promo_group import get_default_promo_group
 from app.database.crud.server_squad import get_server_squad_by_uuid
 from app.database.crud.subscription import (
     create_paid_subscription,
@@ -23,7 +22,7 @@ from app.database.crud.subscription import (
 from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
-from app.database.models import PromoGroup, ServerSquad, Subscription, Tariff, TransactionType, User
+from app.database.models import ServerSquad, Subscription, Tariff, TransactionType, User
 from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
@@ -1322,7 +1321,6 @@ async def _build_tariff_response(
     language: str = 'ru',
     user: User | None = None,
     subscription: 'Subscription | None' = None,
-    override_promo_group: PromoGroup | None = None,
 ) -> dict[str, Any]:
     """Build tariff model for API response with promo group discounts applied."""
     servers = []
@@ -1341,15 +1339,11 @@ async def _build_tariff_response(
                 )
 
     # Get promo group for discount calculation
-    # override_promo_group takes priority (used for anonymous callers with default group)
-    if override_promo_group is not None:
-        promo_group = override_promo_group
-    else:
-        # Use get_primary_promo_group() for correct promo group resolution
-        promo_group = user.get_primary_promo_group() if user and hasattr(user, 'get_primary_promo_group') else None
-        if promo_group is None and user:
-            # Fallback to legacy promo_group attribute
-            promo_group = getattr(user, 'promo_group', None)
+    # Use get_primary_promo_group() for correct promo group resolution
+    promo_group = user.get_primary_promo_group() if user and hasattr(user, 'get_primary_promo_group') else None
+    if promo_group is None and user:
+        # Fallback to legacy promo_group attribute
+        promo_group = getattr(user, 'promo_group', None)
     promo_group_name = promo_group.name if promo_group else None
 
     # Вычисляем доп. устройства для текущего тарифа (при продлении)
@@ -1526,7 +1520,7 @@ async def get_public_tariffs(
     Get available tariff plans without requiring authentication.
 
     When called without a valid token the endpoint returns all active tariffs
-    visible to the default promo group, with that group's discounts applied.
+    that have no promo-group restriction, with base prices (no discounts).
     When called with a valid token the behaviour is identical to
     /purchase-options but limited to tariffs mode only.
     """
@@ -1535,7 +1529,6 @@ async def get_public_tariffs(
         current_tariff_id = None
         language = 'ru'
         subscription = None
-        override_promo_group: PromoGroup | None = None
 
         if user is not None:
             promo_group = user.get_primary_promo_group() if hasattr(user, 'get_primary_promo_group') else None
@@ -1545,21 +1538,13 @@ async def get_public_tariffs(
             language = getattr(user, 'language', 'ru') or 'ru'
             subscription = await get_subscription_by_user_id(db, user.id)
             current_tariff_id = subscription.tariff_id if subscription else None
-        else:
-            # Anonymous caller: apply default promo group discounts so the
-            # prices shown match what every new user actually pays.
-            default_group = await get_default_promo_group(db)
-            if default_group is not None:
-                override_promo_group = default_group
-                promo_group_id = default_group.id
 
         tariffs = await get_tariffs_for_user(db, promo_group_id)
 
         tariff_responses = []
         for tariff in tariffs:
             tariff_data = await _build_tariff_response(
-                db, tariff, current_tariff_id, language, user, subscription,
-                override_promo_group=override_promo_group,
+                db, tariff, current_tariff_id, language, user, subscription
             )
             tariff_responses.append(tariff_data)
 

@@ -12,15 +12,17 @@ class AppConfig {
   /// Example: `'https://panel.example.com'`
   ///
   /// Set this to your panel URL before building the release APK/IPA.
-  static const String panelBaseUrl = 'https://panel.example.com';
+  static const String panelBaseUrl = 'https://panel.ulya.space';
 
-  /// Base URL of the Bedolaga bot backend (without trailing slash).
+  /// Base URL of the Bedolaga backend (without trailing slash).
   ///
-  /// Used for the public mobile API endpoint (`/mobile/v1/servers`).
-  /// Set this to your backend URL before building the release APK/IPA.
+  /// Used by the mobile app to fetch the public server catalog when the user
+  /// has no personal subscription URL yet.
   ///
-  /// Example: `'https://bot-api.example.com'`
-  static const String backendBaseUrl = 'https://api.example.com';
+  /// Example: `'https://bot.example.com'`
+  ///
+  /// Set this to your Bedolaga backend URL before building the release APK/IPA.
+  static const String backendBaseUrl = 'http://192.168.0.103:8081';
 
   /// Package names excluded from VPN tunnel by default (on first launch).
   static const List<String> defaultBlockedApps = [
