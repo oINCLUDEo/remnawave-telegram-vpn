@@ -140,6 +140,22 @@ class RemnaWaveAccessibleNode:
 
 
 @dataclass
+class RemnaWaveHost:
+    """Структура Host из RemnaWave API"""
+
+    uuid: str
+    name: str
+    address: str
+    country_code: str
+    is_connected: bool
+    is_disabled: bool
+    is_hidden: bool
+    users_online: int
+    protocol: str
+    description: str | None = None
+
+
+@dataclass
 class RemnaWaveNode:
     uuid: str
     name: str
@@ -797,6 +813,10 @@ class RemnaWaveAPI:
         response = await self._make_request('GET', '/api/nodes')
         return [self._parse_node(node) for node in response['response']]
 
+    async def get_hosts(self) -> list[RemnaWaveHost]:
+        response = await self._make_request('GET', '/api/hosts')
+        return [self._parse_host(host) for host in response['response']]
+
     async def get_node_by_uuid(self, uuid: str) -> RemnaWaveNode | None:
         try:
             response = await self._make_request('GET', f'/api/nodes/{uuid}')
@@ -1230,6 +1250,20 @@ class RemnaWaveAPI:
             created_at=self._parse_optional_datetime(node_data.get('createdAt')),
             updated_at=self._parse_optional_datetime(node_data.get('updatedAt')),
             provider_uuid=node_data.get('providerUuid'),
+        )
+
+    def _parse_host(self, host_data: dict) -> RemnaWaveHost:
+        return RemnaWaveHost(
+            uuid=host_data['uuid'],
+            name=host_data['remark'],
+            address=host_data['address'],
+            country_code=host_data.get('countryCode', ''),
+            is_connected=host_data.get('isConnected', False),
+            is_disabled=host_data.get('isDisabled', False),
+            is_hidden=host_data.get('isHidden', False),
+            users_online=host_data.get('usersOnline', 0),
+            protocol=host_data.get('protocol', 'vless'),
+            description=host_data.get('description'),
         )
 
     def _parse_subscription_info(self, data: dict) -> SubscriptionInfo:

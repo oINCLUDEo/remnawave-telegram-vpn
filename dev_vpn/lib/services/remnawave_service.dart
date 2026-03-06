@@ -1,10 +1,13 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/app_config.dart';
 import '../models/server_node.dart';
 import '../models/subscription_info.dart';
 
@@ -83,6 +86,39 @@ class RemnawaveService {
 
   static final Random _rng = Random.secure();
 
+  static Future<Map<String, String>> _getDeviceHeaders() async {
+    final deviceInfo = DeviceInfoPlugin();
+    final hwid = await getOrCreateHwid();
+
+    String osVersion = '';
+    String deviceModel = '';
+    String platform = '';
+
+    try {
+      if (Platform.isAndroid) {
+        final androidInfo = await deviceInfo.androidInfo;
+        osVersion = androidInfo.version.release;
+        deviceModel = androidInfo.model;
+        platform = 'Android';
+      } else if (Platform.isIOS) {
+        final iosInfo = await deviceInfo.iosInfo;
+        osVersion = iosInfo.systemVersion;
+        deviceModel = iosInfo.model;
+        platform = 'iOS';
+      }
+    } catch (e) {
+      debugPrint('RemnawaveService: failed to get device info: $e');
+    }
+
+    return {
+      'User-Agent': 'Happ/1.5.1/Ulya/1.0.1',
+      'X-HWID': hwid,
+      'X-Ver-OS': osVersion,
+      'X-Device-OS': platform,
+      'X-Device-Model': deviceModel,
+    };
+  }
+
   // ── Fetch & parse ─────────────────────────────────────────────────────────
 
   /// Fetches the subscription URL and returns a list of [ServerNode]s.
@@ -97,15 +133,12 @@ class RemnawaveService {
     final uri = Uri.tryParse(subUrl);
     if (uri == null) return [];
 
-    final hwid = await getOrCreateHwid();
-
     try {
+      final headers = await _getDeviceHeaders();
+
       final response = await http.get(
         uri,
-        headers: {
-          'User-Agent': 'Happ/1.5.1/Android',
-          'X-HWID': hwid,
-        },
+        headers: headers,
       ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
@@ -129,6 +162,54 @@ class RemnawaveService {
     } catch (e) {
       debugPrint('RemnawaveService: fetchNodes error: $e');
       return await _loadFromCache();
+    }
+  }
+
+  // ── Public catalog (no subscription required) ─────────────────────────────
+
+  /// Fetches the public server catalog from the mobile API backend.
+  ///
+  /// Called when no personal subscription URL is configured.
+  /// These servers are for preview only — [ServerNode.link] is `null` and
+  /// [ServerNode.isDisabled] is `true`, so they cannot be used to connect.
+  static Future<List<ServerNode>> fetchPublicServers() async {
+    final url = '${AppConfig.backendBaseUrl}/mobile/v1/servers';
+    final uri = Uri.tryParse(url);
+    if (uri == null) return [];
+
+    try {
+      final response = await http
+          .get(uri)
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode != 200) {
+        debugPrint('RemnawaveService: public servers returned ${response.statusCode}');
+        return [];
+      }
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final list = body['servers'] as List<dynamic>? ?? [];
+      final nodes = list.map((e) {
+        final serverJson = Map<String, dynamic>.from(e as Map<String, dynamic>);
+
+        final name = serverJson['name']?.toString() ?? '';
+
+        if ((serverJson['countryCode'] == null || serverJson['countryCode'].toString().isEmpty) &&
+            name.isNotEmpty) {
+          final code = _countryCodeFromName(name);
+          if (code.isNotEmpty) {
+            serverJson['countryCode'] = code;
+          }
+        }
+
+        return ServerNode.fromJson(serverJson);
+      }).toList();
+
+      debugPrint('RemnawaveService: loaded ${nodes.length} public servers');
+      return nodes;
+    } catch (e) {
+      debugPrint('RemnawaveService: fetchPublicServers error: $e');
+      return [];
     }
   }
 
@@ -307,7 +388,7 @@ class RemnawaveService {
 
       final parsed = _parseFragment(uri.fragment, host);
       final name = parsed.name;
-      final description = parsed.description; // пока не используем
+      final description = parsed.description;
 
       final countryCode = _countryCodeFromName(name);
 
@@ -370,4 +451,3 @@ class RemnawaveService {
     return '';
   }
 }
-

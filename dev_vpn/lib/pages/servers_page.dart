@@ -1,14 +1,25 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/server_node.dart';
+import '../services/auth_state.dart';
 import '../services/remnawave_service.dart';
+import '../services/selected_server_state.dart';
 import '../theme/app_colors.dart';
+import 'auth_bottom_sheet.dart';
 
 class ServersPage extends StatefulWidget {
+  final VoidCallback onGoToHome;
   final VoidCallback? onGoToSettings;
 
-  const ServersPage({super.key, this.onGoToSettings});
+  const ServersPage({
+    required this.onGoToHome,
+    required this.onGoToSettings,
+    super.key,
+  });
 
   @override
   State<ServersPage> createState() => _ServersPageState();
@@ -17,7 +28,9 @@ class ServersPage extends StatefulWidget {
 class _ServersPageState extends State<ServersPage> {
   List<ServerNode> _nodes = [];
   bool _loading = true;
-  bool _noSubscription = false;
+
+  /// true when servers are loaded from the public catalog (no subscription URL).
+  bool _isPublicCatalog = false;
 
   bool _bypassExpanded = true;
   bool _unlimitedExpanded = true;
@@ -34,6 +47,25 @@ class _ServersPageState extends State<ServersPage> {
   @override
   void initState() {
     super.initState();
+    selectedServerNotifier.addListener(_onSelectionChanged);
+    authStateNotifier.addListener(_onAuthChanged);
+    _loadNodes();
+  }
+
+  @override
+  void dispose() {
+    selectedServerNotifier.removeListener(_onSelectionChanged);
+    authStateNotifier.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  void _onSelectionChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Reload nodes when the user logs in so that subscription servers replace
+  /// the public catalog automatically.
+  void _onAuthChanged() {
     _loadNodes();
   }
 
@@ -44,17 +76,21 @@ class _ServersPageState extends State<ServersPage> {
   Future<void> _loadNodes() async {
     setState(() {
       _loading = true;
-      _noSubscription = false;
+      _isPublicCatalog = false;
     });
 
     final subUrl = await RemnawaveService.getSubscriptionUrl();
 
     if (subUrl.isEmpty) {
+      // No personal subscription — load the public server catalog.
+      final nodes = await RemnawaveService.fetchPublicServers();
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _noSubscription = true;
-        _nodes = [];
+        _isPublicCatalog = true;
+        _nodes = nodes;
+        final uuids = nodes.map((e) => e.uuid).toSet();
+        _pings.removeWhere((k, _) => !uuids.contains(k));
       });
       return;
     }
@@ -66,7 +102,7 @@ class _ServersPageState extends State<ServersPage> {
     setState(() {
       _nodes = nodes;
       _loading = false;
-      _noSubscription = false;
+      _isPublicCatalog = false;
 
       final uuids = nodes.map((e) => e.uuid).toSet();
       _pings.removeWhere((k, _) => !uuids.contains(k));
@@ -119,6 +155,20 @@ class _ServersPageState extends State<ServersPage> {
   List<Widget> _buildSections() {
     final groups = _groupedNodes();
     final List<Widget> slivers = [];
+    final selectedUuid = selectedServerNotifier.value?.uuid;
+
+    Future<void> onSelect(ServerNode node) async {
+      if (_isPublicCatalog) {
+        // Tapping a catalog server prompts authentication.
+        // The _onAuthChanged listener handles the reload after successful login.
+        await showAuthBottomSheet(context);
+        return;
+      }
+      selectedServerNotifier.value = node;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('selected_node_uuid', node.uuid);
+      widget.onGoToHome();
+    }
 
     void addSection({
       required String title,
@@ -156,8 +206,11 @@ class _ServersPageState extends State<ServersPage> {
               expanded: expanded,
               nodes: nodes,
               pings: _pings,
-              onPing: _pingNode,
+              onPing: _tcpPingNode,
               color: color,
+              selectedUuid: selectedUuid,
+              onSelect: onSelect,
+              isPublicCatalog: _isPublicCatalog,
             ),
           ),
         ),
@@ -260,6 +313,63 @@ class _ServersPageState extends State<ServersPage> {
     if (mounted) setState(() => _pingAllInProgress = false);
   }
 
+  Future<int?> tcpPing(String host, int port,
+      {Duration timeout = const Duration(seconds: 2)}) async {
+    final stopwatch = Stopwatch()..start();
+
+    try {
+      final socket = await Socket.connect(
+        host,
+        port,
+        timeout: timeout,
+      );
+
+      stopwatch.stop();
+      socket.destroy();
+
+      return stopwatch.elapsedMilliseconds;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _tcpPingNode(ServerNode node) async {
+    if (node.link == null) return;
+
+    setState(() => _pings[node.uuid] = -2);
+
+    try {
+      final uri = Uri.parse(node.link!);
+      final host = uri.host;
+      final port = uri.hasPort ? uri.port : 443;
+
+      final ms = await tcpPing(host, port);
+
+      if (mounted) {
+        setState(() => _pings[node.uuid] = ms ?? -1);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _pings[node.uuid] = -1);
+      }
+    }
+  }
+
+  Future<void> tcpPingAll() async {
+    const maxConcurrent = 5;
+
+    final queue = _nodes.where((n) => n.link != null).toList();
+
+    Future<void> worker() async {
+      while (queue.isNotEmpty) {
+        final node = queue.removeLast();
+        await _tcpPingNode(node);
+      }
+    }
+
+    await Future.wait(List.generate(maxConcurrent, (_) => worker()));
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -297,12 +407,12 @@ class _ServersPageState extends State<ServersPage> {
                                   letterSpacing: 0.4,
                                 ),
                           ),
-                          if (!_loading &&
-                              !_noSubscription &&
-                              _nodes.isNotEmpty) ...[
+                          if (!_loading && _nodes.isNotEmpty) ...[
                             const SizedBox(height: 4),
                             Text(
-                              '${_nodes.length} ${_pluralServers(_nodes.length)} в подписке',
+                              _isPublicCatalog
+                                  ? '${_nodes.length} ${_pluralServers(_nodes.length)} (каталог)'
+                                  : '${_nodes.length} ${_pluralServers(_nodes.length)} в подписке',
                               style: const TextStyle(
                                 color: AppColors.textSecondary,
                                 fontSize: 12.5,
@@ -330,9 +440,13 @@ class _ServersPageState extends State<ServersPage> {
                                     ),
                                   )
                                 : const Icon(Icons.speed_outlined),
-                            onPressed: (_loading || _pingAllInProgress)
+                            // Ping is only useful for subscription servers that have links.
+                            onPressed:
+                                (_loading ||
+                                    _pingAllInProgress ||
+                                    _isPublicCatalog)
                                 ? null
-                                : _pingAll,
+                                : tcpPingAll,
                             tooltip: 'Пинг всех',
                           ),
                         ),
@@ -355,20 +469,53 @@ class _ServersPageState extends State<ServersPage> {
                 ),
               ),
             ),
+            // Banner shown when displaying the public catalog.
+            if (!_loading && _isPublicCatalog && _nodes.isNotEmpty)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                sliver: SliverToBoxAdapter(child: _buildPublicCatalogBanner()),
+              ),
             if (_loading)
               const SliverFillRemaining(
                 child: Center(child: CircularProgressIndicator()),
               )
-            else if (_noSubscription)
-              SliverFillRemaining(child: _buildNoSubscriptionState())
             else if (_nodes.isEmpty)
-              SliverFillRemaining(child: _buildEmptyState())
+              SliverFillRemaining(
+                child: _isPublicCatalog
+                    ? _buildPublicCatalogEmptyState()
+                    : _buildEmptyState(),
+              )
             else ...[
               ..._buildSections(),
             ],
             const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildPublicCatalogBanner() {
+    return Container(
+      margin: const EdgeInsets.only(top: 8, bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, size: 16, color: Colors.orange[300]),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Публичный каталог — только предпросмотр. '
+              'Для подключения оформите подписку.',
+              style: TextStyle(color: Colors.orange[300], fontSize: 12),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -382,7 +529,7 @@ class _ServersPageState extends State<ServersPage> {
     return 'серверов';
   }
 
-  Widget _buildNoSubscriptionState() {
+  Widget _buildPublicCatalogEmptyState() {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -392,42 +539,43 @@ class _ServersPageState extends State<ServersPage> {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: const Color(0xFF6C5CE7).withValues(alpha: 0.15),
+                color: Colors.grey.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
-                Icons.vpn_key_outlined,
-                size: 48,
-                color: Color(0xFF6C5CE7),
-              ),
+              child: const Icon(Icons.cloud_off, size: 48, color: Colors.grey),
             ),
-            const SizedBox(height: 20),
-            const Text(
-              'Нет подписки',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
             Text(
-              'Введите URL подписки в Настройках.\nПолучите его в Telegram-боте после оформления.',
-              style: TextStyle(
-                color: Colors.grey[400],
-                fontSize: 14,
-                height: 1.5,
-              ),
+              'Каталог недоступен',
+              style: TextStyle(color: Colors.grey[400], fontSize: 16),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Не удалось загрузить серверы.\nПроверьте интернет-соединение или '
+              'добавьте URL подписки в Настройках.',
+              style: TextStyle(color: Colors.grey[600], fontSize: 13),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: widget.onGoToSettings,
-              icon: const Icon(Icons.settings_outlined),
-              label: const Text('Открыть Настройки'),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF6C5CE7),
-              ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: _loadNodes,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Повторить'),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  onPressed: widget.onGoToSettings,
+                  icon: const Icon(Icons.settings_outlined),
+                  label: const Text('Настройки'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF6C5CE7),
+                    side: const BorderSide(color: Color(0xFF6C5CE7)),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -578,6 +726,9 @@ class _AnimatedServerGroup extends StatefulWidget {
   final Map<String, int?> pings;
   final void Function(ServerNode) onPing;
   final Color color;
+  final String? selectedUuid;
+  final Future<void> Function(ServerNode)? onSelect;
+  final bool isPublicCatalog;
 
   const _AnimatedServerGroup({
     required this.expanded,
@@ -585,6 +736,9 @@ class _AnimatedServerGroup extends StatefulWidget {
     required this.pings,
     required this.onPing,
     required this.color,
+    this.selectedUuid,
+    this.onSelect,
+    this.isPublicCatalog = false,
   });
 
   @override
@@ -654,6 +808,7 @@ class _AnimatedServerGroupState extends State<_AnimatedServerGroup>
                     child: Column(
                       children: List.generate(widget.nodes.length, (i) {
                         final node = widget.nodes[i];
+                        final isSelected = node.uuid == widget.selectedUuid;
 
                         return Column(
                           children: [
@@ -661,6 +816,11 @@ class _AnimatedServerGroupState extends State<_AnimatedServerGroup>
                               node: node,
                               ping: widget.pings[node.uuid],
                               onPing: () => widget.onPing(node),
+                              isSelected: isSelected,
+                              onSelect: widget.onSelect != null
+                                  ? () => widget.onSelect!(node)
+                                  : null,
+                              isPublicCatalog: widget.isPublicCatalog,
                             ),
                             if (i != widget.nodes.length - 1)
                               Divider(
@@ -695,122 +855,173 @@ class _NodeTile extends StatelessWidget {
   final ServerNode node;
   final int? ping;
   final VoidCallback? onPing;
+  final bool isSelected;
+  final VoidCallback? onSelect;
+  final bool isPublicCatalog;
 
-  const _NodeTile({required this.node, this.ping, this.onPing});
+  const _NodeTile({
+    required this.node,
+    this.ping,
+    this.onPing,
+    this.isSelected = false,
+    this.onSelect,
+    this.isPublicCatalog = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final protocol = node.protocol ?? '';
     final isPinging = ping == -2;
 
-    return InkWell(
-      onTap: () {},
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: Row(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: AppColors.graphiteElevated,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Center(
-                child: Text(
-                  _countryEmoji(node.countryCode),
-                  style: const TextStyle(fontSize: 22),
+    return Material(
+      color: isSelected
+          ? const Color(0xFF6C5CE7).withValues(alpha: 0.08)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onSelect,
+        borderRadius: BorderRadius.circular(14),
+        splashColor: const Color(0xFF6C5CE7).withValues(alpha: 0.1),
+        highlightColor: Colors.transparent,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? const Color(0xFF6C5CE7).withValues(alpha: 0.15)
+                      : AppColors.graphiteElevated,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Center(
+                  child: Text(
+                    _countryEmoji(node.countryCode),
+                    style: const TextStyle(fontSize: 22),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    node.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 15,
-                      color: AppColors.textNeutralMain,
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      node.name,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                        color: isSelected
+                            ? const Color(0xFF6C5CE7)
+                            : AppColors.textNeutralMain,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      if (protocol.isNotEmpty) ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        if (protocol.isNotEmpty) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _protocolColor(
+                                protocol,
+                              ).withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              protocol.toUpperCase(),
+                              style: TextStyle(
+                                color: _protocolColor(protocol),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                           ),
-                          decoration: BoxDecoration(
-                            color: _protocolColor(
-                              protocol,
-                            ).withValues(alpha: 0.18),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        Flexible(
                           child: Text(
-                            protocol.toUpperCase(),
+                            node.address,
+                            style: const TextStyle(
+                              color: AppColors.textNeutralSecondary,
+                              fontSize: 12,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Trailing: checkmark when selected, lock for public catalog,
+              // or ping button for subscription servers.
+              if (isSelected)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Icon(
+                    Icons.check_circle,
+                    color: Color(0xFF6C5CE7),
+                    size: 20,
+                  ),
+                )
+              else if (isPublicCatalog)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(
+                    Icons.lock_outline,
+                    size: 14,
+                    color: Colors.grey,
+                  ),
+                )
+              else
+                InkWell(
+                  onTap: (isPinging || node.link == null) ? null : onPing,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _pingColor(ping).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: isPinging
+                        ? SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _pingColor(ping),
+                            ),
+                          )
+                        : Text(
+                            _pingLabel(ping),
                             style: TextStyle(
-                              color: _protocolColor(protocol),
-                              fontSize: 10,
+                              color: _pingColor(ping),
+                              fontSize: 11,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      Flexible(
-                        child: Text(
-                          node.address,
-                          style: const TextStyle(
-                            color: AppColors.textNeutralSecondary,
-                            fontSize: 12,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            InkWell(
-              onTap: (isPinging || node.link == null) ? null : onPing,
-              borderRadius: BorderRadius.circular(10),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 5,
                 ),
-                decoration: BoxDecoration(
-                  color: _pingColor(ping).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: isPinging
-                    ? SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: _pingColor(ping),
-                        ),
-                      )
-                    : Text(
-                        _pingLabel(ping),
-                        style: TextStyle(
-                          color: _pingColor(ping),
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

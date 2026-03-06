@@ -378,28 +378,53 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
         await state.set_data(data)
 
     if start_parameter:
-        campaign = await get_campaign_by_start_parameter(
-            db,
-            start_parameter,
-            only_active=True,
+        # ── Mobile app deep-link auth ─────────────────────────────────────────
+        from app.mobile.auth_cache import (
+            MOBILE_AUTH_START_PREFIX as _MOBILE_AUTH_PREFIX,
+            verify_auth_token as _verify_mobile_auth_token,
         )
 
-        if campaign:
-            logger.info(
-                '📣 Найдена рекламная кампания (start=)',
-                campaign_id=campaign.id,
-                start_parameter=campaign.start_parameter,
+        if start_parameter.startswith(_MOBILE_AUTH_PREFIX):
+            token = start_parameter[len(_MOBILE_AUTH_PREFIX):]
+            logger.info('📱 Mobile auth deep-link received', token_prefix=token[:8], telegram_id=message.from_user.id)
+            verified = await _verify_mobile_auth_token(
+                token=token,
+                telegram_id=message.from_user.id,
+                first_name=message.from_user.first_name or '',
+                last_name=message.from_user.last_name,
+                username=message.from_user.username,
             )
-            await state.update_data(campaign_id=campaign.id)
-            if campaign.partner_user_id:
-                await state.update_data(referrer_id=campaign.partner_user_id)
-                logger.info(
-                    '👤 Кампания привязана к партнёру',
-                    partner_user_id=campaign.partner_user_id,
-                )
+            if verified:
+                logger.info('✅ Mobile auth token verified', telegram_id=message.from_user.id)
+            else:
+                logger.warning('⚠️ Mobile auth token not found or expired', token_prefix=token[:8])
+            # Fall through to normal registration / main menu — don't return early
+            # so the user still sees the standard bot response.
+            start_parameter = None  # prevent misidentification as referral code
+
         else:
-            referral_code = start_parameter
-            logger.info('🔎 Найден реферальный код', referral_code=referral_code)
+            campaign = await get_campaign_by_start_parameter(
+                db,
+                start_parameter,
+                only_active=True,
+            )
+
+            if campaign:
+                logger.info(
+                    '📣 Найдена рекламная кампания (start=)',
+                    campaign_id=campaign.id,
+                    start_parameter=campaign.start_parameter,
+                )
+                await state.update_data(campaign_id=campaign.id)
+                if campaign.partner_user_id:
+                    await state.update_data(referrer_id=campaign.partner_user_id)
+                    logger.info(
+                        '👤 Кампания привязана к партнёру',
+                        partner_user_id=campaign.partner_user_id,
+                    )
+            else:
+                referral_code = start_parameter
+                logger.info('🔎 Найден реферальный код', referral_code=referral_code)
 
     if referral_code:
         await state.update_data(referral_code=referral_code)
