@@ -19,6 +19,8 @@ sys.path.insert(0, str(project_root))
 os.environ.setdefault('DATABASE_MODE', 'postgresql')
 os.environ.setdefault('DATABASE_URL', 'postgresql+asyncpg://user:pass@localhost/test_db')
 os.environ.setdefault('BOT_TOKEN', 'test-token')
+# Задаём путь резервного копирования, доступный для записи в тестовом окружении.
+os.environ.setdefault('BACKUP_LOCATION', '/tmp/test_backups')
 
 # Создаём заглушки для драйверов, которых может не быть в окружении тестов.
 sys.modules.setdefault('asyncpg', types.ModuleType('asyncpg'))
@@ -146,11 +148,22 @@ if 'yookassa' not in sys.modules:
     payment_builder_module.PaymentRequestBuilder = _FakePaymentRequestBuilder
     confirmation_module.ConfirmationType = _FakeConfirmationType
 
+    exceptions_module = types.ModuleType('yookassa.domain.exceptions')
+    not_found_error_module = types.ModuleType('yookassa.domain.exceptions.not_found_error')
+
+    class _FakeNotFoundError(Exception):
+        pass
+
+    not_found_error_module.NotFoundError = _FakeNotFoundError
+    exceptions_module.NotFoundError = _FakeNotFoundError
+
     sys.modules['yookassa.domain'] = domain_module
     sys.modules['yookassa.domain.request'] = request_module
     sys.modules['yookassa.domain.request.payment_request_builder'] = payment_builder_module
     sys.modules['yookassa.domain.common'] = common_module
     sys.modules['yookassa.domain.common.confirmation_type'] = confirmation_module
+    sys.modules['yookassa.domain.exceptions'] = exceptions_module
+    sys.modules['yookassa.domain.exceptions.not_found_error'] = not_found_error_module
 
 
 @pytest.fixture
