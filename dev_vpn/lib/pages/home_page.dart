@@ -10,6 +10,7 @@ import '../models/server_node.dart';
 import '../models/subscription_info.dart';
 import '../services/auth_service.dart';
 import '../services/auth_state.dart';
+import '../services/me_service.dart';
 import '../services/remnawave_service.dart';
 import '../services/selected_server_state.dart';
 import '../theme/app_colors.dart';
@@ -139,7 +140,10 @@ class _HomePageState extends State<HomePage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _loadNodes();
+    if (state == AppLifecycleState.resumed) {
+      _loadNodes();
+      MeService.refresh();
+    }
   }
 
   @override

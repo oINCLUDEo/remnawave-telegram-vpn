@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Cabinet (Personal Account) routes
 from app.cabinet.routes import router as cabinet_router
 from app.config import settings
-from app.mobile.routes import auth as mobile_auth, servers as mobile_servers
+from app.mobile.routes import auth as mobile_auth, me as mobile_me, servers as mobile_servers
 from app.webapi.docs import add_redoc_endpoint
 
 from .middleware import RequestLoggingMiddleware
@@ -275,6 +275,7 @@ def create_web_api_app() -> FastAPI:
     # Mobile API (Flutter client)
     app.include_router(mobile_servers.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_auth.router, prefix='/mobile/v1/auth', tags=['mobile'])
+    app.include_router(mobile_me.router, prefix='/mobile/v1', tags=['mobile'])
 
     # Cabinet (Personal Account) routes
     if settings.is_cabinet_enabled():

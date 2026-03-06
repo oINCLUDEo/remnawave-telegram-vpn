@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_config.dart';
 import 'auth_state.dart';
+import 'me_service.dart';
 import 'remnawave_service.dart';
 
 /// Result of an auth initiation or poll.
@@ -173,6 +174,10 @@ class AuthService {
       }
 
       authStateNotifier.value = newState;
+
+      // Eagerly fetch /me so subscription data is ready before pages load.
+      MeService.refresh();
+
       return null; // success
     } on Exception catch (e) {
       return 'Ошибка разбора ответа: $e';
@@ -185,5 +190,6 @@ class AuthService {
   static Future<void> logout() async {
     await clearAuthState();
     await RemnawaveService.saveSubscriptionUrl('');
+    MeService.clear();
   }
 }
