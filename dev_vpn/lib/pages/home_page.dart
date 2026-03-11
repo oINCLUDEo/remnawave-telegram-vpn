@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
@@ -15,6 +14,7 @@ import '../services/remnawave_service.dart';
 import '../services/selected_server_state.dart';
 import '../theme/app_colors.dart';
 import '../utils/speed_calculator.dart';
+import '../widgets/purple_header.dart';
 import 'auth_bottom_sheet.dart';
 import 'config_editor_page.dart';
 
@@ -103,11 +103,6 @@ class _HomePageState extends State<HomePage>
     }
   }
 
-  /// Reload nodes when the user logs in/out so subscription/catalog modes switch.
-  void _onAuthChanged() {
-    _loadNodes();
-  }
-
   Future<void> _init() async {
     await _v2ray.initializeVless(
       notificationIconResourceType: 'mipmap',
@@ -156,6 +151,10 @@ class _HomePageState extends State<HomePage>
     super.dispose();
   }
 
+  void _onAuthChanged() {
+    _loadNodes();
+  }
+
   // ── Загрузка серверов ─────────────────────────────────────────────────────
 
   Future<void> _loadNodes() async {
@@ -165,7 +164,7 @@ class _HomePageState extends State<HomePage>
     final subUrl = await RemnawaveService.getSubscriptionUrl();
     final List<ServerNode> nodes;
     final bool isPublic;
-
+    debugPrint('HomePage: loading nodes - ${subUrl}');
     if (subUrl.isEmpty) {
       nodes = await RemnawaveService.fetchPublicServers();
       isPublic = true;
@@ -177,6 +176,7 @@ class _HomePageState extends State<HomePage>
     if (!mounted) return;
     final prefs = await SharedPreferences.getInstance();
     final savedUuid = prefs.getString('selected_node_uuid');
+    debugPrint('HomePage: selected_node from cache - ${savedUuid}');
     setState(() {
       _nodes = nodes;
       _isPublicCatalog = isPublic;
@@ -229,7 +229,6 @@ class _HomePageState extends State<HomePage>
 
     // Public catalog servers have no link — connection is not possible.
     if (node.isDisabled || node.link == null) {
-      // Offer authentication so the user can unlock connection.
       await showAuthBottomSheet(context);
       return;
     }
@@ -601,134 +600,73 @@ class _HomePageState extends State<HomePage>
   @override
   Widget build(BuildContext context) {
     if (!_initialized) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
 
     return Scaffold(
-      body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _loadNodes,
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
-            children: [
-              _buildHeader(),
-              const SizedBox(height: 16),
-              _buildConnectionCard(),
-              const SizedBox(height: 12),
-              _buildTrafficCard(),
-              const SizedBox(height: 12),
-              _buildSubscriptionCard(),
-            ],
-          ),
+      body: RefreshIndicator(
+        onRefresh: _loadNodes,
+        color: AppColors.primary,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                MediaQuery.of(context).padding.top + 16,
+                16,
+                100,
+              ),
+              sliver: SliverList(
+                delegate: SliverChildListDelegate([
+                  _buildHeader(),
+                  const SizedBox(height: 16),
+                  _buildConnectionCard(),
+                  const SizedBox(height: 12),
+                  _buildTrafficCard(),
+                  const SizedBox(height: 12),
+                  _buildSubscriptionCard(),
+                  const SizedBox(height: 12),
+                ]),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  // ── Заголовок ─────────────────────────────────────────────────────────────
+// ── Заголовок ─────────────────────────────────────────────────────────────
 
   Widget _buildHeader() {
-    final theme = Theme.of(context);
-
     final subtitle = _isConnected
         ? 'Соединение защищено'
         : 'Свобода начинается с приватности';
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Мягкое темное свечение
-            Container(
-              decoration: BoxDecoration(
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(alpha: 0.35),
-                    blurRadius: 24,
-                    spreadRadius: -8,
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        'Ulya VPN',
-                        style: theme.textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          color: AppColors.textMain,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-
-                      // Тёмная BETA плашка (без розовости)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: AppColors.gradientAccent,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.08),
-                          ),
-                        ),
-                        child: const Text(
-                          'BETA',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white,
-                            letterSpacing: 0.8,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 250),
-                    child: Text(
-                      subtitle,
-                      key: ValueKey(subtitle),
-                      style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12.5,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+    return PurpleHeader(
+      title: 'Ulya VPN',
+      subtitle: subtitle,
+      showBeta: true,
+      trailing: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceSoft.withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white10),
         ),
-
-        Container(
-          decoration: BoxDecoration(
-            color: AppColors.surfaceSoft.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white10),
-          ),
-          child: IconButton(
-            icon: _isLoadingNodes
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh_rounded),
-            onPressed: _isLoadingNodes ? null : _loadNodes,
-            tooltip: 'Обновить серверы',
-          ),
+        child: IconButton(
+          icon: _isLoadingNodes
+              ? const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+              : const Icon(Icons.refresh_rounded),
+          onPressed: _isLoadingNodes ? null : _loadNodes,
+          tooltip: 'Обновить серверы',
         ),
-      ],
+      ),
     );
   }
 
@@ -760,7 +698,7 @@ class _HomePageState extends State<HomePage>
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(26, 28, 26, 26),
+        padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
         child: Column(
           children: [
             /// STATUS
@@ -790,7 +728,7 @@ class _HomePageState extends State<HomePage>
               ],
             ),
 
-            const SizedBox(height: 32),
+            const SizedBox(height: 24),
 
             /// BUTTON
             Center(
@@ -801,7 +739,7 @@ class _HomePageState extends State<HomePage>
               ),
             ),
 
-            const SizedBox(height: 34),
+            const SizedBox(height: 24),
 
             Container(
               height: 1,
@@ -816,7 +754,7 @@ class _HomePageState extends State<HomePage>
               ),
             ),
 
-            const SizedBox(height: 22),
+            const SizedBox(height: 12),
 
             /// SERVER PICKER
             InkWell(
@@ -911,7 +849,7 @@ class _HomePageState extends State<HomePage>
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 22),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
         child: Row(
           children: [
             Expanded(
@@ -1010,7 +948,7 @@ class _HomePageState extends State<HomePage>
                       title: const Text('Выйти из аккаунта?'),
                       content: const Text(
                         'Данные подписки будут удалены с устройства. '
-                        'Вы сможете войти снова в любое время.',
+                            'Вы сможете войти снова в любое время.',
                         style: TextStyle(color: Colors.grey),
                       ),
                       actions: [
@@ -1050,86 +988,86 @@ class _HomePageState extends State<HomePage>
             else if (_isPublicCatalog && !authState.isLoggedIn)
               _buildLoginPromptInCard()
             else if (info == null)
-              const SizedBox.shrink()
-            else ...[
-              // ── Трафик ─────────────────────────────────────────────
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                const SizedBox.shrink()
+              else ...[
+                  // ── Трафик ─────────────────────────────────────────────
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        'Использовано',
-                        style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Использовано',
+                            style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            info.formattedUsed,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        info.formattedUsed,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            'Всего',
+                            style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            info.formattedTotal,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        'Всего',
-                        style: TextStyle(color: Colors.grey[500], fontSize: 11),
+
+                  const SizedBox(height: 10),
+
+                  // Прогресс-бар
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: info.usedFraction,
+                      minHeight: 8,
+                      backgroundColor: Colors.white12,
+                      valueColor: AlwaysStoppedAnimation(
+                        _progressColor(info.usedFraction),
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        info.formattedTotal,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 10),
-
-              // Прогресс-бар
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: info.usedFraction,
-                  minHeight: 8,
-                  backgroundColor: Colors.white12,
-                  valueColor: AlwaysStoppedAnimation(
-                    _progressColor(info.usedFraction),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              // Оставшийся трафик
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Осталось: ${_remainingTraffic(info)}',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                  ),
-                  Text(
-                    '${(info.usedFraction * 100).toStringAsFixed(1)}%',
-                    style: TextStyle(
-                      color: _progressColor(info.usedFraction),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                ],
-              ),
+
+                  const SizedBox(height: 8),
+
+                  // Оставшийся трафик
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Осталось: ${_remainingTraffic(info)}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                      Text(
+                        '${(info.usedFraction * 100).toStringAsFixed(1)}%',
+                        style: TextStyle(
+                          color: _progressColor(info.usedFraction),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
             ],
           ],
         ),
@@ -1153,7 +1091,6 @@ class _HomePageState extends State<HomePage>
       totalBytes: info.totalBytes,
     ).formattedUsed; // re-use formatter
   }
-
   /// Card content shown when the app is in public-catalog mode and the user
   /// is NOT logged in — invites them to authenticate.
   Widget _buildLoginPromptInCard() {
@@ -1395,13 +1332,7 @@ class _ExpiryBadge extends StatelessWidget {
   }
 }
 
-enum ConnectButtonState {
-  off,
-  connected,
-  loading,
-}
-
-class PremiumConnectButton extends StatefulWidget {
+class PremiumConnectButton extends StatelessWidget {
   final bool isConnected;
   final bool isLoading;
   final VoidCallback onTap;
@@ -1414,347 +1345,75 @@ class PremiumConnectButton extends StatefulWidget {
   });
 
   @override
-  State<PremiumConnectButton> createState() => _PremiumConnectButtonState();
-}
-
-class _PremiumConnectButtonState extends State<PremiumConnectButton>
-    with TickerProviderStateMixin {
-
-  late final AnimationController _pulseController;
-  late final AnimationController _rippleController;
-  late final AnimationController _particleController;
-  late final AnimationController _burstController;
-
-  late final Animation<double> _pulse;
-  late final Animation<double> _ripple;
-  late final Animation<double> _burst;
-
-  double _scale = 1;
-
-  static const _radius = BorderRadius.all(Radius.circular(22));
-
-  ConnectButtonState get state {
-    if (widget.isLoading) return ConnectButtonState.loading;
-    if (widget.isConnected) return ConnectButtonState.connected;
-    return ConnectButtonState.off;
-  }
-
-  bool get showPulse => state == ConnectButtonState.off;
-
-  @override
-  void initState() {
-    super.initState();
-
-    /// pulse glow
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1600),
-    );
-
-    _pulse = Tween<double>(begin: 1, end: 1.06).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-
-    /// ripple
-    _rippleController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
-
-    _ripple = CurvedAnimation(
-      parent: _rippleController,
-      curve: Curves.easeOut,
-    );
-
-    /// particles
-    _particleController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 6),
-    )..repeat();
-
-    /// connection burst
-    _burstController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 700),
-    );
-
-    _burst = CurvedAnimation(
-      parent: _burstController,
-      curve: Curves.easeOut,
-    );
-
-    _updatePulse();
-  }
-
-  @override
-  void didUpdateWidget(covariant PremiumConnectButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-
-    if (!oldWidget.isConnected && widget.isConnected) {
-      _burstController.forward(from: 0);
-    }
-
-    _updatePulse();
-  }
-
-  void _updatePulse() {
-    if (showPulse) {
-      _pulseController.repeat(reverse: true);
-    } else {
-      _pulseController.stop();
-      _pulseController.value = 1;
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    _rippleController.dispose();
-    _particleController.dispose();
-    _burstController.dispose();
-    super.dispose();
-  }
-
-  void _onTapDown(TapDownDetails _) {
-    if (!widget.isLoading) {
-      setState(() => _scale = 0.94);
-    }
-  }
-
-  void _onTapUp(TapUpDetails _) {
-    if (!widget.isLoading) {
-      setState(() => _scale = 1);
-    }
-  }
-
-  void _onTapCancel() {
-    setState(() => _scale = 1);
-  }
-
-  void _handleTap() {
-    if (widget.isLoading) return;
-
-    _rippleController.forward(from: 0);
-    widget.onTap();
-  }
-
-  @override
   Widget build(BuildContext context) {
+    final bool isOff = !isConnected && !isLoading;
 
-    final backgroundColor = switch (state) {
-      ConnectButtonState.off => const Color(0xFF5E6C8A),
-      ConnectButtonState.connected => const Color(0xFFC9D1D9),
-      ConnectButtonState.loading => const Color(0xFF2A2F36),
-    };
+    final backgroundColor = isOff
+        ? const Color(0xFF5E6C8A) // акцент
+        : isConnected
+        ? const Color(0xFFC9D1D9) // platinum
+        : AppColors.graphiteElevated;
 
-    final foreground = state == ConnectButtonState.connected
-        ? const Color(0xFF0F1114)
-        : Colors.white;
+    final foreground = isConnected
+        ? AppColors.graphiteBackground
+        : AppColors.textNeutralMain;
 
-    return GestureDetector(
-      onTapDown: _onTapDown,
-      onTapUp: _onTapUp,
-      onTapCancel: _onTapCancel,
-      child: SizedBox(
-        height: 160,
-        width: 300,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-
-            /// glow ring
-            if (showPulse)
-              Positioned.fill(
-                child: AnimatedBuilder(
-                  animation: _pulseController,
-                  builder: (_, __) {
-
-                    final glow = _pulse.value;
-
-                    return Center(
-                      child: Container(
-                        width: 260 * glow,
-                        height: 80 * glow,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(40),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFF5E6C8A)
-                                  .withValues(alpha: 0.35),
-                              blurRadius: 60 * glow,
-                              spreadRadius: 8,
-                            )
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-
-            /// orbital particles
-            Positioned.fill(
-              child: AnimatedBuilder(
-                animation: _particleController,
-                builder: (_, __) {
-
-                  final angle = _particleController.value * 2 * pi;
-
-                  return CustomPaint(
-                    painter: _ParticlePainter(angle),
-                  );
-                },
-              ),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOutCubic,
+      height: 60,
+      width: 240,
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          if (isOff)
+            BoxShadow(
+              color: const Color(0xFF5E6C8A).withValues(alpha: 0.35),
+              blurRadius: 40,
+              offset: const Offset(0, 18),
+            )
+          else if (isConnected)
+            BoxShadow(
+              color: const Color(0xFFC9D1D9).withValues(alpha: 0.35),
+              blurRadius: 45,
+              spreadRadius: -6,
+            )
+          else
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.45),
+              blurRadius: 28,
+              offset: const Offset(0, 14),
             ),
-
-            /// ripple
-            AnimatedBuilder(
-              animation: _rippleController,
-              builder: (_, __) {
-
-                final progress = _ripple.value;
-
-                if (progress == 0) return const SizedBox();
-
-                final size = 200 + progress * 200;
-
-                return Opacity(
-                  opacity: 1 - progress,
-                  child: Container(
-                    width: size,
-                    height: size,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: const Color(0xFF5E6C8A),
-                        width: 2,
-                      ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(22),
+          onTap: isLoading ? null : onTap,
+          child: Center(
+            child: isLoading
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: foreground,
+                    ),
+                  )
+                : Text(
+                    isConnected ? 'Отключить' : 'Подключить',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                      letterSpacing: 0.4,
+                      color: foreground,
                     ),
                   ),
-                );
-              },
-            ),
-
-            /// burst
-            AnimatedBuilder(
-              animation: _burstController,
-              builder: (_, __) {
-
-                final progress = _burst.value;
-
-                if (progress == 0) return const SizedBox();
-
-                final size = 100 + progress * 250;
-
-                return Opacity(
-                  opacity: 1 - progress,
-                  child: Container(
-                    width: size,
-                    height: size,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFFC9D1D9).withValues(alpha: 0.15),
-                    ),
-                  ),
-                );
-              },
-            ),
-
-            /// button
-            AnimatedBuilder(
-              animation: _pulseController,
-              builder: (_, child) {
-
-                final scale = showPulse
-                    ? _pulse.value * _scale
-                    : _scale;
-
-                return Transform.scale(
-                  scale: scale,
-                  child: child,
-                );
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOutCubic,
-                height: 60,
-                width: 240,
-                decoration: BoxDecoration(
-                  color: backgroundColor,
-                  borderRadius: _radius,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.45),
-                      blurRadius: 28,
-                      offset: const Offset(0, 14),
-                    )
-                  ],
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: _radius,
-                    onTap: _handleTap,
-                    child: Center(
-                      child: state == ConnectButtonState.loading
-                          ? SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: foreground,
-                        ),
-                      )
-                          : Text(
-                        state == ConnectButtonState.connected
-                            ? 'Отключить'
-                            : 'Подключить',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 15,
-                          letterSpacing: 0.4,
-                          color: foreground,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
-}
-
-class _ParticlePainter extends CustomPainter {
-
-  final double angle;
-
-  _ParticlePainter(this.angle);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-
-    final paint = Paint()
-      ..color = const Color(0xFF5E6C8A).withValues(alpha: 0.35);
-
-    final center = Offset(size.width / 2, size.height / 2);
-
-    const radius = 80;
-
-    for (int i = 0; i < 6; i++) {
-
-      final a = angle + (i * pi / 3);
-
-      final x = center.dx + cos(a) * radius;
-      final y = center.dy + sin(a) * radius;
-
-      canvas.drawCircle(Offset(x, y), 2, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }

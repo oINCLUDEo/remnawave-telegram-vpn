@@ -29,6 +29,7 @@ class RemnawaveService {
   static const _prefHwid = 'device_hwid';
   static const _prefCachedNodes = 'cached_nodes';
   static const _prefCachedSubscriptionInfo = 'cached_subscription_info';
+  static const _prefSelectedNodeUUID = 'selected_node_uuid';
 
   // ── Cached subscription info ──────────────────────────────────────────────
 
@@ -111,7 +112,7 @@ class RemnawaveService {
     }
 
     return {
-      'User-Agent': 'Happ/1.5.1/Ulya/1.0.1',
+      'User-Agent': 'Happ/1.5.1/Ulya/1.0.2',
       'X-HWID': hwid,
       'X-Ver-OS': osVersion,
       'X-Device-OS': platform,
@@ -192,15 +193,18 @@ class RemnawaveService {
       final nodes = list.map((e) {
         final serverJson = Map<String, dynamic>.from(e as Map<String, dynamic>);
 
-        final name = serverJson['name']?.toString() ?? '';
+        final rawName = serverJson['name']?.toString() ?? '';
 
         if ((serverJson['countryCode'] == null || serverJson['countryCode'].toString().isEmpty) &&
-            name.isNotEmpty) {
-          final code = _countryCodeFromName(name);
+            rawName.isNotEmpty) {
+          final code = _countryCodeFromName(rawName);
           if (code.isNotEmpty) {
             serverJson['countryCode'] = code;
           }
         }
+
+        final cleanName = _cleanServerName(rawName);
+        serverJson['name'] = cleanName;
 
         return ServerNode.fromJson(serverJson);
       }).toList();
@@ -211,6 +215,41 @@ class RemnawaveService {
       debugPrint('RemnawaveService: fetchPublicServers error: $e');
       return [];
     }
+  }
+
+  // ── НОВАЯ ФУНКЦИЯ: Очистка имени от флага ─────────────────────────────────
+
+  /// Удаляет флаг из начала имени сервера
+  /// Например: "🇷🇺 Russia" -> "Russia", "🇩🇪 DE-01" -> "DE-01"
+  static String _cleanServerName(String name) {
+    if (name.isEmpty) return name;
+
+    final runes = name.runes.toList();
+
+    // Проверяем, начинается ли имя с флага (2 символа-флага)
+    if (runes.length >= 2) {
+      final a = runes[0];
+      final b = runes[1];
+
+      // Проверяем, что это региональные индикаторы (флаги)
+      if (a >= 0x1F1E6 && a <= 0x1F1FF && b >= 0x1F1E6 && b <= 0x1F1FF) {
+        // Пропускаем флаг (2 символа) и следующий пробел, если есть
+        int startIndex = 2;
+
+        // Пропускаем пробелы после флага
+        while (startIndex < runes.length &&
+            (runes[startIndex] == 0x20 || runes[startIndex] == 0x200B)) {
+          startIndex++;
+        }
+
+        // Если после флага есть символы, возвращаем оставшуюся часть
+        if (startIndex < runes.length) {
+          return String.fromCharCodes(runes.sublist(startIndex));
+        }
+      }
+    }
+
+    return name;
   }
 
   // ── Cache helpers ─────────────────────────────────────────────────────────
@@ -258,6 +297,14 @@ class RemnawaveService {
       debugPrint('RemnawaveService: failed to load cache: $e');
       return [];
     }
+  }
+
+  static Future<void> clearCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefSubscriptionUrl);
+    await prefs.remove(_prefCachedNodes);
+    await prefs.remove(_prefCachedSubscriptionInfo);
+    await prefs.remove(_prefSelectedNodeUUID);
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
@@ -387,14 +434,16 @@ class RemnawaveService {
       if (host.isEmpty) return null;
 
       final parsed = _parseFragment(uri.fragment, host);
-      final name = parsed.name;
-      final description = parsed.description;
 
-      final countryCode = _countryCodeFromName(name);
+      final rawName = parsed.name;
+      final cleanName = _cleanServerName(rawName);
+
+      final description = parsed.description;
+      final countryCode = _countryCodeFromName(rawName);
 
       return ServerNode(
         uuid: link,
-        name: name,
+        name: cleanName,
         address: host,
         countryCode: countryCode,
         isConnected: true,

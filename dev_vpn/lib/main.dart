@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:dev_vpn/theme/app_colors.dart';
 import 'package:flutter/material.dart';
 
 import 'pages/home_page.dart';
@@ -36,7 +37,7 @@ class UlyaVpnApp extends StatelessWidget {
           surface: const Color(0xFF1A1A2E),
           onSurface: Colors.white,
         ),
-        scaffoldBackgroundColor: const Color(0xFF0F0F1A),
+        scaffoldBackgroundColor: AppColors.neutralBackground,
         cardTheme: CardThemeData(
           color: const Color(0xFF1A1A2E),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -75,12 +76,42 @@ class _MainShellState extends State<MainShell> with TickerProviderStateMixin {
     return Scaffold(
       extendBody: true,
       body: IndexedStack(index: _currentIndex, children: pages),
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        child: _GlassNavBar(
-          currentIndex: _currentIndex,
-          onTabSelected: (i) => setState(() => _currentIndex = i),
-        ),
+      bottomNavigationBar: Stack(
+        alignment: Alignment.bottomCenter,
+        children: [
+          // Легкий туман под меню
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: 120, // растягиваем градиент выше для плавности
+            child: IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [
+                      const Color(0xFF171A21).withOpacity(1), // чуть заметная плотность
+                      const Color(0xFF171A21).withOpacity(0.5),
+                      const Color(0xFF171A21).withOpacity(0.04), // почти прозрачный
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.3, 0.6, 1.0], // плавное уменьшение эффекта
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Меню навигации
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: _GlassNavBar(
+              currentIndex: _currentIndex,
+              onTabSelected: (i) => setState(() => _currentIndex = i),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -107,11 +138,11 @@ class _GlassNavBar extends StatelessWidget {
           height: 68,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(32),
-            color: const Color(0xFF171A21).withOpacity(0.85),
+            color: const Color(0xFF171A21).withValues(alpha: 0.85),
             border: Border.all(color: Colors.white10),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.35),
+                color: Colors.black.withValues(alpha: 0.35),
                 blurRadius: 25,
                 offset: const Offset(0, 8),
               ),
@@ -231,12 +262,12 @@ class _HomeNavItemState extends State<_HomeNavItem>
                   ),
                   boxShadow: widget.selected
                       ? [
-                          BoxShadow(
-                            color: const Color(0xFF6C5CE7).withValues(alpha: 0.4),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
-                          ),
-                        ]
+                    BoxShadow(
+                      color: const Color(0xFF6C5CE7).withValues(alpha: 0.4),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ]
                       : [],
                 ),
                 child: Icon(

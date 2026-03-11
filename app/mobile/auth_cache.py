@@ -21,7 +21,7 @@ logger = structlog.get_logger(__name__)
 
 _REDIS_PREFIX = 'mobile_auth:'
 TOKEN_TTL_SECONDS = 300  # 5 minutes
-
+MOBILE_AUTH_START_PREFIX = "mobile_auth_"
 
 def _make_key(token: str) -> str:
     return f'{_REDIS_PREFIX}{token}'

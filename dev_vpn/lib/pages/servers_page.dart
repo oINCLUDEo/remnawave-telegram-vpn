@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:country_flags/country_flags.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,6 +10,7 @@ import '../services/auth_state.dart';
 import '../services/remnawave_service.dart';
 import '../services/selected_server_state.dart';
 import '../theme/app_colors.dart';
+import '../widgets/purple_header.dart';
 import 'auth_bottom_sheet.dart';
 
 class ServersPage extends StatefulWidget {
@@ -80,7 +82,7 @@ class _ServersPageState extends State<ServersPage> {
     });
 
     final subUrl = await RemnawaveService.getSubscriptionUrl();
-
+    debugPrint('ServersPage: subUrl - ${subUrl}');
     if (subUrl.isEmpty) {
       // No personal subscription — load the public server catalog.
       final nodes = await RemnawaveService.fetchPublicServers();
@@ -381,91 +383,51 @@ class _ServersPageState extends State<ServersPage> {
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               sliver: SliverToBoxAdapter(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      decoration: BoxDecoration(
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppColors.primary.withValues(alpha: 0.3),
-                            blurRadius: 24,
-                            spreadRadius: -8,
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Серверы',
-                            style: Theme.of(context).textTheme.headlineMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w900,
-                                  color: Colors.white,
-                                  letterSpacing: 0.4,
-                                ),
-                          ),
-                          if (!_loading && _nodes.isNotEmpty) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              _isPublicCatalog
-                                  ? '${_nodes.length} ${_pluralServers(_nodes.length)} (каталог)'
-                                  : '${_nodes.length} ${_pluralServers(_nodes.length)} в подписке',
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
-                                fontSize: 12.5,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        Container(
-                          decoration: BoxDecoration(
-                            color: AppColors.surfaceSoft.withValues(alpha: 0.7),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white10),
-                          ),
-                          child: IconButton(
-                            icon: _pingAllInProgress
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.speed_outlined),
-                            // Ping is only useful for subscription servers that have links.
-                            onPressed:
-                                (_loading ||
-                                    _pingAllInProgress ||
-                                    _isPublicCatalog)
-                                ? null
-                                : tcpPingAll,
-                            tooltip: 'Пинг всех',
-                          ),
+                child: PurpleHeader(
+                  title: 'Серверы',
+                  subtitle: !_loading && _nodes.isNotEmpty
+                      ? _isPublicCatalog
+                      ? '${_nodes.length} ${_pluralServers(_nodes.length)} (каталог)'
+                      : '${_nodes.length} ${_pluralServers(_nodes.length)} в подписке'
+                      : null,
+                  showBeta: false, // здесь BETA не нужен
+                  trailing: Row(
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceSoft.withValues(alpha: 0.7),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white10),
                         ),
-                        const SizedBox(width: 8),
-                        Container(
-                          decoration: BoxDecoration(
-                            color: AppColors.surfaceSoft.withValues(alpha: 0.7),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white10),
-                          ),
-                          child: IconButton(
-                            icon: const Icon(Icons.refresh),
-                            onPressed: _loading ? null : _loadNodes,
-                            tooltip: 'Обновить',
-                          ),
+                        child: IconButton(
+                          icon: _pingAllInProgress
+                              ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                              : const Icon(Icons.speed_outlined),
+                          onPressed: (_loading || _pingAllInProgress || _isPublicCatalog)
+                              ? null
+                              : tcpPingAll,
+                          tooltip: 'Пинг всех',
                         ),
-                      ],
-                    ),
-                  ],
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceSoft.withValues(alpha: 0.7),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white10),
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.refresh),
+                          onPressed: _loading ? null : _loadNodes,
+                          tooltip: 'Обновить',
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -486,8 +448,8 @@ class _ServersPageState extends State<ServersPage> {
                     : _buildEmptyState(),
               )
             else ...[
-              ..._buildSections(),
-            ],
+                ..._buildSections(),
+              ],
             const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
           ],
         ),
@@ -511,7 +473,7 @@ class _ServersPageState extends State<ServersPage> {
           Expanded(
             child: Text(
               'Публичный каталог — только предпросмотр. '
-              'Для подключения оформите подписку.',
+                  'Для подключения оформите подписку.',
               style: TextStyle(color: Colors.orange[300], fontSize: 12),
             ),
           ),
@@ -552,7 +514,7 @@ class _ServersPageState extends State<ServersPage> {
             const SizedBox(height: 8),
             Text(
               'Не удалось загрузить серверы.\nПроверьте интернет-соединение или '
-              'добавьте URL подписки в Настройках.',
+                  'добавьте URL подписки в Настройках.',
               style: TextStyle(color: Colors.grey[600], fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -884,23 +846,15 @@ class _NodeTile extends StatelessWidget {
         splashColor: const Color(0xFF6C5CE7).withValues(alpha: 0.1),
         highlightColor: Colors.transparent,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
           child: Row(
             children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? const Color(0xFF6C5CE7).withValues(alpha: 0.15)
-                      : AppColors.graphiteElevated,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Center(
-                  child: Text(
-                    _countryEmoji(node.countryCode),
-                    style: const TextStyle(fontSize: 22),
-                  ),
+              CountryFlag.fromCountryCode(
+                node.countryCode,
+                theme: ImageTheme(
+                  width: 40,
+                  height: 32,
+                  shape: RoundedRectangle(12),
                 ),
               ),
               const SizedBox(width: 14),
@@ -1003,21 +957,21 @@ class _NodeTile extends StatelessWidget {
                     ),
                     child: isPinging
                         ? SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: _pingColor(ping),
-                            ),
-                          )
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: _pingColor(ping),
+                      ),
+                    )
                         : Text(
-                            _pingLabel(ping),
-                            style: TextStyle(
-                              color: _pingColor(ping),
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
+                      _pingLabel(ping),
+                      style: TextStyle(
+                        color: _pingColor(ping),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
                 ),
             ],
@@ -1064,17 +1018,5 @@ class _NodeTile extends StatelessWidget {
   String _pingLabel(int? p) {
     if (p == null || p < 0) return '—';
     return '${p}ms';
-  }
-
-  String _countryEmoji(String code) {
-    if (code.length != 2) return '🌐';
-    final u = code.toUpperCase();
-    final f = u.codeUnitAt(0);
-    final s = u.codeUnitAt(1);
-    if (f < 0x41 || f > 0x5A || s < 0x41 || s > 0x5A) {
-      return '🌐';
-    }
-    const base = 0x1F1E6 - 0x41;
-    return String.fromCharCode(base + f) + String.fromCharCode(base + s);
   }
 }

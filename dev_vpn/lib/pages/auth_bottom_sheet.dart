@@ -105,7 +105,7 @@ class _AuthBottomSheetState extends State<_AuthBottomSheet>
   void _startPolling(String token) {
     _pollSub?.cancel();
     _pollSub = AuthService.pollStatus(token).listen(
-      (result) {
+          (result) {
         if (!mounted) {
           _pollSub?.cancel();
           return;
@@ -138,8 +138,10 @@ class _AuthBottomSheetState extends State<_AuthBottomSheet>
     if (!mounted) return;
     setState(() => _step = _AuthStep.success);
     await _successCtrl.forward();
-    await Future<void>.delayed(const Duration(milliseconds: 800));
-    if (mounted) Navigator.pop(context, true);
+    await Future<void>.delayed(const Duration(milliseconds: 1000));
+    if (mounted) {
+      Navigator.pop(context, true);
+    }
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -372,7 +374,7 @@ class _AuthBottomSheetState extends State<_AuthBottomSheet>
           Expanded(
             child: Text(
               'В будущем подписку можно будет купить прямо в приложении. '
-              'Если подписка уже есть — просто войдите в аккаунт.',
+                  'Если подписка уже есть — просто войдите в аккаунт.',
               style: TextStyle(
                 color: Colors.amber[300],
                 fontSize: 12,
