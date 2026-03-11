@@ -7,6 +7,7 @@ import '../services/auth_service.dart';
 import '../services/auth_state.dart';
 import '../services/me_service.dart';
 import '../services/remnawave_service.dart';
+import '../services/subscription_api_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/purple_header.dart';
 import 'auth_bottom_sheet.dart';
@@ -21,6 +22,7 @@ class SubscriptionPage extends StatefulWidget {
 class _SubscriptionPageState extends State<SubscriptionPage>
     with WidgetsBindingObserver {
   bool _loading = false;
+  bool _autopayLoading = false;
   SubscriptionInfo? _trafficInfo;
   DateTime? _lastRefresh;
 
@@ -106,6 +108,35 @@ class _SubscriptionPageState extends State<SubscriptionPage>
     }
   }
 
+  Future<void> _toggleAutopay(bool enabled) async {
+    if (_autopayLoading) return;
+    setState(() => _autopayLoading = true);
+    await SubscriptionApiService.setAutopay(enabled);
+    await MeService.refresh();
+    if (mounted) setState(() => _autopayLoading = false);
+  }
+
+  Future<void> _openUpgrade(String action) async {
+    final result = await SubscriptionApiService.upgradeSubscription(
+      action: action,
+      value: action == 'traffic' ? 15 : (action == 'devices' ? 1 : 30),
+      paymentMethod: 'yookassa',
+    );
+    if (!mounted) return;
+    if (result == 'balance') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Улучшение применено!')),
+      );
+      await MeService.refresh();
+    } else if (result != null) {
+      await SubscriptionApiService.openPaymentUrl(result);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось создать платёж')),
+      );
+    }
+  }
+
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -163,6 +194,22 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                         _SubscriptionUrlCard(
                           url: me.subscription!.subscriptionUrl!,
                         ),
+                      const SizedBox(height: 12),
+
+                      // Баланс
+                      _BalanceCard(me: me),
+                      const SizedBox(height: 12),
+
+                      // Автопродление
+                      _AutopayCard(
+                        sub: me.subscription!,
+                        loading: _autopayLoading,
+                        onToggle: _toggleAutopay,
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Улучшение подписки
+                      _UpgradeCard(onUpgrade: _openUpgrade),
                       const SizedBox(height: 12),
                     ],
                     _QuickActionsCard(onLogout: _onLogout),
@@ -1128,6 +1175,275 @@ class _ActionRow extends StatelessWidget {
                 color: AppColors.textNeutralMuted,
                 size: 18,
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+// ── Balance card ──────────────────────────────────────────────────────────────
+
+class _BalanceCard extends StatelessWidget {
+  final MeResponse me;
+
+  const _BalanceCard({required this.me});
+
+  @override
+  Widget build(BuildContext context) {
+    final rub = me.balanceRub;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.graphiteSurface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: AppColors.success.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.account_balance_wallet_outlined,
+              color: AppColors.success,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Баланс',
+                  style: TextStyle(
+                    color: AppColors.textNeutralSecondary,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${rub.toStringAsFixed(2)} ₽',
+                  style: const TextStyle(
+                    color: AppColors.textNeutralMain,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Autopay card ──────────────────────────────────────────────────────────────
+
+class _AutopayCard extends StatelessWidget {
+  final MeSubscription sub;
+  final bool loading;
+  final ValueChanged<bool> onToggle;
+
+  const _AutopayCard({
+    required this.sub,
+    required this.loading,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.graphiteSurface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.autorenew,
+              color: AppColors.primary,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Автопродление',
+                  style: TextStyle(
+                    color: AppColors.textNeutralMain,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  sub.autopayEnabled
+                      ? 'Включено (за ${sub.autopayDaysBefore} дн. до окончания)'
+                      : 'Отключено',
+                  style: const TextStyle(
+                    color: AppColors.textNeutralSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          loading
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.primary,
+                  ),
+                )
+              : Switch(
+                  value: sub.autopayEnabled,
+                  onChanged: onToggle,
+                  activeColor: AppColors.primary,
+                ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Upgrade card ──────────────────────────────────────────────────────────────
+
+class _UpgradeCard extends StatelessWidget {
+  final Future<void> Function(String action) onUpgrade;
+
+  const _UpgradeCard({required this.onUpgrade});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.graphiteSurface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Улучшить подписку',
+            style: TextStyle(
+              color: AppColors.textNeutralMain,
+              fontWeight: FontWeight.bold,
+              fontSize: 15,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _UpgradeRow(
+            icon: Icons.data_usage,
+            iconColor: const Color(0xFF00D9FF),
+            title: '+15 ГБ трафика',
+            subtitle: 'Добавить пакет трафика',
+            onTap: () => onUpgrade('traffic'),
+          ),
+          const Divider(color: AppColors.graphiteElevated, height: 20),
+          _UpgradeRow(
+            icon: Icons.devices,
+            iconColor: AppColors.primary,
+            title: '+1 устройство',
+            subtitle: 'Разрешить ещё одно устройство',
+            onTap: () => onUpgrade('devices'),
+          ),
+          const Divider(color: AppColors.graphiteElevated, height: 20),
+          _UpgradeRow(
+            icon: Icons.calendar_today_outlined,
+            iconColor: AppColors.success,
+            title: '+30 дней',
+            subtitle: 'Продлить подписку',
+            onTap: () => onUpgrade('days'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UpgradeRow extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _UpgradeRow({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: iconColor.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: iconColor, size: 18),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: AppColors.textNeutralMain,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      color: AppColors.textNeutralMuted,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right,
+              color: AppColors.textNeutralMuted,
+              size: 18,
+            ),
           ],
         ),
       ),
