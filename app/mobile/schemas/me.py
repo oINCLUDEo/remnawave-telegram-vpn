@@ -15,8 +15,6 @@ class MeSubscriptionInfo(BaseModel):
     traffic_used_gb: float = Field(0.0, description='Traffic consumed in GB')
     subscription_url: str | None = Field(None, description='Personal subscription URL')
     device_limit: int = Field(1, description='Maximum simultaneous devices allowed')
-    autopay_enabled: bool = Field(False, description='Whether auto-renewal is enabled')
-    autopay_days_before: int = Field(3, description='Days before expiry to trigger auto-renewal')
 
 
 class MeMobileResponse(BaseModel):
@@ -31,5 +29,3 @@ class MeMobileResponse(BaseModel):
         None,
         description='Subscription details (null when has_subscription is False)',
     )
-    balance_kopeks: int = Field(0, description='User balance in kopeks')
-    balance_rub: float = Field(0.0, description='User balance in roubles')
