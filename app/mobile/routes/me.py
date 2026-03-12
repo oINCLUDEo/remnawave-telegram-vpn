@@ -98,11 +98,7 @@ async def get_me(
             'traffic_used_gb': round(traffic_used_gb, 3),
             'subscription_url': getattr(subscription, 'subscription_url', None),
             'device_limit': getattr(subscription, 'device_limit', 1),
-            'autopay_enabled': bool(getattr(subscription, 'autopay_enabled', False)),
-            'autopay_days_before': int(getattr(subscription, 'autopay_days_before', 3)),
         }
-
-    balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
     return MeMobileResponse(
         telegram_id=user.telegram_id,
@@ -111,6 +107,4 @@ async def get_me(
         username=user.username,
         has_subscription=subscription is not None,
         subscription=sub_data,
-        balance_kopeks=balance_kopeks,
-        balance_rub=round(balance_kopeks / 100, 2),
     )
