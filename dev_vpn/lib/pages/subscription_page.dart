@@ -7,12 +7,15 @@ import '../services/auth_service.dart';
 import '../services/auth_state.dart';
 import '../services/me_service.dart';
 import '../services/remnawave_service.dart';
+import '../services/subscription_api_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/purple_header.dart';
 import 'auth_bottom_sheet.dart';
 
 class SubscriptionPage extends StatefulWidget {
-  const SubscriptionPage({super.key});
+  const SubscriptionPage({super.key, this.onGoToPremium});
+
+  final VoidCallback? onGoToPremium;
 
   @override
   State<SubscriptionPage> createState() => _SubscriptionPageState();
@@ -138,9 +141,15 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                       ),
                     ),
                   ] else ...[
-                    // Информация о пользователе - обновленная иконка!
+                    // Информация о пользователе
                     _UserCard(me: me, auth: auth),
                     const SizedBox(height: 12),
+
+                    // Баланс
+                    if (me != null)
+                      _BalanceCard(me: me),
+                    if (me != null)
+                      const SizedBox(height: 12),
 
                     // Статус подписки из MeService
                     _SubscriptionStatusCard(me: me),
@@ -150,8 +159,12 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                     if (me?.subscription != null) ...[
                       _TrafficCard(
                         sub: me!.subscription!,
-                        trafficInfo: _trafficInfo, // Добавляем данные о трафике
+                        trafficInfo: _trafficInfo,
                       ),
+                      const SizedBox(height: 12),
+
+                      // Автопродление
+                      _AutopayCard(sub: me.subscription!, onToggle: _onAutopayToggle),
                       const SizedBox(height: 12),
 
                       // Детали подписки из MeService
@@ -165,7 +178,7 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                         ),
                       const SizedBox(height: 12),
                     ],
-                    _QuickActionsCard(onLogout: _onLogout),
+                    _QuickActionsCard(onLogout: _onLogout, onPremiumTap: _onPremiumTap),
                   ],
                 ]),
               ),
@@ -236,6 +249,26 @@ class _SubscriptionPageState extends State<SubscriptionPage>
     if (confirm == true) {
       await AuthService.logout();
       debugPrint('SubPage: logout proccess compeleted');
+    }
+  }
+
+  Future<void> _onAutopayToggle(bool enabled) async {
+    final result = await SubscriptionApiService.setAutopay(enabled: enabled);
+    if (result != null && mounted) {
+      await MeService.refresh();
+    }
+  }
+
+  void _onPremiumTap() {
+    if (widget.onGoToPremium != null) {
+      widget.onGoToPremium!();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Откройте вкладку «Премиум» для управления подпиской'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 }
@@ -966,10 +999,171 @@ class _SubscriptionUrlCard extends StatelessWidget {
   }
 }
 
+// ── Balance Card ──────────────────────────────────────────────────────────────
+
+class _BalanceCard extends StatelessWidget {
+  final MeResponse me;
+
+  const _BalanceCard({required this.me});
+
+  @override
+  Widget build(BuildContext context) {
+    return _Card(
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: AppColors.success.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.account_balance_wallet_outlined,
+              color: AppColors.success,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Баланс',
+                  style: TextStyle(
+                    color: AppColors.textNeutralSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+                Text(
+                  '${me.balanceRub.toStringAsFixed(2)} ${me.balanceCurrency}',
+                  style: const TextStyle(
+                    color: AppColors.textNeutralMain,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Autopay Card ──────────────────────────────────────────────────────────────
+
+class _AutopayCard extends StatefulWidget {
+  final MeSubscription sub;
+  final Future<void> Function(bool enabled) onToggle;
+
+  const _AutopayCard({required this.sub, required this.onToggle});
+
+  @override
+  State<_AutopayCard> createState() => _AutopayCardState();
+}
+
+class _AutopayCardState extends State<_AutopayCard> {
+  late bool _enabled;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.sub.autopayEnabled;
+  }
+
+  @override
+  void didUpdateWidget(_AutopayCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sub.autopayEnabled != widget.sub.autopayEnabled) {
+      _enabled = widget.sub.autopayEnabled;
+    }
+  }
+
+  Future<void> _toggle(bool value) async {
+    setState(() {
+      _enabled = value;
+      _loading = true;
+    });
+    try {
+      await widget.onToggle(value);
+    } catch (_) {
+      if (mounted) setState(() => _enabled = !value);
+    }
+    if (mounted) setState(() => _loading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _Card(
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: (_enabled ? AppColors.primary : AppColors.graphiteElevated).withValues(alpha: 0.25),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              Icons.autorenew,
+              color: _enabled ? AppColors.primary : AppColors.textNeutralMuted,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Автопродление',
+                  style: TextStyle(
+                    color: AppColors.textNeutralMain,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  _enabled
+                      ? 'Подписка продлевается автоматически'
+                      : 'Автопродление отключено',
+                  style: const TextStyle(
+                    color: AppColors.textNeutralSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _loading
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.primary,
+                  ),
+                )
+              : Switch(
+                  value: _enabled,
+                  onChanged: _toggle,
+                  activeColor: const Color(0xFF6C5CE7),
+                ),
+        ],
+      ),
+    );
+  }
+}
+
 class _QuickActionsCard extends StatelessWidget {
   final VoidCallback onLogout;
+  final VoidCallback? onPremiumTap;
 
-  const _QuickActionsCard({required this.onLogout});
+  const _QuickActionsCard({required this.onLogout, this.onPremiumTap});
 
   @override
   Widget build(BuildContext context) {
@@ -987,11 +1181,11 @@ class _QuickActionsCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           _ActionRow(
-            icon: Icons.star_border,
+            icon: Icons.workspace_premium,
             iconColor: Colors.amber,
-            label: 'Купить / продлить',
-            subtitle: 'Скоро в приложении',
-            onTap: null,
+            label: 'Купить / продлить подписку',
+            subtitle: 'Перейти на страницу Премиум',
+            onTap: onPremiumTap,
           ),
           const Divider(color: AppColors.graphiteElevated, height: 20),
           _ActionRow(

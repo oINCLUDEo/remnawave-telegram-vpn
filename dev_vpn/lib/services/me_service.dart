@@ -67,6 +67,9 @@ class MeService {
         'last_name': me.lastName,
         'username': me.username,
         'has_subscription': me.hasSubscription,
+        'balance_kopeks': me.balanceKopeks,
+        'balance_rub': me.balanceRub,
+        'balance_currency': me.balanceCurrency,
         'subscription': me.subscription == null
             ? null
             : {
@@ -77,6 +80,7 @@ class MeService {
           'traffic_used_gb': me.subscription!.trafficUsedGb,
           'subscription_url': me.subscription!.subscriptionUrl,
           'device_limit': me.subscription!.deviceLimit,
+          'autopay_enabled': me.subscription!.autopayEnabled,
         }
       };
 
