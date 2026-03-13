@@ -20,7 +20,9 @@ import 'config_editor_page.dart';
 import '../main.dart' show DS;
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final VoidCallback? onGoToPremium;
+
+  const HomePage({super.key, this.onGoToPremium});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -169,7 +171,12 @@ class _HomePageState extends State<HomePage>
     final node = _selectedNode;
     if (node == null) { _snack('Сначала выберите сервер'); return; }
     if (node.isDisabled || node.link == null) {
-      await showAuthBottomSheet(context); return;
+      if (authStateNotifier.value.isLoggedIn) {
+        widget.onGoToPremium?.call();
+      } else {
+        await showAuthBottomSheet(context);
+      }
+      return;
     }
     if (!await _v2ray.requestPermission()) { _snack('Нет разрешения VPN'); return; }
     setState(() => _isConnecting = true);
@@ -316,7 +323,13 @@ class _HomePageState extends State<HomePage>
                         onTap: () async {
                           if (_isPublicCatalog) {
                             Navigator.pop(ctx);
-                            if (context.mounted) await showAuthBottomSheet(context);
+                            if (context.mounted) {
+                              if (authStateNotifier.value.isLoggedIn) {
+                                widget.onGoToPremium?.call();
+                              } else {
+                                await showAuthBottomSheet(context);
+                              }
+                            }
                             return;
                           }
                           setState(() => _selectedNode = node);
