@@ -17,6 +17,7 @@ from app.mobile.routes.subscription import (
     get_balance,
     get_subscription_options,
     set_autopay,
+    topup_balance,
 )
 
 
@@ -250,3 +251,68 @@ async def test_calc_subscription_price_returns_total():
 
     assert result.total_kopeks == 39900
     assert result.total_rub == 399.0
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/balance/topup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_topup_balance_when_yookassa_disabled_raises_402():
+    from fastapi import HTTPException
+
+    user = _make_user(balance_kopeks=0)
+    mock_db, mock_session_class, mock_engine = _db_patch(user)
+
+    from app.mobile.schemas.subscription import BalanceTopupRequest
+
+    with (
+        patch('app.mobile.routes.subscription.settings') as mock_settings,
+        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
+        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
+        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
+    ):
+        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+        mock_settings.is_yookassa_enabled.return_value = False
+
+        with pytest.raises(HTTPException) as exc_info:
+            await topup_balance(
+                payload=BalanceTopupRequest(amount_kopeks=30000),
+                x_telegram_id=123456789,
+            )
+
+    assert exc_info.value.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_topup_balance_creates_payment_url():
+    user = _make_user(balance_kopeks=0)
+    mock_db, mock_session_class, mock_engine = _db_patch(user)
+
+    from app.mobile.schemas.subscription import BalanceTopupRequest
+
+    mock_ps_instance = MagicMock()
+    mock_ps_instance.create_yookassa_payment = AsyncMock(
+        return_value={'confirmation_url': 'https://yookassa.ru/pay/test'}
+    )
+    mock_ps_class = MagicMock(return_value=mock_ps_instance)
+
+    with (
+        patch('app.mobile.routes.subscription.settings') as mock_settings,
+        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
+        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
+        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
+        patch.dict('sys.modules', {'app.services.payment_service': MagicMock(PaymentService=mock_ps_class)}),
+    ):
+        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+        mock_settings.is_yookassa_enabled.return_value = True
+
+        result = await topup_balance(
+            payload=BalanceTopupRequest(amount_kopeks=30000),
+            x_telegram_id=123456789,
+        )
+
+    assert result.status == 'payment_required'
+    assert result.payment_url == 'https://yookassa.ru/pay/test'
+    assert result.amount_kopeks == 30000

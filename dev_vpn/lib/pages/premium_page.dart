@@ -16,12 +16,15 @@ class PremiumPage extends StatefulWidget {
   State<PremiumPage> createState() => _PremiumPageState();
 }
 
-class _PremiumPageState extends State<PremiumPage> {
+class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
   SubscriptionOptions? _options;
   CalcResult? _calc;
   bool _loadingOptions = false;
   bool _loadingCalc = false;
   bool _purchasing = false;
+
+  /// Set to true after opening a payment URL so we refresh on app resume.
+  bool _waitingForPayment = false;
 
   // Builder state
   String? _selectedPeriodId;
@@ -31,6 +34,7 @@ class _PremiumPageState extends State<PremiumPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     authStateNotifier.addListener(_onAuthChanged);
     meNotifier.addListener(_onMeChanged);
     _loadOptions();
@@ -38,9 +42,32 @@ class _PremiumPageState extends State<PremiumPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     authStateNotifier.removeListener(_onAuthChanged);
     meNotifier.removeListener(_onMeChanged);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When the user returns from the payment browser, refresh user state.
+    if (state == AppLifecycleState.resumed && _waitingForPayment) {
+      _waitingForPayment = false;
+      _refreshAfterPayment();
+    }
+  }
+
+  Future<void> _refreshAfterPayment() async {
+    _showSnackBar('Проверяем статус платежа…', isError: false);
+    await MeService.refresh();
+    await _loadOptions();
+    if (mounted) {
+      final me = meNotifier.value;
+      final sub = me?.subscription;
+      if (sub != null && sub.isActive && !sub.isTrial) {
+        _showSnackBar('✅ Подписка активирована!', isError: false);
+      }
+    }
   }
 
   void _onAuthChanged() {
@@ -222,6 +249,7 @@ class _PremiumPageState extends State<PremiumPage> {
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
         if (mounted) {
+          _waitingForPayment = true;
           _showSnackBar(
             'Страница оплаты открыта. После оплаты вернитесь в приложение.',
             isError: false,
@@ -251,6 +279,7 @@ class _PremiumPageState extends State<PremiumPage> {
     final me = meNotifier.value;
     final sub = me?.subscription;
     final hasActivePaidSub = sub != null && sub.isActive && !sub.isTrial;
+    final isNewUser = !auth.isLoggedIn || (sub == null && !hasActivePaidSub);
 
     return Scaffold(
       body: RefreshIndicator(
@@ -282,6 +311,9 @@ class _PremiumPageState extends State<PremiumPage> {
                   const SizedBox(height: 8),
 
                   if (!auth.isLoggedIn) ...[
+                    // Show benefits to motivate login
+                    const _BenefitsList(),
+                    const SizedBox(height: 16),
                     _NotLoggedInCard(
                       onLoginTap: () => showAuthBottomSheet(context),
                     ),
@@ -309,13 +341,27 @@ class _PremiumPageState extends State<PremiumPage> {
                         loading: _purchasing,
                       ),
                     ] else ...[
-                      // ── Builder section ─────────────────────────────────
+                      // ── Benefits for new / trial users ───────────────────
+                      if (isNewUser) ...[
+                        const _BenefitsList(),
+                        const SizedBox(height: 16),
+                      ],
+
+                      // ── Plan selector (Apple-style) ──────────────────────
                       _SectionTitle(
                         sub?.isTrial == true
                             ? 'Перейти на платную подписку'
-                            : 'Конструктор подписки',
+                            : 'Выберите план',
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 10),
+                      _PlanSelectorGrid(
+                        options: _options!,
+                        selectedPeriodId: _selectedPeriodId,
+                        onPeriodSelected: _onPeriodSelected,
+                      ),
+                      const SizedBox(height: 12),
+
+                      // ── Builder section ─────────────────────────────────
                       _SubscriptionBuilderCard(
                         options: _options!,
                         selectedPeriodId: _selectedPeriodId,
@@ -324,6 +370,7 @@ class _PremiumPageState extends State<PremiumPage> {
                         onPeriodSelected: _onPeriodSelected,
                         onTrafficSelected: _onTrafficSelected,
                         onDevicesSelected: _onDevicesSelected,
+                        hidePeriodSelector: true,
                       ),
                       const SizedBox(height: 12),
 
@@ -340,7 +387,11 @@ class _PremiumPageState extends State<PremiumPage> {
                         loading: _purchasing || _loadingCalc,
                         onPressed: _onBuyPressed,
                         totalKopeks: _calc?.totalKopeks,
+                        hasEnoughBalance: _options!.balanceKopeks >=
+                            (_calc?.totalKopeks ?? 0),
                       ),
+                      const SizedBox(height: 8),
+                      const _PaymentDisclaimer(),
                     ],
                   ] else ...[
                     _ErrorCard(onRetry: _loadOptions),
@@ -372,6 +423,259 @@ class _SectionTitle extends StatelessWidget {
         fontSize: 13,
         fontWeight: FontWeight.w600,
         letterSpacing: 0.5,
+      ),
+    );
+  }
+}
+
+// ── Benefits list ─────────────────────────────────────────────────────────────
+
+class _BenefitsList extends StatelessWidget {
+  const _BenefitsList();
+
+  static const _benefits = [
+    (Icons.speed_rounded, 'Высокая скорость соединения'),
+    (Icons.lock_rounded, 'Надёжное шифрование трафика'),
+    (Icons.devices_rounded, 'Поддержка нескольких устройств'),
+    (Icons.public_rounded, 'Доступ к заблокированным сайтам'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.graphiteSurface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Возможности Premium',
+            style: TextStyle(
+              color: AppColors.textNeutralMain,
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 14),
+          ..._benefits.map(
+            (b) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6C5CE7).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(b.$1, color: const Color(0xFF6C5CE7), size: 17),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    b.$2,
+                    style: const TextStyle(
+                      color: AppColors.textNeutralMain,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Apple-style plan selector grid ────────────────────────────────────────────
+
+class _PlanSelectorGrid extends StatelessWidget {
+  final SubscriptionOptions options;
+  final String? selectedPeriodId;
+  final ValueChanged<String> onPeriodSelected;
+
+  const _PlanSelectorGrid({
+    required this.options,
+    required this.selectedPeriodId,
+    required this.onPeriodSelected,
+  });
+
+  /// Determine which plan has the highest discount for "Best Value" badge.
+  String? _bestValueId() {
+    if (options.periods.isEmpty) return null;
+    PeriodOption? best;
+    for (final p in options.periods) {
+      if (p.discountPercent > 0) {
+        if (best == null || p.discountPercent > best.discountPercent) {
+          best = p;
+        }
+      }
+    }
+    return best?.id;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final periods = options.periods;
+    final bestId = _bestValueId();
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (int i = 0; i < periods.length; i++) ...[
+            if (i > 0) const SizedBox(width: 8),
+            Expanded(
+              child: _PlanCard(
+                period: periods[i],
+                isSelected: periods[i].id == selectedPeriodId,
+                isBestValue: periods[i].id == bestId,
+                onTap: () => onPeriodSelected(periods[i].id),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PlanCard extends StatelessWidget {
+  final PeriodOption period;
+  final bool isSelected;
+  final bool isBestValue;
+  final VoidCallback onTap;
+
+  const _PlanCard({
+    required this.period,
+    required this.isSelected,
+    required this.isBestValue,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const purple = Color(0xFF6C5CE7);
+    const green = Color(0xFF00B894);
+
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? purple.withValues(alpha: 0.15)
+              : AppColors.graphiteElevated,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isSelected ? purple : Colors.white.withValues(alpha: 0.08),
+            width: isSelected ? 2 : 1,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: purple.withValues(alpha: 0.25),
+                    blurRadius: 16,
+                    spreadRadius: -4,
+                  ),
+                ]
+              : null,
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Best-value badge
+            if (isBestValue)
+              Container(
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: green.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: green.withValues(alpha: 0.4)),
+                ),
+                child: const Text(
+                  'Выгоднее',
+                  style: TextStyle(
+                    color: green,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              )
+            else
+              const SizedBox(height: 22), // keeps consistent height
+
+            // Plan label
+            Text(
+              period.label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: isSelected ? Colors.white : AppColors.textNeutralMain,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+
+            // Price
+            Text(
+              '${(period.basePriceKopeks / 100).toStringAsFixed(0)} ₽',
+              style: TextStyle(
+                color: isSelected ? purple : AppColors.textNeutralSecondary,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+
+            // Discount badge
+            if (period.discountPercent > 0) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.warning.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '−${period.discountPercent}%',
+                  style: const TextStyle(
+                    color: AppColors.warning,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Payment disclaimer ────────────────────────────────────────────────────────
+
+class _PaymentDisclaimer extends StatelessWidget {
+  const _PaymentDisclaimer();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'Оплата через YooKassa. После оплаты подписка активируется автоматически.',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        color: AppColors.textNeutralMuted,
+        fontSize: 11,
+        height: 1.5,
       ),
     );
   }
@@ -483,6 +787,7 @@ class _SubscriptionBuilderCard extends StatelessWidget {
   final ValueChanged<String> onPeriodSelected;
   final ValueChanged<int> onTrafficSelected;
   final ValueChanged<int> onDevicesSelected;
+  final bool hidePeriodSelector;
 
   const _SubscriptionBuilderCard({
     required this.options,
@@ -492,6 +797,7 @@ class _SubscriptionBuilderCard extends StatelessWidget {
     required this.onPeriodSelected,
     required this.onTrafficSelected,
     required this.onDevicesSelected,
+    this.hidePeriodSelector = false,
   });
 
   @override
@@ -500,6 +806,16 @@ class _SubscriptionBuilderCard extends StatelessWidget {
       (p) => p.id == selectedPeriodId,
       orElse: () => options.periods.first,
     );
+
+    // If only period selector is available and it's hidden, skip the card.
+    final hasTraffic = selectedPeriod.traffic?.selectable == true &&
+        (selectedPeriod.traffic?.options.isNotEmpty ?? false);
+    final hasDevices =
+        selectedPeriod.devices != null && selectedPeriod.devices!.options.length > 1;
+
+    if (hidePeriodSelector && !hasTraffic && !hasDevices) {
+      return const SizedBox.shrink();
+    }
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -511,21 +827,22 @@ class _SubscriptionBuilderCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Duration
-          _RowLabel(icon: Icons.calendar_today_outlined, label: 'Срок подписки'),
-          const SizedBox(height: 10),
-          _ChipSelector<String>(
-            options: options.periods
-                .map((p) => _ChipItem<String>(value: p.id, label: p.label))
-                .toList(),
-            selected: selectedPeriodId,
-            onSelected: onPeriodSelected,
-          ),
+          // Duration selector (hidden when separate plan grid is shown)
+          if (!hidePeriodSelector) ...[
+            _RowLabel(icon: Icons.calendar_today_outlined, label: 'Срок подписки'),
+            const SizedBox(height: 10),
+            _ChipSelector<String>(
+              options: options.periods
+                  .map((p) => _ChipItem<String>(value: p.id, label: p.label))
+                  .toList(),
+              selected: selectedPeriodId,
+              onSelected: onPeriodSelected,
+            ),
+          ],
 
           // Traffic
-          if (selectedPeriod.traffic?.selectable == true &&
-              (selectedPeriod.traffic?.options.isNotEmpty ?? false)) ...[
-            const SizedBox(height: 18),
+          if (hasTraffic) ...[
+            if (!hidePeriodSelector) const SizedBox(height: 18),
             _RowLabel(icon: Icons.data_usage_outlined, label: 'Трафик'),
             const SizedBox(height: 10),
             _ChipSelector<int>(
@@ -539,8 +856,7 @@ class _SubscriptionBuilderCard extends StatelessWidget {
           ],
 
           // Devices
-          if (selectedPeriod.devices != null &&
-              selectedPeriod.devices!.options.isNotEmpty) ...[
+          if (hasDevices) ...[
             const SizedBox(height: 18),
             _RowLabel(icon: Icons.devices_outlined, label: 'Устройства'),
             const SizedBox(height: 10),
@@ -757,25 +1073,38 @@ class _BuyButton extends StatelessWidget {
   final bool loading;
   final VoidCallback onPressed;
   final int? totalKopeks;
+  final bool hasEnoughBalance;
 
   const _BuyButton({
     required this.loading,
     required this.onPressed,
     this.totalKopeks,
+    this.hasEnoughBalance = true,
   });
 
   @override
   Widget build(BuildContext context) {
+    final needsPayment = !hasEnoughBalance && (totalKopeks ?? 0) > 0;
+    final label = loading
+        ? ''
+        : needsPayment
+            ? 'Оплатить ${(totalKopeks! / 100).toStringAsFixed(2)} ₽'
+            : (totalKopeks != null && totalKopeks! > 0)
+                ? 'Купить за ${(totalKopeks! / 100).toStringAsFixed(2)} ₽'
+                : 'Купить подписку';
+
     return SizedBox(
       width: double.infinity,
-      height: 54,
+      height: 56,
       child: ElevatedButton(
         onPressed: loading ? null : onPressed,
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFF6C5CE7),
+          backgroundColor: needsPayment
+              ? const Color(0xFF00B894)
+              : const Color(0xFF6C5CE7),
           foregroundColor: Colors.white,
           disabledBackgroundColor: const Color(0xFF6C5CE7).withValues(alpha: 0.5),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           elevation: 0,
         ),
         child: loading
@@ -787,13 +1116,14 @@ class _BuyButton extends StatelessWidget {
             : Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.lock_open_rounded, size: 20),
+                  Icon(
+                    needsPayment ? Icons.payment_rounded : Icons.lock_open_rounded,
+                    size: 20,
+                  ),
                   const SizedBox(width: 8),
                   Text(
-                    (totalKopeks != null && totalKopeks! > 0)
-                        ? 'Купить за ${(totalKopeks! / 100).toStringAsFixed(2)} ₽'
-                        : 'Купить подписку',
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    label,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                   ),
                 ],
               ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/me_response.dart';
 import '../models/subscription_info.dart';
@@ -1045,6 +1046,201 @@ class _BalanceCard extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () => _showTopupSheet(context),
+            icon: const Icon(Icons.add, size: 16),
+            label: const Text('Пополнить'),
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.success,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTopupSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _TopupBottomSheet(),
+    );
+  }
+}
+
+// ── Balance Top-up Bottom Sheet ───────────────────────────────────────────────
+
+class _TopupBottomSheet extends StatefulWidget {
+  const _TopupBottomSheet();
+
+  @override
+  State<_TopupBottomSheet> createState() => _TopupBottomSheetState();
+}
+
+class _TopupBottomSheetState extends State<_TopupBottomSheet> {
+  static const _amounts = [100, 200, 300, 500, 1000, 2000];
+  int _selectedAmount = 300;
+  bool _loading = false;
+
+  Future<void> _onTopup() async {
+    setState(() => _loading = true);
+    final amountKopeks = _selectedAmount * 100;
+    final result = await SubscriptionApiService.topupBalance(
+      amountKopeks: amountKopeks,
+    );
+    if (!mounted) return;
+
+    if (result == null) {
+      _showSnack('Ошибка соединения с сервером', isError: true);
+    } else if (result.requiresPayment && result.paymentUrl != null) {
+      Navigator.pop(context);
+      final uri = Uri.parse(result.paymentUrl!);
+      try {
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        } else {
+          _showSnack('Не удалось открыть страницу оплаты', isError: true);
+        }
+      } catch (_) {
+        _showSnack('Ошибка при открытии оплаты', isError: true);
+      }
+    } else {
+      _showSnack(result.message ?? 'Ошибка пополнения', isError: true);
+    }
+    if (mounted) setState(() => _loading = false);
+  }
+
+  void _showSnack(String msg, {required bool isError}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: isError ? AppColors.danger : AppColors.success,
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      decoration: const BoxDecoration(
+        color: AppColors.graphiteSurface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Пополнить баланс',
+            style: TextStyle(
+              color: AppColors.textNeutralMain,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Оплата через YooKassa',
+            style: TextStyle(
+              color: AppColors.textNeutralSecondary,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Amount selector
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _amounts.map((amount) {
+              final selected = amount == _selectedAmount;
+              return GestureDetector(
+                onTap: () => setState(() => _selectedAmount = amount),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? AppColors.success.withValues(alpha: 0.15)
+                        : AppColors.graphiteElevated,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: selected
+                          ? AppColors.success
+                          : Colors.white.withValues(alpha: 0.08),
+                      width: selected ? 1.5 : 1,
+                    ),
+                  ),
+                  child: Text(
+                    '$amount ₽',
+                    style: TextStyle(
+                      color: selected
+                          ? AppColors.success
+                          : AppColors.textNeutralMain,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+
+          const SizedBox(height: 24),
+
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: ElevatedButton(
+              onPressed: _loading ? null : _onTopup,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.success,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor:
+                    AppColors.success.withValues(alpha: 0.5),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                elevation: 0,
+              ),
+              child: _loading
+                  ? const SizedBox(
+                      height: 22,
+                      width: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : Text(
+                      'Пополнить на $_selectedAmount ₽',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
             ),
           ),
         ],

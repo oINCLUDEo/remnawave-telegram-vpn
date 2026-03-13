@@ -46,6 +46,8 @@ class PeriodOption {
   final String id;
   final String label;
   final int basePriceKopeks;
+  final int originalPriceKopeks;
+  final int discountPercent;
   final TrafficConfig? traffic;
   final DevicesConfig? devices;
 
@@ -53,15 +55,26 @@ class PeriodOption {
     required this.id,
     required this.label,
     required this.basePriceKopeks,
+    this.originalPriceKopeks = 0,
+    this.discountPercent = 0,
     this.traffic,
     this.devices,
   });
 
+  bool get hasBestValue => discountPercent > 0;
+
   factory PeriodOption.fromJson(Map<String, dynamic> json) {
+    final base = (json['price_kopeks'] as num?)?.toInt() ??
+        (json['base_price'] as num?)?.toInt() ??
+        0;
+    final original =
+        (json['original_price_kopeks'] as num?)?.toInt() ?? base;
     return PeriodOption(
       id: json['id'] as String? ?? '',
       label: json['label'] as String? ?? '',
-      basePriceKopeks: (json['base_price'] as num?)?.toInt() ?? 0,
+      basePriceKopeks: base,
+      originalPriceKopeks: original,
+      discountPercent: (json['discount_percent'] as num?)?.toInt() ?? 0,
       traffic: json['traffic'] != null
           ? TrafficConfig.fromJson(json['traffic'] as Map<String, dynamic>)
           : null,
@@ -138,15 +151,37 @@ class DevicesConfig {
   });
 
   factory DevicesConfig.fromJson(Map<String, dynamic> json) {
-    final opts = (json['options'] as List<dynamic>? ?? [])
-        .whereType<num>()
-        .map((e) => e.toInt())
-        .toList();
+    // Backend sends 'min'/'max'; fall back to 'minimum'/'maximum' for compat.
+    final min = (json['min'] as num?)?.toInt() ??
+        (json['minimum'] as num?)?.toInt() ??
+        1;
+    final max = (json['max'] as num?)?.toInt() ??
+        (json['maximum'] as num?)?.toInt();
+    final current = (json['current'] as num?)?.toInt();
+    final defaultVal = (json['default'] as num?)?.toInt() ?? current ?? min;
+
+    // Build selectable options list from range (cap at 10 choices).
+    List<int> opts;
+    final rawOpts = json['options'] as List<dynamic>?;
+    if (rawOpts != null && rawOpts.isNotEmpty) {
+      opts = rawOpts.whereType<num>().map((e) => e.toInt()).toList();
+    } else if (max != null && max > min) {
+      // Generate a reasonable set of options.
+      final step = ((max - min) / 9).ceil().clamp(1, 9999);
+      opts = [];
+      for (var v = min; v <= max; v += step) {
+        opts.add(v);
+      }
+      if (opts.isEmpty || opts.last != max) opts.add(max);
+    } else {
+      opts = [min];
+    }
+
     return DevicesConfig(
-      minimum: (json['minimum'] as num?)?.toInt() ?? 1,
-      maximum: (json['maximum'] as num?)?.toInt(),
-      defaultValue: (json['default'] as num?)?.toInt(),
-      currentValue: (json['current'] as num?)?.toInt(),
+      minimum: min,
+      maximum: max,
+      defaultValue: defaultVal,
+      currentValue: current,
       options: opts,
     );
   }
@@ -217,6 +252,31 @@ class BalanceInfo {
       balanceKopeks: (json['balance_kopeks'] as num?)?.toInt() ?? 0,
       balanceRub: (json['balance_rub'] as num?)?.toDouble() ?? 0.0,
       currency: json['currency'] as String? ?? 'RUB',
+    );
+  }
+}
+
+class TopupResult {
+  final String status;
+  final String? paymentUrl;
+  final String? message;
+  final int? amountKopeks;
+
+  const TopupResult({
+    required this.status,
+    this.paymentUrl,
+    this.message,
+    this.amountKopeks,
+  });
+
+  bool get requiresPayment => status == 'payment_required';
+
+  factory TopupResult.fromJson(Map<String, dynamic> json) {
+    return TopupResult(
+      status: json['status'] as String? ?? 'error',
+      paymentUrl: json['payment_url'] as String?,
+      message: json['message'] as String?,
+      amountKopeks: (json['amount_kopeks'] as num?)?.toInt(),
     );
   }
 }
@@ -396,6 +456,34 @@ class SubscriptionApiService {
     } on Exception catch (e) {
       debugPrint('SubscriptionApiService.getBalance error: $e');
       return null;
+    }
+  }
+
+  /// POST /mobile/v1/balance/topup
+  static Future<TopupResult?> topupBalance({required int amountKopeks}) async {
+    try {
+      final resp = await http
+          .post(
+            Uri.parse('$_base/mobile/v1/balance/topup'),
+            headers: _headers(),
+            body: jsonEncode({'amount_kopeks': amountKopeks}),
+          )
+          .timeout(const Duration(seconds: 20));
+      if (resp.statusCode == 200) {
+        return TopupResult.fromJson(
+          jsonDecode(resp.body) as Map<String, dynamic>,
+        );
+      }
+      debugPrint('SubscriptionApiService.topupBalance: ${resp.statusCode} ${resp.body}');
+      try {
+        final errBody = jsonDecode(resp.body) as Map<String, dynamic>;
+        final detail = errBody['detail'] as String?;
+        if (detail != null) return TopupResult(status: 'error', message: detail);
+      } catch (_) {}
+      return const TopupResult(status: 'error', message: 'Ошибка пополнения баланса');
+    } on Exception catch (e) {
+      debugPrint('SubscriptionApiService.topupBalance error: $e');
+      return TopupResult(status: 'error', message: e.toString());
     }
   }
 

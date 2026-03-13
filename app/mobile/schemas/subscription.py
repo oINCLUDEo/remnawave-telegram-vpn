@@ -24,7 +24,6 @@ class SubscriptionSelectionRequest(BaseModel):
 class SubscriptionBuyRequest(SubscriptionSelectionRequest):
     """Request body for POST /mobile/v1/subscription/buy."""
 
-    pass
 
 
 class SubscriptionUpgradeRequest(BaseModel):
@@ -96,3 +95,18 @@ class AutopayResponse(BaseModel):
 
     autopay_enabled: bool
     message: str
+
+
+class BalanceTopupRequest(BaseModel):
+    """Request body for POST /mobile/v1/balance/topup."""
+
+    amount_kopeks: int = Field(..., ge=100, description='Top-up amount in kopeks (min 100 = 1 RUB)')
+
+
+class BalanceTopupResponse(BaseModel):
+    """Response from POST /mobile/v1/balance/topup."""
+
+    status: str
+    payment_url: str | None = None
+    message: str | None = None
+    amount_kopeks: int | None = None

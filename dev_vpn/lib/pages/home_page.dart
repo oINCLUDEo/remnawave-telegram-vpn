@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/me_response.dart';
 import '../models/server_node.dart';
 import '../models/subscription_info.dart';
 import '../services/auth_service.dart';
@@ -898,6 +899,8 @@ class _HomePageState extends State<HomePage>
   Widget _buildSubscriptionCard() {
     final info = _subscriptionInfo;
     final authState = authStateNotifier.value;
+    final me = meNotifier.value;
+    final sub = me?.subscription;
 
     return Container(
       decoration: BoxDecoration(
@@ -930,7 +933,10 @@ class _HomePageState extends State<HomePage>
                     ),
                   ],
                 ),
-                if (info?.expireDate != null)
+                // Show subscription status badge from MeService
+                if (sub != null)
+                  _SubStatusBadge(sub: sub)
+                else if (info?.expireDate != null)
                   _ExpiryBadge(expireDate: info!.expireDate!),
               ],
             ),
@@ -1317,6 +1323,80 @@ class _ExpiryBadge extends StatelessWidget {
             color: color,
             size: 12,
           ),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Status badge built from MeService subscription data — richer than expiry only.
+class _SubStatusBadge extends StatelessWidget {
+  final MeSubscription sub;
+
+  const _SubStatusBadge({required this.sub});
+
+  @override
+  Widget build(BuildContext context) {
+    final Color color;
+    final String label;
+    final IconData icon;
+
+    if (sub.isActive) {
+      if (sub.isTrial) {
+        color = const Color(0xFFFFA502);
+        label = 'Пробный';
+        icon = Icons.hourglass_top_rounded;
+      } else {
+        final now = DateTime.now();
+        final expiry = sub.expireDate;
+        if (expiry != null) {
+          final diff = expiry.difference(now);
+          final soon = diff.inDays < 7 && !diff.isNegative;
+          if (soon) {
+            color = const Color(0xFFFFA502);
+            label = '${diff.inDays}д осталось';
+            icon = Icons.timer_outlined;
+          } else {
+            color = const Color(0xFF2ED573);
+            label = 'Активна';
+            icon = Icons.verified_outlined;
+          }
+        } else {
+          color = const Color(0xFF2ED573);
+          label = 'Активна';
+          icon = Icons.verified_outlined;
+        }
+      }
+    } else if (sub.isExpired) {
+      color = const Color(0xFFE74C3C);
+      label = 'Истекла';
+      icon = Icons.timer_off;
+    } else {
+      color = const Color(0xFF5E6C8A);
+      label = sub.status;
+      icon = Icons.info_outline;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 12),
           const SizedBox(width: 4),
           Text(
             label,

@@ -15,6 +15,8 @@ from app.mobile.schemas.subscription import (
     AutopayRequest,
     AutopayResponse,
     BalanceResponse,
+    BalanceTopupRequest,
+    BalanceTopupResponse,
     BuyResponse,
     CalcResponse,
     SubscriptionBuyRequest,
@@ -488,6 +490,79 @@ async def get_balance(
         balance_rub=round(balance_kopeks / 100, 2),
         currency=currency,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/balance/topup
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    '/balance/topup',
+    response_model=BalanceTopupResponse,
+    summary='Пополнить баланс',
+    tags=['mobile'],
+)
+async def topup_balance(
+    payload: BalanceTopupRequest,
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> BalanceTopupResponse:
+    """
+    Create a YooKassa payment to top up the user's account balance.
+
+    Returns a confirmation URL that the app should open in an external browser.
+    After a successful payment, the backend webhook will credit the balance.
+    """
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        if not settings.is_yookassa_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail='Онлайн-оплата недоступна. Пополните баланс через бот.',
+            )
+
+        from app.services.payment_service import PaymentService
+
+        amount_kopeks = payload.amount_kopeks
+        description = f'Пополнение баланса на {round(amount_kopeks / 100, 2)} ₽'
+
+        payment_service = PaymentService()
+        payment_result = await payment_service.create_yookassa_payment(
+            db=db,
+            user_id=user.id,
+            amount_kopeks=amount_kopeks,
+            description=description,
+            metadata={
+                'type': 'mobile_balance_topup',
+                'telegram_id': str(x_telegram_id),
+            },
+        )
+
+        if not payment_result or not payment_result.get('confirmation_url'):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail='Не удалось создать платёж',
+            )
+
+        return BalanceTopupResponse(
+            status='payment_required',
+            payment_url=payment_result['confirmation_url'],
+            message='Перейдите по ссылке для оплаты',
+            amount_kopeks=amount_kopeks,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error creating balance topup payment', telegram_id=x_telegram_id, error=exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при создании платежа',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
