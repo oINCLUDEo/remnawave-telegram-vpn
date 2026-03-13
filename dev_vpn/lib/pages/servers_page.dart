@@ -17,10 +17,12 @@ import 'auth_bottom_sheet.dart';
 class ServersPage extends StatefulWidget {
   final VoidCallback onGoToHome;
   final VoidCallback? onGoToSettings;
+  final VoidCallback? onGoToPremium;
 
   const ServersPage({
     required this.onGoToHome,
     required this.onGoToSettings,
+    this.onGoToPremium,
     super.key,
   });
 
@@ -177,9 +179,13 @@ class _ServersPageState extends State<ServersPage> {
 
     Future<void> onSelect(ServerNode node) async {
       if (_isPublicCatalog) {
-        // Tapping a catalog server prompts authentication.
-        // The _onAuthChanged listener handles the reload after successful login.
-        await showAuthBottomSheet(context);
+        // If already authenticated but no subscription, redirect to Premium.
+        if (authStateNotifier.value.isLoggedIn) {
+          widget.onGoToPremium?.call();
+        } else {
+          // Not logged in — show auth sheet.
+          await showAuthBottomSheet(context);
+        }
         return;
       }
       selectedServerNotifier.value = node;
@@ -850,30 +856,50 @@ class _NodeTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final protocol = node.protocol ?? '';
     final isPinging = ping == -2;
+    const purple = Color(0xFF6C5CE7);
 
-    return Material(
-      color: isSelected
-          ? const Color(0xFF6C5CE7).withValues(alpha: 0.08)
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: onSelect,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      decoration: BoxDecoration(
+        color: isSelected
+            ? purple.withValues(alpha: 0.12)
+            : Colors.transparent,
         borderRadius: BorderRadius.circular(14),
-        splashColor: const Color(0xFF6C5CE7).withValues(alpha: 0.1),
-        highlightColor: Colors.transparent,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-          child: Row(
-            children: [
-              CountryFlag.fromCountryCode(
-                node.countryCode,
-                theme: ImageTheme(
-                  width: 40,
-                  height: 32,
-                  shape: RoundedRectangle(12),
+        border: Border.all(
+          color: isSelected ? purple : Colors.white.withValues(alpha: 0.06),
+          width: isSelected ? 1.5 : 1,
+        ),
+        boxShadow: isSelected
+            ? [
+                BoxShadow(
+                  color: purple.withValues(alpha: 0.18),
+                  blurRadius: 12,
+                  spreadRadius: -2,
                 ),
-              ),
-              const SizedBox(width: 14),
+              ]
+            : null,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onSelect,
+          borderRadius: BorderRadius.circular(14),
+          splashColor: purple.withValues(alpha: 0.1),
+          highlightColor: Colors.transparent,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            child: Row(
+              children: [
+                CountryFlag.fromCountryCode(
+                  node.countryCode,
+                  theme: ImageTheme(
+                    width: 40,
+                    height: 32,
+                    shape: RoundedRectangle(12),
+                  ),
+                ),
+                const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -994,12 +1020,9 @@ class _NodeTile extends StatelessWidget {
           ),
         ),
       ),
-    );
+    ),
+  );
   }
-
-  // ──────────────────────────────────────────────────────────
-  // HELPERS
-  // ──────────────────────────────────────────────────────────
 
   Color _protocolColor(String p) {
     switch (p.toLowerCase()) {
