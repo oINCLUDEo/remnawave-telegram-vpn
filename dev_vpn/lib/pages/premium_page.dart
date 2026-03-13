@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -23,8 +25,13 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
   bool _loadingCalc = false;
   bool _purchasing = false;
 
-  /// Set to true after opening a payment URL so we refresh on app resume.
-  bool _waitingForPayment = false;
+  // Payment polling state
+  Timer? _pollTimer;
+  int _pollAttempt = 0;
+  bool _pollingForPayment = false;
+  bool _pendingPaymentPoll = false;
+  static const int _maxPollAttempts = 30;
+  static const Duration _pollInterval = Duration(seconds: 4);
 
   // Builder state
   String? _selectedPeriodId;
@@ -42,6 +49,7 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _pollTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     authStateNotifier.removeListener(_onAuthChanged);
     meNotifier.removeListener(_onMeChanged);
@@ -50,22 +58,53 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // When the user returns from the payment browser, refresh user state.
-    if (state == AppLifecycleState.resumed && _waitingForPayment) {
-      _waitingForPayment = false;
-      _refreshAfterPayment();
+    // When the user returns from the payment browser, start polling.
+    if (state == AppLifecycleState.resumed && _pendingPaymentPoll) {
+      _pendingPaymentPoll = false;
+      _startPaymentPolling();
     }
   }
 
-  Future<void> _refreshAfterPayment() async {
-    _showSnackBar('Проверяем статус платежа…', isError: false);
+  /// Starts polling the backend for payment confirmation.
+  /// Polls every [_pollInterval] up to [_maxPollAttempts] times.
+  void _startPaymentPolling() {
+    if (!mounted) return;
+    _pollTimer?.cancel();
+    setState(() {
+      _pollingForPayment = true;
+      _pollAttempt = 0;
+    });
+    _pollTimer = Timer.periodic(_pollInterval, _onPollTick);
+  }
+
+  Future<void> _onPollTick(Timer timer) async {
+    _pollAttempt++;
     await MeService.refresh();
-    await _loadOptions();
-    if (mounted) {
-      final me = meNotifier.value;
-      final sub = me?.subscription;
-      if (sub != null && sub.isActive && !sub.isTrial) {
-        _showSnackBar('✅ Подписка активирована!', isError: false);
+
+    if (!mounted) {
+      timer.cancel();
+      return;
+    }
+
+    final me = meNotifier.value;
+    final sub = me?.subscription;
+    final confirmed = sub != null && sub.isActive && !sub.isTrial;
+
+    if (confirmed || _pollAttempt >= _maxPollAttempts) {
+      timer.cancel();
+      _pollTimer = null;
+      if (!mounted) return;
+      setState(() => _pollingForPayment = false);
+      if (confirmed) {
+        await _loadOptions();
+        if (mounted) _showSnackBar('✅ Подписка активирована!', isError: false);
+      } else {
+        if (mounted) {
+          _showSnackBar(
+            'Платёж ещё не подтверждён. Проверьте статус позже.',
+            isError: false,
+          );
+        }
       }
     }
   }
@@ -249,11 +288,13 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
         if (mounted) {
-          _waitingForPayment = true;
           _showSnackBar(
             'Страница оплаты открыта. После оплаты вернитесь в приложение.',
             isError: false,
           );
+          // Polling starts when the user returns (lifecycle resumed).
+          // We register a one-shot observer via a flag.
+          _pendingPaymentPoll = true;
         }
       } else {
         if (mounted) _showSnackBar('Не удалось открыть страницу оплаты', isError: true);
@@ -317,6 +358,10 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
                     _NotLoggedInCard(
                       onLoginTap: () => showAuthBottomSheet(context),
                     ),
+                  ] else if (_pollingForPayment) ...[
+                    // Payment processing overlay
+                    const SizedBox(height: 24),
+                    const _PaymentPollingCard(),
                   ] else if (_loadingOptions && _options == null) ...[
                     const SizedBox(height: 60),
                     const Center(
@@ -347,21 +392,13 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
                         const SizedBox(height: 16),
                       ],
 
-                      // ── Plan selector (Apple-style) ──────────────────────
+                      // ── Unified subscription builder ─────────────────────
                       _SectionTitle(
                         sub?.isTrial == true
                             ? 'Перейти на платную подписку'
-                            : 'Выберите план',
+                            : 'Настройте подписку',
                       ),
                       const SizedBox(height: 10),
-                      _PlanSelectorGrid(
-                        options: _options!,
-                        selectedPeriodId: _selectedPeriodId,
-                        onPeriodSelected: _onPeriodSelected,
-                      ),
-                      const SizedBox(height: 12),
-
-                      // ── Builder section ─────────────────────────────────
                       _SubscriptionBuilderCard(
                         options: _options!,
                         selectedPeriodId: _selectedPeriodId,
@@ -370,7 +407,7 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
                         onPeriodSelected: _onPeriodSelected,
                         onTrafficSelected: _onTrafficSelected,
                         onDevicesSelected: _onDevicesSelected,
-                        hidePeriodSelector: true,
+                        hidePeriodSelector: false,
                       ),
                       const SizedBox(height: 12),
 
@@ -681,6 +718,63 @@ class _PaymentDisclaimer extends StatelessWidget {
   }
 }
 
+// ── Payment polling card ──────────────────────────────────────────────────────
+
+class _PaymentPollingCard extends StatelessWidget {
+  const _PaymentPollingCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+      decoration: BoxDecoration(
+        color: AppColors.graphiteSurface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFF6C5CE7).withValues(alpha: 0.35)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF6C5CE7).withValues(alpha: 0.12),
+            blurRadius: 24,
+            spreadRadius: -4,
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          const SizedBox(
+            width: 48,
+            height: 48,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              color: Color(0xFF6C5CE7),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Обрабатываем платёж…',
+            style: TextStyle(
+              color: AppColors.textNeutralMain,
+              fontSize: 17,
+              fontWeight: FontWeight.w700,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Ожидаем подтверждение от платёжного сервиса.\nЭто может занять до 2 минут.',
+            style: TextStyle(
+              color: AppColors.textNeutralSecondary,
+              fontSize: 13,
+              height: 1.5,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _NotLoggedInCard extends StatelessWidget {
   final VoidCallback onLoginTap;
   const _NotLoggedInCard({required this.onLoginTap});
@@ -832,9 +926,17 @@ class _SubscriptionBuilderCard extends StatelessWidget {
             _RowLabel(icon: Icons.calendar_today_outlined, label: 'Срок подписки'),
             const SizedBox(height: 10),
             _ChipSelector<String>(
-              options: options.periods
-                  .map((p) => _ChipItem<String>(value: p.id, label: p.label))
-                  .toList(),
+              options: options.periods.map((p) {
+                final priceStr = '${(p.basePriceKopeks / 100).toStringAsFixed(0)} ₽';
+                String? badge;
+                if (p.discountPercent > 0) badge = '−${p.discountPercent}%';
+                return _ChipItem<String>(
+                  value: p.id,
+                  label: p.label,
+                  subtitle: priceStr,
+                  badge: badge,
+                );
+              }).toList(),
               selected: selectedPeriodId,
               onSelected: onPeriodSelected,
             ),
@@ -901,7 +1003,9 @@ class _RowLabel extends StatelessWidget {
 class _ChipItem<T> {
   final T value;
   final String label;
-  const _ChipItem({required this.value, required this.label});
+  final String? subtitle;
+  final String? badge;
+  const _ChipItem({required this.value, required this.label, this.subtitle, this.badge});
 }
 
 class _ChipSelector<T> extends StatelessWidget {
@@ -922,41 +1026,81 @@ class _ChipSelector<T> extends StatelessWidget {
       runSpacing: 8,
       children: options.map((opt) {
         final isSelected = opt.value == selected;
+        const purple = Color(0xFF6C5CE7);
+        const green = Color(0xFF00B894);
+
         return GestureDetector(
           onTap: () => onSelected(opt.value),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: isSelected
-                  ? const Color(0xFF6C5CE7).withValues(alpha: 0.18)
+                  ? purple.withValues(alpha: 0.18)
                   : AppColors.graphiteElevated,
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
                 color: isSelected
-                    ? const Color(0xFF6C5CE7)
+                    ? purple
                     : Colors.white.withValues(alpha: 0.08),
                 width: isSelected ? 1.5 : 1,
               ),
               boxShadow: isSelected
                   ? [
                       BoxShadow(
-                        color: const Color(0xFF6C5CE7).withValues(alpha: 0.2),
+                        color: purple.withValues(alpha: 0.2),
                         blurRadius: 12,
                         spreadRadius: -2,
                       ),
                     ]
                   : null,
             ),
-            child: Text(
-              opt.label,
-              style: TextStyle(
-                color: isSelected
-                    ? const Color(0xFF6C5CE7)
-                    : AppColors.textNeutralMain,
-                fontSize: 14,
-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Optional best-value / discount badge
+                if (opt.badge != null) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: green.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: green.withValues(alpha: 0.4)),
+                    ),
+                    child: Text(
+                      opt.badge!,
+                      style: const TextStyle(
+                        color: green,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                ],
+                Text(
+                  opt.label,
+                  style: TextStyle(
+                    color: isSelected ? purple : AppColors.textNeutralMain,
+                    fontSize: 14,
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+                if (opt.subtitle != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    opt.subtitle!,
+                    style: TextStyle(
+                      color: isSelected
+                          ? purple.withValues(alpha: 0.8)
+                          : AppColors.textNeutralSecondary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         );
