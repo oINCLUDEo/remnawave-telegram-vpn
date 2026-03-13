@@ -35,11 +35,11 @@ class MeService {
     try {
       final response = await http
           .get(
-            Uri.parse(_url),
-            headers: {
-              'X-Telegram-Id': auth.telegramId.toString(),
-            },
-          )
+        Uri.parse(_url),
+        headers: {
+          'X-Telegram-Id': auth.telegramId.toString(),
+        },
+      )
           .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
