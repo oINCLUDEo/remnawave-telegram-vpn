@@ -42,6 +42,9 @@ class _HomePageState extends State<HomePage>
   bool _isPublicCatalog = false;
   SubscriptionInfo? _subscriptionInfo;
 
+  /// Tracks the last subscription URL seen from [meNotifier] to detect changes.
+  String _lastKnownSubUrl = '';
+
   // ── Анимация ─────────────────────────────────────────────────────────────
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
@@ -79,6 +82,7 @@ class _HomePageState extends State<HomePage>
     WidgetsBinding.instance.addObserver(this);
     selectedServerNotifier.addListener(_onSelectedServerChanged);
     authStateNotifier.addListener(_onAuthChanged);
+    meNotifier.addListener(_onMeChanged);
 
     _pulseCtrl = AnimationController(
       duration: const Duration(seconds: 2),
@@ -137,8 +141,7 @@ class _HomePageState extends State<HomePage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _loadNodes();
-      MeService.refresh();
+      _refreshAll();
     }
   }
 
@@ -147,6 +150,7 @@ class _HomePageState extends State<HomePage>
     WidgetsBinding.instance.removeObserver(this);
     selectedServerNotifier.removeListener(_onSelectedServerChanged);
     authStateNotifier.removeListener(_onAuthChanged);
+    meNotifier.removeListener(_onMeChanged);
     _statusSub?.cancel();
     _pulseCtrl.dispose();
     super.dispose();
@@ -154,6 +158,24 @@ class _HomePageState extends State<HomePage>
 
   void _onAuthChanged() {
     _loadNodes();
+  }
+
+  /// Reload servers when the subscription URL changes (e.g. after a successful
+  /// subscription purchase that updated [meNotifier]).
+  void _onMeChanged() {
+    final newUrl = meNotifier.value?.subscription?.subscriptionUrl ?? '';
+    if (newUrl != _lastKnownSubUrl) {
+      _lastKnownSubUrl = newUrl;
+      _loadNodes();
+    }
+  }
+
+  /// Full refresh: fetch latest user data (including subscription URL) then
+  /// reload the server list.  Used by pull-to-refresh, the header refresh
+  /// button, and app resume.
+  Future<void> _refreshAll() async {
+    await MeService.refresh();
+    await _loadNodes();
   }
 
   // ── Загрузка серверов ─────────────────────────────────────────────────────
@@ -282,6 +304,9 @@ class _HomePageState extends State<HomePage>
   // ── Пикер серверов ────────────────────────────────────────────────────────
 
   void _showServerPicker() {
+    // Category selected inside the bottom sheet (null = all servers).
+    String? selectedCat;
+
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -291,6 +316,30 @@ class _HomePageState extends State<HomePage>
       ),
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) {
+          // Determine which category groups have servers (to decide whether
+          // to show the category chips at all).
+          bool hasBypass = false;
+          bool hasUnlimited = false;
+          for (final n in _nodes) {
+            final d = (n.description ?? '').toLowerCase();
+            if (d.contains('белые')) hasBypass = true;
+            if (d.contains('безлимит')) hasUnlimited = true;
+          }
+          final showCategoryBar =
+              !_isPublicCatalog && (hasBypass || hasUnlimited);
+
+          // Filter nodes based on selected category.
+          List<ServerNode> visibleNodes() {
+            if (selectedCat == null) return _nodes;
+            return _nodes.where((n) {
+              final d = (n.description ?? '').toLowerCase();
+              if (selectedCat == 'bypass') return d.contains('белые');
+              if (selectedCat == 'unlimited') return d.contains('безлимит');
+              // 'other': everything that is not bypass and not unlimited.
+              return !d.contains('белые') && !d.contains('безлимит');
+            }).toList();
+          }
+
           return DraggableScrollableSheet(
             expand: false,
             initialChildSize: 0.6,
@@ -375,6 +424,63 @@ class _HomePageState extends State<HomePage>
                       ),
                     ),
                   ),
+                // Compact category chip bar (only for private subscription servers).
+                if (showCategoryBar)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          for (final entry in <(String?, String)>[
+                            (null, 'Все'),
+                            ('bypass', 'Обход'),
+                            ('unlimited', 'Безлимит'),
+                            ('other', 'Прочее'),
+                          ])
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: GestureDetector(
+                                onTap: () =>
+                                    setSheet(() => selectedCat = entry.$1),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 150),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: selectedCat == entry.$1
+                                        ? const Color(
+                                            0xFF6C5CE7,
+                                          ).withValues(alpha: 0.85)
+                                        : const Color(0xFF2D2D44),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: selectedCat == entry.$1
+                                          ? const Color(0xFF6C5CE7)
+                                          : Colors.white12,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    entry.$2,
+                                    style: TextStyle(
+                                      color: selectedCat == entry.$1
+                                          ? Colors.white
+                                          : Colors.white70,
+                                      fontSize: 12,
+                                      fontWeight: selectedCat == entry.$1
+                                          ? FontWeight.w600
+                                          : FontWeight.w400,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
                 const Divider(height: 1),
                 Expanded(
                   child: _nodes.isEmpty
@@ -404,106 +510,126 @@ class _HomePageState extends State<HomePage>
                                   ),
                                 ),
                         )
-                      : ListView.builder(
-                          controller: scrollCtrl,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          itemCount: _nodes.length,
-                          itemBuilder: (_, i) {
-                            final node = _nodes[i];
-                            final isSel = _selectedNode?.uuid == node.uuid;
-                            return Card(
-                              margin: const EdgeInsets.only(bottom: 6),
-                              color: isSel
-                                  ? const Color(
-                                      0xFF6C5CE7,
-                                    ).withValues(alpha: 0.15)
-                                  : null,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                side: isSel
-                                    ? const BorderSide(
-                                        color: Color(0xFF6C5CE7),
-                                        width: 1.5,
-                                      )
-                                    : BorderSide.none,
+                      : Builder(
+                          builder: (_) {
+                            final nodes = visibleNodes();
+                            if (nodes.isEmpty) {
+                              return Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(32),
+                                  child: Text(
+                                    'В этой категории нет серверов.',
+                                    style: TextStyle(
+                                      color: Colors.grey[400],
+                                      fontSize: 14,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              );
+                            }
+                            return ListView.builder(
+                              controller: scrollCtrl,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
                               ),
-                              child: ListTile(
-                                onTap: () async {
-                                  if (_isPublicCatalog) {
-                                    // Catalog server → show auth prompt.
-                                    Navigator.pop(ctx);
-                                    if (context.mounted) {
-                                      await showAuthBottomSheet(context);
-                                    }
-                                    return;
-                                  }
-                                  setState(() => _selectedNode = node);
-                                  // Sync selection with ServersPage.
-                                  selectedServerNotifier.value = node;
-                                  final prefs =
-                                      await SharedPreferences.getInstance();
-                                  await prefs.setString(
-                                    'selected_node_uuid',
-                                    node.uuid,
-                                  );
-                                  if (ctx.mounted) Navigator.pop(ctx);
-                                },
-                                leading: Text(
-                                  _countryEmoji(node.countryCode),
-                                  style: const TextStyle(fontSize: 24),
-                                ),
-                                title: Text(
-                                  node.name,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 14,
+                              itemCount: nodes.length,
+                              itemBuilder: (_, i) {
+                                final node = nodes[i];
+                                final isSel = _selectedNode?.uuid == node.uuid;
+                                return Card(
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  color: isSel
+                                      ? const Color(
+                                          0xFF6C5CE7,
+                                        ).withValues(alpha: 0.15)
+                                      : null,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    side: isSel
+                                        ? const BorderSide(
+                                            color: Color(0xFF6C5CE7),
+                                            width: 1.5,
+                                          )
+                                        : BorderSide.none,
                                   ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  node.address,
-                                  style: TextStyle(
-                                    color: Colors.grey[500],
-                                    fontSize: 12,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (isSel)
-                                      const Icon(
-                                        Icons.check_circle,
-                                        color: Color(0xFF6C5CE7),
-                                      )
-                                    else if (_isPublicCatalog)
-                                      const Icon(
-                                        Icons.lock_outline,
-                                        size: 16,
-                                        color: Colors.grey,
-                                      )
-                                    else
-                                      _protocolBadge(node.protocol ?? ''),
-                                    if (!_isPublicCatalog)
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.code_outlined,
-                                          size: 18,
-                                          color: Colors.white38,
-                                        ),
-                                        tooltip: 'Конфиг',
-                                        visualDensity: VisualDensity.compact,
-                                        onPressed: () {
-                                          Navigator.pop(ctx);
-                                          _openConfigEditor(node);
-                                        },
+                                  child: ListTile(
+                                    onTap: () async {
+                                      if (_isPublicCatalog) {
+                                        // Catalog server → show auth prompt.
+                                        Navigator.pop(ctx);
+                                        if (context.mounted) {
+                                          await showAuthBottomSheet(context);
+                                        }
+                                        return;
+                                      }
+                                      setState(() => _selectedNode = node);
+                                      // Sync selection with ServersPage.
+                                      selectedServerNotifier.value = node;
+                                      final prefs =
+                                          await SharedPreferences.getInstance();
+                                      await prefs.setString(
+                                        'selected_node_uuid',
+                                        node.uuid,
+                                      );
+                                      if (ctx.mounted) Navigator.pop(ctx);
+                                    },
+                                    leading: Text(
+                                      _countryEmoji(node.countryCode),
+                                      style: const TextStyle(fontSize: 24),
+                                    ),
+                                    title: Text(
+                                      node.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 14,
                                       ),
-                                  ],
-                                ),
-                              ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    subtitle: Text(
+                                      node.address,
+                                      style: TextStyle(
+                                        color: Colors.grey[500],
+                                        fontSize: 12,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (isSel)
+                                          const Icon(
+                                            Icons.check_circle,
+                                            color: Color(0xFF6C5CE7),
+                                          )
+                                        else if (_isPublicCatalog)
+                                          const Icon(
+                                            Icons.lock_outline,
+                                            size: 16,
+                                            color: Colors.grey,
+                                          )
+                                        else
+                                          _protocolBadge(node.protocol ?? ''),
+                                        if (!_isPublicCatalog)
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.code_outlined,
+                                              size: 18,
+                                              color: Colors.white38,
+                                            ),
+                                            tooltip: 'Конфиг',
+                                            visualDensity: VisualDensity.compact,
+                                            onPressed: () {
+                                              Navigator.pop(ctx);
+                                              _openConfigEditor(node);
+                                            },
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
                             );
                           },
                         ),
@@ -608,7 +734,7 @@ class _HomePageState extends State<HomePage>
 
     return Scaffold(
       body: RefreshIndicator(
-        onRefresh: _loadNodes,
+        onRefresh: _refreshAll,
         color: AppColors.primary,
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -664,7 +790,7 @@ class _HomePageState extends State<HomePage>
             child: CircularProgressIndicator(strokeWidth: 2),
           )
               : const Icon(Icons.refresh_rounded),
-          onPressed: _isLoadingNodes ? null : _loadNodes,
+          onPressed: _isLoadingNodes ? null : _refreshAll,
           tooltip: 'Обновить серверы',
         ),
       ),

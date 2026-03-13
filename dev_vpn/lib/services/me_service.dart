@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import '../models/me_response.dart';
 import 'auth_state.dart';
+import 'remnawave_service.dart';
 
 /// Global notifier for the current user's /me response.
 ///
@@ -44,6 +45,15 @@ class MeService {
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
         final me = MeResponse.fromJson(body);
+        // Persist the subscription URL so that RemnawaveService readers
+        // (ServersPage, HomePage) immediately see the updated URL when they
+        // next call getSubscriptionUrl().  This must happen before the
+        // meNotifier fires so that listeners picking up the change already
+        // find the URL in SharedPreferences.
+        final subUrl = me.subscription?.subscriptionUrl;
+        if (subUrl != null && subUrl.isNotEmpty) {
+          await RemnawaveService.saveSubscriptionUrl(subUrl);
+        }
         meNotifier.value = me;
         await _saveToCache(me);
         return me;
