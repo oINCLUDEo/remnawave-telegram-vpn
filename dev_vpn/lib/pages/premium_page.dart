@@ -926,6 +926,7 @@ class _SubscriptionBuilderCard extends StatelessWidget {
             _RowLabel(icon: Icons.calendar_today_outlined, label: 'Срок подписки'),
             const SizedBox(height: 10),
             _ChipSelector<String>(
+              equalWidth: true,
               options: options.periods.map((p) {
                 final priceStr = '${(p.basePriceKopeks / 100).toStringAsFixed(0)} ₽';
                 String? badge;
@@ -1012,99 +1013,130 @@ class _ChipSelector<T> extends StatelessWidget {
   final List<_ChipItem<T>> options;
   final T? selected;
   final ValueChanged<T> onSelected;
+  // When true, all chips share equal width (Row + Expanded) and equal height
+  // (CrossAxisAlignment.stretch). Badge placeholder is always reserved so
+  // chips with and without badges align vertically.
+  final bool equalWidth;
 
   const _ChipSelector({
     required this.options,
     required this.selected,
     required this.onSelected,
+    this.equalWidth = false,
   });
+
+  Widget _buildChip(BuildContext context, _ChipItem<T> opt) {
+    final isSelected = opt.value == selected;
+    const purple = Color(0xFF6C5CE7);
+    const green = Color(0xFF00B894);
+
+    // Whether any option in this selector has a badge – used to decide whether
+    // to reserve space for the badge row so that chips are the same height.
+    final anyHasBadge = options.any((o) => o.badge != null);
+
+    return GestureDetector(
+      onTap: () => onSelected(opt.value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? purple.withValues(alpha: 0.18)
+              : AppColors.graphiteElevated,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected
+                ? purple
+                : Colors.white.withValues(alpha: 0.08),
+            width: isSelected ? 1.5 : 1,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: purple.withValues(alpha: 0.2),
+                    blurRadius: 12,
+                    spreadRadius: -2,
+                  ),
+                ]
+              : null,
+        ),
+        child: Column(
+          mainAxisSize: equalWidth ? MainAxisSize.max : MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Badge row: always reserve height when any chip in the group has
+            // a badge, so all chips are the same height.
+            if (anyHasBadge) ...[
+              opt.badge != null
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: green.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: green.withValues(alpha: 0.4)),
+                      ),
+                      child: Text(
+                        opt.badge!,
+                        style: const TextStyle(
+                          color: green,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    )
+                  : const SizedBox(height: 17), // same height as badge container
+              const SizedBox(height: 5),
+            ],
+            Text(
+              opt.label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: isSelected ? purple : AppColors.textNeutralMain,
+                fontSize: 14,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+            if (opt.subtitle != null) ...[
+              const SizedBox(height: 3),
+              Text(
+                opt.subtitle!,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: isSelected
+                      ? purple.withValues(alpha: 0.8)
+                      : AppColors.textNeutralSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (equalWidth) {
+      final chips = <Widget>[];
+      for (var i = 0; i < options.length; i++) {
+        if (i > 0) chips.add(const SizedBox(width: 8));
+        chips.add(Expanded(child: _buildChip(context, options[i])));
+      }
+      return IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: chips,
+        ),
+      );
+    }
+
     return Wrap(
       spacing: 8,
       runSpacing: 8,
-      children: options.map((opt) {
-        final isSelected = opt.value == selected;
-        const purple = Color(0xFF6C5CE7);
-        const green = Color(0xFF00B894);
-
-        return GestureDetector(
-          onTap: () => onSelected(opt.value),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? purple.withValues(alpha: 0.18)
-                  : AppColors.graphiteElevated,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: isSelected
-                    ? purple
-                    : Colors.white.withValues(alpha: 0.08),
-                width: isSelected ? 1.5 : 1,
-              ),
-              boxShadow: isSelected
-                  ? [
-                      BoxShadow(
-                        color: purple.withValues(alpha: 0.2),
-                        blurRadius: 12,
-                        spreadRadius: -2,
-                      ),
-                    ]
-                  : null,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Optional best-value / discount badge
-                if (opt.badge != null) ...[
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: green.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: green.withValues(alpha: 0.4)),
-                    ),
-                    child: Text(
-                      opt.badge!,
-                      style: const TextStyle(
-                        color: green,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 5),
-                ],
-                Text(
-                  opt.label,
-                  style: TextStyle(
-                    color: isSelected ? purple : AppColors.textNeutralMain,
-                    fontSize: 14,
-                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                  ),
-                ),
-                if (opt.subtitle != null) ...[
-                  const SizedBox(height: 3),
-                  Text(
-                    opt.subtitle!,
-                    style: TextStyle(
-                      color: isSelected
-                          ? purple.withValues(alpha: 0.8)
-                          : AppColors.textNeutralSecondary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        );
-      }).toList(),
+      children: options.map((opt) => _buildChip(context, opt)).toList(),
     );
   }
 }

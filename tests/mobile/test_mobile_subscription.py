@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
 import pytest
 
 from app.mobile.routes.subscription import (
+    buy_subscription,
     calc_subscription_price,
     get_balance,
     get_subscription_options,
@@ -317,3 +318,133 @@ async def test_topup_balance_creates_payment_url():
     assert result.status == 'payment_required'
     assert result.payment_url == 'https://yookassa.ru/pay/test'
     assert result.amount_kopeks == 30000
+
+
+# ---------------------------------------------------------------------------
+# _metadata_is_balance – mobile payment types must be included
+# ---------------------------------------------------------------------------
+
+
+def test_metadata_is_balance_recognises_standard_topup():
+    from app.services.payment_verification_service import _metadata_is_balance
+
+    payment = MagicMock()
+    payment.metadata_json = {'type': 'balance_topup'}
+    assert _metadata_is_balance(payment) is True
+
+
+def test_metadata_is_balance_recognises_mobile_balance_topup():
+    from app.services.payment_verification_service import _metadata_is_balance
+
+    payment = MagicMock()
+    payment.metadata_json = {'type': 'mobile_balance_topup'}
+    assert _metadata_is_balance(payment) is True
+
+
+def test_metadata_is_balance_recognises_mobile_subscription_topup():
+    from app.services.payment_verification_service import _metadata_is_balance
+
+    payment = MagicMock()
+    payment.metadata_json = {'type': 'mobile_subscription_topup'}
+    assert _metadata_is_balance(payment) is True
+
+
+def test_metadata_is_balance_recognises_mobile_subscription_upgrade_topup():
+    from app.services.payment_verification_service import _metadata_is_balance
+
+    payment = MagicMock()
+    payment.metadata_json = {'type': 'mobile_subscription_upgrade_topup'}
+    assert _metadata_is_balance(payment) is True
+
+
+def test_metadata_is_balance_rejects_unknown_type():
+    from app.services.payment_verification_service import _metadata_is_balance
+
+    payment = MagicMock()
+    payment.metadata_json = {'type': 'simple_subscription_purchase'}
+    assert _metadata_is_balance(payment) is False
+
+
+def test_metadata_is_balance_empty_metadata():
+    from app.services.payment_verification_service import _metadata_is_balance
+
+    payment = MagicMock()
+    payment.metadata_json = {}
+    assert _metadata_is_balance(payment) is False
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/buy – cart saved on insufficient balance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buy_subscription_saves_cart_on_insufficient_balance():
+    """When balance is insufficient, a cart must be saved in Redis."""
+    user = _make_user(balance_kopeks=0)
+    mock_db, mock_session_class, mock_engine = _db_patch(user)
+
+    # Mock the purchase service
+    mock_period = MagicMock()
+    mock_period.days = 30
+    mock_period.id = 'days:30'
+    mock_selection = MagicMock()
+    mock_selection.period = mock_period
+    mock_selection.traffic_value = 100
+    mock_selection.devices = 2
+    mock_selection.servers = ['uuid-1']
+    mock_pricing = MagicMock()
+    mock_pricing.final_total = 50000
+
+    mock_service = MagicMock()
+    mock_service.build_options = AsyncMock(return_value=MagicMock())
+    mock_service.parse_selection = MagicMock(return_value=mock_selection)
+    mock_service.calculate_pricing = AsyncMock(return_value=mock_pricing)
+    mock_service_class = MagicMock(return_value=mock_service)
+
+    mock_ps_instance = MagicMock()
+    mock_ps_instance.create_yookassa_payment = AsyncMock(
+        return_value={
+            'confirmation_url': 'https://yookassa.ru/pay/test',
+            'local_payment_id': 1,
+        }
+    )
+    mock_ps_class = MagicMock(return_value=mock_ps_instance)
+
+    mock_cart_service = MagicMock()
+    mock_cart_service.save_user_cart = AsyncMock(return_value=True)
+
+    from app.mobile.schemas.subscription import SubscriptionBuyRequest
+
+    with (
+        patch('app.mobile.routes.subscription.settings') as mock_settings,
+        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
+        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
+        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
+        patch.dict(
+            'sys.modules',
+            {
+                'app.services.payment_service': MagicMock(PaymentService=mock_ps_class),
+                'app.services.subscription_purchase_service': MagicMock(
+                    MiniAppSubscriptionPurchaseService=mock_service_class,
+                    PurchaseBalanceError=Exception,
+                    PurchaseValidationError=Exception,
+                ),
+                'app.services.user_cart_service': MagicMock(user_cart_service=mock_cart_service),
+            },
+        ),
+    ):
+        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+        mock_settings.is_yookassa_enabled.return_value = True
+
+        result = await buy_subscription(
+            payload=SubscriptionBuyRequest(period_id='days:30'),
+            x_telegram_id=123456789,
+        )
+
+    assert result.status == 'payment_required'
+    mock_cart_service.save_user_cart.assert_called_once()
+    call_args = mock_cart_service.save_user_cart.call_args
+    saved_cart = call_args[0][1] if call_args[0] else call_args[1].get('cart_data') or list(call_args[1].values())[0]
+    assert saved_cart.get('period_days') == 30
+    assert saved_cart.get('source') == 'mobile'

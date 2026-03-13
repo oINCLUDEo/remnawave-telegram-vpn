@@ -301,6 +301,23 @@ async def buy_subscription(
                 detail='Не удалось создать платёж',
             )
 
+        # Save a cart so the auto-purchase service can activate the subscription
+        # immediately after the payment is confirmed and the balance is credited.
+        try:
+            from app.services.user_cart_service import user_cart_service
+
+            period_days = selection.period.days
+            cart_data: dict[str, Any] = {
+                'period_days': period_days,
+                'traffic_gb': payload.traffic_value or selection.traffic_value,
+                'devices': payload.devices or selection.devices,
+                'countries': list(payload.servers or selection.servers),
+                'source': 'mobile',
+            }
+            await user_cart_service.save_user_cart(user.id, cart_data)
+        except Exception as cart_err:
+            logger.warning('mobile buy: failed to save cart for auto-purchase', error=cart_err)
+
         return BuyResponse(
             status='payment_required',
             message='Пополните баланс для активации подписки',
@@ -438,6 +455,22 @@ async def upgrade_subscription(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail='Не удалось создать платёж',
             )
+
+        # Save a cart so the auto-purchase service can activate the upgrade
+        # immediately after the payment is confirmed and the balance is credited.
+        try:
+            from app.services.user_cart_service import user_cart_service
+
+            cart_data: dict[str, Any] = {
+                'period_days': selection.period.days,
+                'traffic_gb': selection.traffic_value,
+                'devices': selection.devices,
+                'countries': list(selection.servers),
+                'source': 'mobile',
+            }
+            await user_cart_service.save_user_cart(user.id, cart_data)
+        except Exception as cart_err:
+            logger.warning('mobile upgrade: failed to save cart for auto-purchase', error=cart_err)
 
         return UpgradeResponse(
             status='payment_required',
