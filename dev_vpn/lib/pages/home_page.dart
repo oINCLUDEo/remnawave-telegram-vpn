@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/me_response.dart';
 import '../models/server_node.dart';
 import '../models/subscription_info.dart';
+import '../services/app_logger.dart';
 import '../services/auth_service.dart';
 import '../services/auth_state.dart';
 import '../services/me_service.dart';
@@ -168,11 +169,16 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _toggleConnection() async {
     if (_isTransitioning) return;
-    if (_isConnected) { await _v2ray.stopVless(); return; }
+    if (_isConnected) {
+      appLogger.info('HomePage', 'disconnecting from ${_selectedNode?.name ?? "unknown"}');
+      await _v2ray.stopVless();
+      return;
+    }
     final node = _selectedNode;
     if (node == null) { _snack('Сначала выберите сервер'); return; }
     if (node.isDisabled || node.link == null) {
       if (authStateNotifier.value.isLoggedIn) {
+        appLogger.info('HomePage', 'blocked server tapped — redirecting to premium');
         widget.onGoToPremium?.call();
       } else {
         await showAuthBottomSheet(context);
@@ -181,6 +187,7 @@ class _HomePageState extends State<HomePage>
     }
     if (!await _v2ray.requestPermission()) { _snack('Нет разрешения VPN'); return; }
     setState(() => _isConnecting = true);
+    appLogger.info('HomePage', 'connecting to ${node.name} (${node.countryCode})');
     try {
       final parser = FlutterV2ray.parseFromURL(node.link!);
       await _v2ray.startVless(
@@ -190,6 +197,7 @@ class _HomePageState extends State<HomePage>
         proxyOnly: false,
       );
     } catch (e) {
+      appLogger.error('HomePage', 'connection error: $e');
       _snack('Ошибка подключения: $e');
     } finally {
       if (mounted) setState(() => _isConnecting = false);
@@ -322,7 +330,7 @@ class _HomePageState extends State<HomePage>
                       color: isSel ? DS.violet.withValues(alpha: 0.08) : Colors.transparent,
                       child: InkWell(
                         onTap: () async {
-                          if (_isPublicCatalog) {
+                          if (_isPublicCatalog || node.isDisabled || node.link == null) {
                             Navigator.pop(ctx);
                             if (context.mounted) {
                               if (authStateNotifier.value.isLoggedIn) {
@@ -358,7 +366,7 @@ class _HomePageState extends State<HomePage>
                             ])),
                             if (isSel)
                               const Icon(Icons.check_circle_rounded, color: DS.violet, size: 20)
-                            else if (_isPublicCatalog)
+                            else if (_isPublicCatalog || node.isDisabled || node.link == null)
                               const Icon(Icons.lock_outline_rounded, size: 16, color: DS.textMuted),
                           ]),
                         ),
@@ -686,6 +694,8 @@ class _HomePageState extends State<HomePage>
               style: TextStyle(color: DS.textSecondary, fontSize: 13)))
         else if (_isPublicCatalog && !authState.isLoggedIn)
           _LoginPrompt()
+        else if (_isPublicCatalog && authState.isLoggedIn)
+          _NoPlanPrompt(onGoToPremium: widget.onGoToPremium)
         else if (info != null) ...[
             // Big traffic numbers
             Row(crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -843,6 +853,40 @@ class _LoginPrompt extends StatelessWidget {
     const SizedBox(height: 12),
     TelegramLoginButton(onTap: () => showAuthBottomSheet(context)),
   ]);
+}
+
+class _NoPlanPrompt extends StatelessWidget {
+  final VoidCallback? onGoToPremium;
+  const _NoPlanPrompt({this.onGoToPremium});
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text('У вас нет активной подписки.',
+          style: TextStyle(color: DS.textSecondary, fontSize: 13, height: 1.5)),
+      const SizedBox(height: 12),
+      GestureDetector(
+        onTap: onGoToPremium,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [DS.violet, DS.violetDim],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(DS.radiusSm),
+          ),
+          child: const Text('Получить подписку',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700)),
+        ),
+      ),
+    ],
+  );
 }
 
 class _SubBadge extends StatelessWidget {
