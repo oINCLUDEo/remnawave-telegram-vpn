@@ -300,9 +300,9 @@ class SubscriptionApiService {
     try {
       final resp = await http
           .get(
-            Uri.parse('$_base/mobile/v1/subscription/options'),
-            headers: _headers(),
-          )
+        Uri.parse('$_base/mobile/v1/subscription/options'),
+        headers: _headers(),
+      )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         return SubscriptionOptions.fromJson(
@@ -332,10 +332,10 @@ class SubscriptionApiService {
 
       final resp = await http
           .post(
-            Uri.parse('$_base/mobile/v1/subscription/calc'),
-            headers: _headers(),
-            body: jsonEncode(body),
-          )
+        Uri.parse('$_base/mobile/v1/subscription/calc'),
+        headers: _headers(),
+        body: jsonEncode(body),
+      )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         return CalcResult.fromJson(
@@ -365,10 +365,10 @@ class SubscriptionApiService {
 
       final resp = await http
           .post(
-            Uri.parse('$_base/mobile/v1/subscription/buy'),
-            headers: _headers(),
-            body: jsonEncode(body),
-          )
+        Uri.parse('$_base/mobile/v1/subscription/buy'),
+        headers: _headers(),
+        body: jsonEncode(body),
+      )
           .timeout(const Duration(seconds: 20));
       if (resp.statusCode == 200) {
         return BuyResult.fromJson(
@@ -407,10 +407,10 @@ class SubscriptionApiService {
 
       final resp = await http
           .post(
-            Uri.parse('$_base/mobile/v1/subscription/upgrade'),
-            headers: _headers(),
-            body: jsonEncode(body),
-          )
+        Uri.parse('$_base/mobile/v1/subscription/upgrade'),
+        headers: _headers(),
+        body: jsonEncode(body),
+      )
           .timeout(const Duration(seconds: 20));
       if (resp.statusCode == 200) {
         final json = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -442,9 +442,9 @@ class SubscriptionApiService {
     try {
       final resp = await http
           .get(
-            Uri.parse('$_base/mobile/v1/balance'),
-            headers: _headers(),
-          )
+        Uri.parse('$_base/mobile/v1/balance'),
+        headers: _headers(),
+      )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         return BalanceInfo.fromJson(
@@ -464,10 +464,10 @@ class SubscriptionApiService {
     try {
       final resp = await http
           .post(
-            Uri.parse('$_base/mobile/v1/balance/topup'),
-            headers: _headers(),
-            body: jsonEncode({'amount_kopeks': amountKopeks}),
-          )
+        Uri.parse('$_base/mobile/v1/balance/topup'),
+        headers: _headers(),
+        body: jsonEncode({'amount_kopeks': amountKopeks}),
+      )
           .timeout(const Duration(seconds: 20));
       if (resp.statusCode == 200) {
         return TopupResult.fromJson(
@@ -492,10 +492,10 @@ class SubscriptionApiService {
     try {
       final resp = await http
           .put(
-            Uri.parse('$_base/mobile/v1/subscription/autopay'),
-            headers: _headers(),
-            body: jsonEncode({'enabled': enabled}),
-          )
+        Uri.parse('$_base/mobile/v1/subscription/autopay'),
+        headers: _headers(),
+        body: jsonEncode({'enabled': enabled}),
+      )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         final json = jsonDecode(resp.body) as Map<String, dynamic>;

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:country_flags/country_flags.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -341,8 +342,10 @@ class _HomePageState extends State<HomePage>
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
                           child: Row(children: [
-                            Text(_countryEmoji(node.countryCode),
-                                style: const TextStyle(fontSize: 22)),
+                            CountryFlag.fromCountryCode(
+                              node.countryCode,
+                              theme: ImageTheme(width: 36, height: 28, shape: RoundedRectangle(8)),
+                            ),
                             const SizedBox(width: 14),
                             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                               Text(node.name, style: TextStyle(
@@ -545,9 +548,31 @@ class _HomePageState extends State<HomePage>
                 border: Border.all(color: DS.border),
               ),
               child: Row(children: [
-                Text(_selectedNode != null
-                    ? _countryEmoji(_selectedNode!.countryCode) : '🌐',
-                    style: const TextStyle(fontSize: 22)),
+                if (_selectedNode != null && _selectedNode!.countryCode.isNotEmpty)
+                  CountryFlag.fromCountryCode(
+                    _selectedNode!.countryCode,
+                    theme: const ImageTheme(
+                      width: 36,
+                      height: 28,
+                      shape: RoundedRectangle(8),
+                    ),
+                  )
+                else
+                // Если нет выбранного сервера или кода страны, показываем иконку глобуса
+                  Container(
+                    width: 36,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: DS.violet.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.public_rounded,
+                      color: DS.violet,
+                      size: 18,
+                    ),
+                  ),
+
                 const SizedBox(width: 14),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(
