@@ -30,6 +30,7 @@ from .routes import (
     media,
     menu_layout,
     miniapp,
+    mobile_notifications as webapi_mobile_notifications,
     pages,
     partners,
     pinned_messages,
@@ -174,6 +175,13 @@ OPENAPI_TAGS = [
         ),
     },
     {
+        'name': 'mobile-notifications',
+        'description': (
+            'Управление backend-driven in-app уведомлениями мобильного клиента: '
+            'отправка, просмотр и удаление баннеров, которые появляются в Flutter-приложении.'
+        ),
+    },
+    {
         'name': 'ban-notifications',
         'description': (
             'Эндпоинты для приема уведомлений от системы мониторинга ban (Banhammer). '
@@ -277,6 +285,11 @@ def create_web_api_app() -> FastAPI:
         ban_notifications.router,
         prefix='/ban-notifications',
         tags=['ban-notifications'],
+    )
+    app.include_router(
+        webapi_mobile_notifications.router,
+        prefix='/mobile-notifications',
+        tags=['mobile-notifications'],
     )
 
     # Mobile API (Flutter client)

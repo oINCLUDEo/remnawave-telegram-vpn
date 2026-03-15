@@ -140,13 +140,16 @@ class SupportApiService {
   static Future<SupportTicket?> createTicket({
     required String title,
     required String message,
+    String? logs,
   }) async {
     try {
+      final body = <String, dynamic>{'title': title, 'message': message};
+      if (logs != null && logs.isNotEmpty) body['logs'] = logs;
       final resp = await http
           .post(
             Uri.parse('$_base/tickets'),
             headers: _headers(),
-            body: jsonEncode({'title': title, 'message': message}),
+            body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 201) {

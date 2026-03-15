@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
-from app.database.crud.ticket import TicketCRUD
+from app.database.crud.ticket import TicketCRUD, TicketMessageCRUD
 from app.database.crud.user import get_user_by_telegram_id
 from app.database.models import TicketStatus
 from app.mobile.schemas.support import (
@@ -120,6 +120,15 @@ async def create_ticket(
     title = (body.title or '').strip()
     message_text = (body.message or '').strip()
 
+    # Append diagnostic logs to the message text if provided
+    if body.logs:
+        logs_text = body.logs.strip()
+        if logs_text:
+            _MAX_LOGS_LEN = 8000
+            if len(logs_text) > _MAX_LOGS_LEN:
+                logs_text = logs_text[-_MAX_LOGS_LEN:]
+            message_text = f'{message_text}\n\n--- Диагностические логи ---\n{logs_text}'
+
     if not title:
         raise HTTPException(status_code=422, detail='Укажите тему обращения')
     if len(title) > _MAX_TITLE_LEN:
@@ -181,7 +190,7 @@ async def get_ticket(
             ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=True)
             if not ticket or ticket.user_id != user.id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
-            messages = await TicketCRUD.get_ticket_messages(db, ticket_id)
+            messages = await TicketMessageCRUD.get_ticket_messages(db, ticket_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -231,7 +240,7 @@ async def reply_to_ticket(
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN, detail='Ответы в этот тикет заблокированы'
                 )
-            msg = await TicketCRUD.add_message(
+            msg = await TicketMessageCRUD.add_message(
                 db, ticket_id=ticket_id, user_id=user.id, message_text=message_text
             )
     except HTTPException:

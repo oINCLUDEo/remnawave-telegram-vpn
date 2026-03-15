@@ -11,6 +11,7 @@ from pydantic import BaseModel
 class MobileCreateTicketRequest(BaseModel):
     title: str
     message: str
+    logs: str | None = None
 
 
 class MobileReplyRequest(BaseModel):

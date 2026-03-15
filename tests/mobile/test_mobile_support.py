@@ -219,10 +219,11 @@ async def test_get_ticket_returns_detail():
         patch('app.mobile.routes.support.get_user_by_telegram_id',
               new_callable=AsyncMock, return_value=_make_user()),
         patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
+        patch('app.mobile.routes.support.TicketMessageCRUD') as mock_msg_crud,
     ):
         mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
-        mock_crud.get_ticket_messages = AsyncMock(return_value=[msg])
+        mock_msg_crud.get_ticket_messages = AsyncMock(return_value=[msg])
 
         result = await get_ticket(ticket_id=1, x_telegram_id=111222333)
 
@@ -278,10 +279,11 @@ async def test_reply_to_ticket_success():
         patch('app.mobile.routes.support.get_user_by_telegram_id',
               new_callable=AsyncMock, return_value=_make_user()),
         patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
+        patch('app.mobile.routes.support.TicketMessageCRUD') as mock_msg_crud,
     ):
         mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
-        mock_crud.add_message = AsyncMock(return_value=msg)
+        mock_msg_crud.add_message = AsyncMock(return_value=msg)
 
         body = MobileReplyRequest(message='My reply')
         result = await reply_to_ticket(body=body, ticket_id=1, x_telegram_id=111222333)

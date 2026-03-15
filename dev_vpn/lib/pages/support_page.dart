@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'dart:io';
 
 import '../main.dart' show DS;
 import '../services/support_api_service.dart';
@@ -251,12 +253,34 @@ class _CreateTicketPageState extends State<_CreateTicketPage> {
   final _titleCtrl = TextEditingController();
   final _msgCtrl = TextEditingController();
   bool _sending = false;
+  bool _attachDiag = false;
 
   @override
   void dispose() {
     _titleCtrl.dispose();
     _msgCtrl.dispose();
     super.dispose();
+  }
+
+  Future<String> _collectDiagnostics() async {
+    final info = StringBuffer();
+    try {
+      final plugin = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final d = await plugin.androidInfo;
+        info.write('Platform: Android ${d.version.release} (SDK ${d.version.sdkInt})\n');
+        info.write('Device: ${d.manufacturer} ${d.model}\n');
+      } else if (Platform.isIOS) {
+        final d = await plugin.iosInfo;
+        info.write('Platform: iOS ${d.systemVersion}\n');
+        info.write('Device: ${d.utsname.machine}\n');
+      } else {
+        info.write('Platform: ${Platform.operatingSystem}\n');
+      }
+    } catch (_) {
+      info.write('Device info: unavailable\n');
+    }
+    return info.toString().trim();
   }
 
   Future<void> _send() async {
@@ -273,7 +297,17 @@ class _CreateTicketPageState extends State<_CreateTicketPage> {
     }
 
     setState(() => _sending = true);
-    final ticket = await SupportApiService.createTicket(title: title, message: message);
+
+    String? logs;
+    if (_attachDiag) {
+      logs = await _collectDiagnostics();
+    }
+
+    final ticket = await SupportApiService.createTicket(
+      title: title,
+      message: message,
+      logs: logs,
+    );
     if (!mounted) return;
     setState(() => _sending = false);
 
@@ -320,6 +354,25 @@ class _CreateTicketPageState extends State<_CreateTicketPage> {
           _label('Описание'),
           const SizedBox(height: 6),
           _field(_msgCtrl, hint: 'Подробно опишите ситуацию…', maxLines: 8),
+          const SizedBox(height: 16),
+          Container(
+            decoration: BoxDecoration(
+              color: DS.surface1,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: DS.border),
+            ),
+            child: SwitchListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+              title: const Text('Прикрепить диагностику',
+                  style: TextStyle(color: DS.textPrimary, fontSize: 14)),
+              subtitle: const Text('Платформа и модель устройства',
+                  style: TextStyle(color: DS.textMuted, fontSize: 11)),
+              value: _attachDiag,
+              activeColor: DS.violet,
+              onChanged: (v) => setState(() => _attachDiag = v),
+            ),
+          ),
           const SizedBox(height: 24),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
