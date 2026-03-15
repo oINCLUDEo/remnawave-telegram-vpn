@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -6,7 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../models/me_response.dart';
+import 'app_logger.dart';
 import 'auth_state.dart';
+import 'notification_service.dart';
+import 'remnawave_service.dart';
 
 /// Global notifier for the current user's /me response.
 ///
@@ -34,24 +38,38 @@ class MeService {
     try {
       final response = await http
           .get(
-            Uri.parse(_url),
-            headers: {
-              'X-Telegram-Id': auth.telegramId.toString(),
-            },
-          )
+        Uri.parse(_url),
+        headers: {
+          'X-Telegram-Id': auth.telegramId.toString(),
+        },
+      )
           .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
         final me = MeResponse.fromJson(body);
+        // Persist the subscription URL so that RemnawaveService readers
+        // (ServersPage, HomePage) immediately see the updated URL when they
+        // next call getSubscriptionUrl().  This must happen before the
+        // meNotifier fires so that listeners picking up the change already
+        // find the URL in SharedPreferences.
+        final subUrl = me.subscription?.subscriptionUrl;
+        if (subUrl != null && subUrl.isNotEmpty) {
+          await RemnawaveService.saveSubscriptionUrl(subUrl);
+        }
         meNotifier.value = me;
         await _saveToCache(me);
+        appLogger.info('MeService', '/me refreshed — subscription: ${me.hasSubscription}');
+        // Fetch and post backend-driven in-app notifications
+        unawaited(_fetchAndPostNotifications(auth.telegramId!));
         return me;
       }
 
+      appLogger.warning('MeService', '/me returned ${response.statusCode}');
       debugPrint('MeService: /me returned ${response.statusCode}');
       return null;
     } on Exception catch (e) {
+      appLogger.error('MeService', '/me error: $e');
       debugPrint('MeService: error fetching /me: $e');
       return null;
     }
@@ -67,6 +85,9 @@ class MeService {
         'last_name': me.lastName,
         'username': me.username,
         'has_subscription': me.hasSubscription,
+        'balance_kopeks': me.balanceKopeks,
+        'balance_rub': me.balanceRub,
+        'balance_currency': me.balanceCurrency,
         'subscription': me.subscription == null
             ? null
             : {
@@ -77,6 +98,7 @@ class MeService {
           'traffic_used_gb': me.subscription!.trafficUsedGb,
           'subscription_url': me.subscription!.subscriptionUrl,
           'device_limit': me.subscription!.deviceLimit,
+          'autopay_enabled': me.subscription!.autopayEnabled,
         }
       };
 
@@ -120,5 +142,28 @@ class MeService {
   static Future<void> clear() async {
     meNotifier.value = null;
     await clearCache();
+  }
+
+  // ── Backend notifications ─────────────────────────────────────────────────
+
+  static Future<void> _fetchAndPostNotifications(int telegramId) async {
+    try {
+      final url = '${AppConfig.backendBaseUrl}/mobile/v1/notifications';
+      final resp = await http
+          .get(Uri.parse(url), headers: {'X-Telegram-Id': telegramId.toString()})
+          .timeout(const Duration(seconds: 10));
+      if (resp.statusCode != 200) return;
+      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      final items = body['notifications'] as List<dynamic>? ?? [];
+      for (final raw in items) {
+        try {
+          final notif = InAppNotification.fromJson(raw as Map<String, dynamic>);
+          notificationService.post(notif);
+          appLogger.info('MeService', 'Backend notification posted: ${notif.id}');
+        } catch (_) {}
+      }
+    } on Exception catch (e) {
+      debugPrint('MeService: _fetchAndPostNotifications error: $e');
+    }
   }
 }

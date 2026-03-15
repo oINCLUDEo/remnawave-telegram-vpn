@@ -375,10 +375,19 @@ def _parse_cryptobot_amount_kopeks(payment: CryptoBotPayment) -> int:
     return 0
 
 
+_MOBILE_PAYMENT_TYPES: frozenset[str] = frozenset(
+    {
+        'mobile_balance_topup',
+        'mobile_subscription_topup',
+        'mobile_subscription_upgrade_topup',
+    }
+)
+
+
 def _metadata_is_balance(payment: YooKassaPayment) -> bool:
     metadata = getattr(payment, 'metadata_json', {}) or {}
     payment_type = str(metadata.get('type') or metadata.get('payment_type') or '').lower()
-    return payment_type.startswith('balance_topup')
+    return payment_type.startswith('balance_topup') or payment_type in _MOBILE_PAYMENT_TYPES
 
 
 def _build_record(

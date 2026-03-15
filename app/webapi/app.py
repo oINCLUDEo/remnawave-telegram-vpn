@@ -6,7 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 # Cabinet (Personal Account) routes
 from app.cabinet.routes import router as cabinet_router
 from app.config import settings
-from app.mobile.routes import auth as mobile_auth, me as mobile_me, servers as mobile_servers
+from app.mobile.routes import (
+    auth as mobile_auth,
+    me as mobile_me,
+    notifications as mobile_notifications,
+    servers as mobile_servers,
+    subscription as mobile_subscription,
+    support as mobile_support,
+)
 from app.webapi.docs import add_redoc_endpoint
 
 from .middleware import RequestLoggingMiddleware
@@ -23,6 +30,7 @@ from .routes import (
     media,
     menu_layout,
     miniapp,
+    mobile_notifications as webapi_mobile_notifications,
     pages,
     partners,
     pinned_messages,
@@ -167,6 +175,13 @@ OPENAPI_TAGS = [
         ),
     },
     {
+        'name': 'mobile-notifications',
+        'description': (
+            'Управление backend-driven in-app уведомлениями мобильного клиента: '
+            'отправка, просмотр и удаление баннеров, которые появляются в Flutter-приложении.'
+        ),
+    },
+    {
         'name': 'ban-notifications',
         'description': (
             'Эндпоинты для приема уведомлений от системы мониторинга ban (Banhammer). '
@@ -271,11 +286,19 @@ def create_web_api_app() -> FastAPI:
         prefix='/ban-notifications',
         tags=['ban-notifications'],
     )
+    app.include_router(
+        webapi_mobile_notifications.router,
+        prefix='/mobile-notifications',
+        tags=['mobile-notifications'],
+    )
 
     # Mobile API (Flutter client)
     app.include_router(mobile_servers.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_auth.router, prefix='/mobile/v1/auth', tags=['mobile'])
     app.include_router(mobile_me.router, prefix='/mobile/v1', tags=['mobile'])
+    app.include_router(mobile_subscription.router, prefix='/mobile/v1', tags=['mobile'])
+    app.include_router(mobile_notifications.router, prefix='/mobile/v1', tags=['mobile'])
+    app.include_router(mobile_support.router, prefix='/mobile/v1/support', tags=['mobile'])
 
     # Cabinet (Personal Account) routes
     if settings.is_cabinet_enabled():
