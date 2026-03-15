@@ -4,6 +4,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
 
 import '../main.dart' show DS;
+import '../services/app_logger.dart';
 import '../services/support_api_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -280,6 +281,17 @@ class _CreateTicketPageState extends State<_CreateTicketPage> {
     } catch (_) {
       info.write('Device info: unavailable\n');
     }
+
+    // Append recent app logs (up to 200 entries)
+    final entries = appLogger.logsNotifier.value;
+    if (entries.isNotEmpty) {
+      info.write('\n--- App Logs ---\n');
+      final recent = entries.length > 200 ? entries.sublist(entries.length - 200) : entries;
+      for (final e in recent) {
+        info.write('${e.formatted}\n');
+      }
+    }
+
     return info.toString().trim();
   }
 
@@ -366,7 +378,7 @@ class _CreateTicketPageState extends State<_CreateTicketPage> {
               contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
               title: const Text('Прикрепить диагностику',
                   style: TextStyle(color: DS.textPrimary, fontSize: 14)),
-              subtitle: const Text('Платформа и модель устройства',
+              subtitle: const Text('Платформа, модель устройства и логи приложения',
                   style: TextStyle(color: DS.textMuted, fontSize: 11)),
               value: _attachDiag,
               activeColor: DS.violet,

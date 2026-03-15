@@ -15,19 +15,21 @@ class InAppNotificationOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final top = MediaQuery.of(context).padding.top + 12;
     return Stack(
       children: [
         child,
-        ValueListenableBuilder<List<InAppNotification>>(
-          valueListenable: notificationService.activeNotifications,
-          builder: (context, notifs, _) {
-            if (notifs.isEmpty) return const SizedBox.shrink();
-            final top = MediaQuery.of(context).padding.top + 12;
-            return Positioned(
-              top: top,
-              left: 12,
-              right: 12,
-              child: Column(
+        // Positioned must be a direct Stack child to have any effect.
+        // The ValueListenableBuilder lives inside it, not around it.
+        Positioned(
+          top: top,
+          left: 12,
+          right: 12,
+          child: ValueListenableBuilder<List<InAppNotification>>(
+            valueListenable: notificationService.activeNotifications,
+            builder: (context, notifs, _) {
+              if (notifs.isEmpty) return const SizedBox.shrink();
+              return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: notifs
                     .map((n) => _NotifBanner(
@@ -35,9 +37,9 @@ class InAppNotificationOverlay extends StatelessWidget {
                           notif: n,
                         ))
                     .toList(),
-              ),
-            );
-          },
+              );
+            },
+          ),
         ),
       ],
     );
