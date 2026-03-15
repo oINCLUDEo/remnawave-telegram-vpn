@@ -221,13 +221,8 @@ async def test_create_ticket_with_long_logs_does_not_return_422():
         patch('app.mobile.routes.support.get_user_by_telegram_id',
               new_callable=AsyncMock, return_value=_make_user()),
         patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-        patch('app.mobile.routes.support._upload_logs_as_document',
-              new_callable=AsyncMock,
-              return_value=('document', '__inline_logs__', long_logs)),
     ):
         mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-        mock_settings.BOT_TOKEN = None
-        mock_settings.ADMIN_NOTIFICATIONS_CHAT_ID = None
         mock_crud.count_user_tickets_by_statuses = AsyncMock(return_value=0)
         mock_crud.create_ticket = AsyncMock(return_value=ticket)
 

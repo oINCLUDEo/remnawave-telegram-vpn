@@ -264,6 +264,8 @@ async def view_admin_ticket(
             block = f'{sender} ({msg.created_at.strftime("%d.%m %H:%M")}):\n{msg.message_text}\n\n'
             if getattr(msg, 'has_media', False) and getattr(msg, 'media_type', None) == 'photo':
                 block += '📎 Вложение: фото\n\n'
+            elif getattr(msg, 'has_media', False) and getattr(msg, 'media_type', None) == 'document':
+                block += '📋 Вложение: логи\n\n'
             message_blocks.append(block)
 
     # Разбиваем на страницы
@@ -274,6 +276,9 @@ async def view_admin_ticket(
     # Формируем клавиатуру
     has_photos = any(
         getattr(m, 'has_media', False) and getattr(m, 'media_type', None) == 'photo' for m in ticket.messages or []
+    )
+    has_logs = any(
+        getattr(m, 'has_media', False) and getattr(m, 'media_type', None) == 'document' for m in ticket.messages or []
     )
     keyboard = get_admin_ticket_view_keyboard(
         ticket_id, ticket.is_closed, db_user.language, is_user_blocked=ticket.is_user_reply_blocked
@@ -303,7 +308,7 @@ async def view_admin_ticket(
     except Exception:
         pass
 
-    # Кнопка вложений
+    # Кнопка вложений (фото)
     if has_photos:
         try:
             keyboard.inline_keyboard.insert(
@@ -312,6 +317,21 @@ async def view_admin_ticket(
                     types.InlineKeyboardButton(
                         text=texts.t('TICKET_ATTACHMENTS', '📎 Вложения'),
                         callback_data=f'admin_ticket_attachments_{ticket_id}',
+                    )
+                ],
+            )
+        except Exception:
+            pass
+
+    # Кнопка просмотра логов
+    if has_logs:
+        try:
+            keyboard.inline_keyboard.insert(
+                0,
+                [
+                    types.InlineKeyboardButton(
+                        text='📋 Скачать логи',
+                        callback_data=f'admin_ticket_logs_{ticket_id}',
                     )
                 ],
             )
@@ -1210,6 +1230,70 @@ def register_handlers(dp: Dispatcher):
             await callback.answer(texts.t('ATTACHMENTS_SENT', 'Вложения отправлены.'))
 
     dp.callback_query.register(send_admin_ticket_attachments, F.data.startswith('admin_ticket_attachments_'))
+
+    async def send_admin_ticket_logs(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+        """Send inline diagnostic logs as a downloadable .txt document."""
+        if not (settings.is_admin(callback.from_user.id) or SupportSettingsService.is_moderator(callback.from_user.id)):
+            texts = get_texts(db_user.language)
+            await callback.answer(texts.ACCESS_DENIED, show_alert=True)
+            return
+        texts = get_texts(db_user.language)
+        try:
+            ticket_id = int(callback.data.replace('admin_ticket_logs_', ''))
+        except ValueError:
+            await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
+            return
+        ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=True)
+        if not ticket:
+            await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
+            return
+
+        from aiogram.types import BufferedInputFile
+
+        _INLINE_SENTINEL = '__inline_logs__'
+        sent_any = False
+        for msg in ticket.messages or []:
+            if (
+                getattr(msg, 'has_media', False)
+                and getattr(msg, 'media_type', None) == 'document'
+                and getattr(msg, 'media_file_id', None) == _INLINE_SENTINEL
+                and getattr(msg, 'media_caption', None)
+            ):
+                log_bytes = msg.media_caption.encode('utf-8')
+                ts = msg.created_at.strftime('%Y%m%d_%H%M%S') if msg.created_at else 'log'
+                filename = f'diagnostics_{ticket_id}_{ts}.txt'
+                doc = BufferedInputFile(log_bytes, filename=filename)
+                try:
+                    sent_msg = await callback.message.bot.send_document(
+                        chat_id=callback.from_user.id,
+                        document=doc,
+                        caption=f'📋 Логи тикета #{ticket_id}',
+                    )
+                    sent_any = True
+                    kb = types.InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                types.InlineKeyboardButton(
+                                    text=texts.t('DELETE_MESSAGE', '🗑 Удалить'),
+                                    callback_data=f'admin_delete_message_{sent_msg.message_id}',
+                                )
+                            ]
+                        ]
+                    )
+                    await callback.message.bot.send_message(
+                        chat_id=callback.from_user.id,
+                        text=texts.t('ATTACHMENTS_SENT', 'Логи отправлены.'),
+                        reply_markup=kb,
+                    )
+                except Exception:
+                    pass
+
+        if not sent_any:
+            await callback.answer(texts.t('NO_ATTACHMENTS', 'Логи не найдены.'), show_alert=True)
+            return
+        await callback.answer()
+
+    dp.callback_query.register(send_admin_ticket_logs, F.data.startswith('admin_ticket_logs_'))
 
     async def admin_delete_message(callback: types.CallbackQuery):
         try:

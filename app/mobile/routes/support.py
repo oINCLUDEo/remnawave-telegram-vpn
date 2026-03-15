@@ -86,36 +86,14 @@ def _message_to_response(msg) -> MobileTicketMessageResponse:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
-async def _upload_logs_as_document(logs_text: str) -> tuple[str, str, str]:
-    """Upload logs as a Telegram document or fall back to inline storage.
+def _upload_logs_as_document(logs_text: str) -> tuple[str, str, str]:
+    """Store logs inline in the database for later retrieval by admins.
 
     Returns (media_type, media_file_id, media_caption).
+    The sentinel file_id ``_INLINE_LOGS_FILE_ID`` signals to the admin bot
+    that the content should be sent as a generated document rather than
+    forwarded from Telegram.
     """
-    bot_token = getattr(settings, 'BOT_TOKEN', None)
-    admin_chat_id = getattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None)
-    if bot_token and admin_chat_id:
-        try:
-            from aiogram import Bot
-            from aiogram.client.default import DefaultBotProperties
-            from aiogram.enums import ParseMode
-            from aiogram.types import BufferedInputFile
-
-            bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            try:
-                file = BufferedInputFile(logs_text.encode('utf-8'), filename='diagnostics.txt')
-                msg = await bot.send_document(
-                    chat_id=admin_chat_id,
-                    document=file,
-                    caption='📋 Диагностические логи',
-                )
-                if msg.document:
-                    return 'document', msg.document.file_id, 'Диагностические логи'
-            finally:
-                await bot.session.close()
-        except Exception as exc:
-            logger.warning('Failed to upload logs to Telegram, storing inline', error=str(exc))
-
-    # Fallback: store logs inline using a sentinel file_id
     return 'document', _INLINE_LOGS_FILE_ID, logs_text
 
 
@@ -177,7 +155,7 @@ async def create_ticket(
     if body.logs:
         logs_text = body.logs.strip()
         if logs_text:
-            logs_media_type, logs_media_file_id, logs_media_caption = await _upload_logs_as_document(logs_text)
+            logs_media_type, logs_media_file_id, logs_media_caption = _upload_logs_as_document(logs_text)
 
     db_url = settings.get_database_url()
     engine, factory = _make_session_factory(db_url)
