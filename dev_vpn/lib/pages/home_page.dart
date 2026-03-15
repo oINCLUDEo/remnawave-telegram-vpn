@@ -360,9 +360,9 @@ class _HomePageState extends State<HomePage>
                                   fontWeight: FontWeight.w600, fontSize: 14,
                                   color: isSel ? DS.violet : DS.textPrimary),
                                   overflow: TextOverflow.ellipsis),
-                              Text(node.address, style: const TextStyle(
-                                  color: DS.textSecondary, fontSize: 12),
-                                  overflow: TextOverflow.ellipsis),
+                              if ((node.protocol ?? '').isNotEmpty)
+                                Text(node.protocol!.toUpperCase(), style: const TextStyle(
+                                    color: DS.textSecondary, fontSize: 12)),
                             ])),
                             if (isSel)
                               const Icon(Icons.check_circle_rounded, color: DS.violet, size: 20)
@@ -589,8 +589,8 @@ class _HomePageState extends State<HomePage>
                         color: _selectedNode != null ? DS.textPrimary : DS.violet,
                         fontWeight: FontWeight.w600, fontSize: 15),
                   ),
-                  if (_selectedNode != null)
-                    Text(_selectedNode!.address,
+                  if (_selectedNode != null && (_selectedNode!.protocol ?? '').isNotEmpty)
+                    Text(_selectedNode!.protocol!.toUpperCase(),
                         style: const TextStyle(color: DS.textSecondary, fontSize: 12)),
                 ])),
                 const Icon(Icons.chevron_right_rounded, color: DS.violet, size: 20),

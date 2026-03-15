@@ -487,14 +487,9 @@ class _NodeTile extends StatelessWidget {
                     color: isSelected ? accentColor : DS.textPrimary),
                     overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 3),
+                if ((node.protocol ?? '').isNotEmpty)
                 Row(children: [
-                  if ((node.protocol ?? '').isNotEmpty) ...[
-                    _ProtoBadge(protocol: node.protocol!),
-                    const SizedBox(width: 6),
-                  ],
-                  Flexible(child: Text(node.address,
-                      style: const TextStyle(color: DS.textSecondary, fontSize: 12),
-                      overflow: TextOverflow.ellipsis)),
+                  _ProtoBadge(protocol: node.protocol!),
                 ]),
               ])),
               const SizedBox(width: 8),
