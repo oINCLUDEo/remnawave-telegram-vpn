@@ -47,6 +47,8 @@ def _make_message(msg_id: int = 10, ticket_id: int = 1, is_from_admin: bool = Fa
     msg.ticket_id = ticket_id
     msg.message_text = 'Hello'
     msg.is_from_admin = is_from_admin
+    msg.has_media = False
+    msg.media_type = None
     from datetime import UTC, datetime
     msg.created_at = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
     return msg
@@ -197,6 +199,46 @@ async def test_create_ticket_limits_open_tickets():
             await create_ticket(body=body, x_telegram_id=111222333)
 
     assert exc_info.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_create_ticket_with_long_logs_does_not_return_422():
+    """Logs are stored as a file attachment, never appended to message_text.
+
+    A ticket with very long diagnostic logs must succeed regardless of log size.
+    """
+    from app.mobile.routes.support import MobileCreateTicketRequest, create_ticket
+
+    mock_db, mock_session_class, mock_engine = _db_ctx()
+    ticket = _make_ticket()
+    # Build a log payload that would previously exceed _MAX_MESSAGE_LEN when combined
+    long_logs = 'LOG LINE\n' * 1000  # ~9 000 chars
+
+    with (
+        patch('app.mobile.routes.support.settings') as mock_settings,
+        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
+        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
+        patch('app.mobile.routes.support.get_user_by_telegram_id',
+              new_callable=AsyncMock, return_value=_make_user()),
+        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
+        patch('app.mobile.routes.support._upload_logs_as_document',
+              new_callable=AsyncMock,
+              return_value=('document', '__inline_logs__', long_logs)),
+    ):
+        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+        mock_settings.BOT_TOKEN = None
+        mock_settings.ADMIN_NOTIFICATIONS_CHAT_ID = None
+        mock_crud.count_user_tickets_by_statuses = AsyncMock(return_value=0)
+        mock_crud.create_ticket = AsyncMock(return_value=ticket)
+
+        body = MobileCreateTicketRequest(
+            title='Bug report',
+            message='Short user message',
+            logs=long_logs,
+        )
+        result = await create_ticket(body=body, x_telegram_id=111222333)
+
+    assert result.id == ticket.id
 
 
 # ---------------------------------------------------------------------------

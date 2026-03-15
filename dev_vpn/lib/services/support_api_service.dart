@@ -51,12 +51,16 @@ class SupportTicketMessage {
   final String messageText;
   final bool isFromAdmin;
   final int createdAt;
+  final bool hasMedia;
+  final String? mediaType;
 
   const SupportTicketMessage({
     required this.id,
     required this.messageText,
     required this.isFromAdmin,
     required this.createdAt,
+    this.hasMedia = false,
+    this.mediaType,
   });
 
   factory SupportTicketMessage.fromJson(Map<String, dynamic> j) =>
@@ -65,6 +69,8 @@ class SupportTicketMessage {
         messageText: j['message_text'] as String? ?? '',
         isFromAdmin: j['is_from_admin'] as bool? ?? false,
         createdAt: (j['created_at'] as num?)?.toInt() ?? 0,
+        hasMedia: j['has_media'] as bool? ?? false,
+        mediaType: j['media_type'] as String?,
       );
 }
 

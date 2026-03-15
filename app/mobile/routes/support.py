@@ -28,6 +28,10 @@ from app.mobile.schemas.support import (
 )
 
 
+# Sentinel file_id used when logs are stored inline (no Telegram upload available).
+_INLINE_LOGS_FILE_ID = '__inline_logs__'
+
+
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
@@ -67,15 +71,52 @@ def _ticket_to_response(ticket) -> MobileTicketResponse:
 
 
 def _message_to_response(msg) -> MobileTicketMessageResponse:
+    has_media = bool(getattr(msg, 'has_media', False))
+    media_type = getattr(msg, 'media_type', None) if has_media else None
     return MobileTicketMessageResponse(
         id=msg.id,
         message_text=msg.message_text,
         is_from_admin=msg.is_from_admin,
         created_at=int(msg.created_at.timestamp()) if msg.created_at else 0,
+        has_media=has_media,
+        media_type=media_type,
     )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+
+async def _upload_logs_as_document(logs_text: str) -> tuple[str, str, str]:
+    """Upload logs as a Telegram document or fall back to inline storage.
+
+    Returns (media_type, media_file_id, media_caption).
+    """
+    bot_token = getattr(settings, 'BOT_TOKEN', None)
+    admin_chat_id = getattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None)
+    if bot_token and admin_chat_id:
+        try:
+            from aiogram import Bot
+            from aiogram.client.default import DefaultBotProperties
+            from aiogram.enums import ParseMode
+            from aiogram.types import BufferedInputFile
+
+            bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            try:
+                file = BufferedInputFile(logs_text.encode('utf-8'), filename='diagnostics.txt')
+                msg = await bot.send_document(
+                    chat_id=admin_chat_id,
+                    document=file,
+                    caption='📋 Диагностические логи',
+                )
+                if msg.document:
+                    return 'document', msg.document.file_id, 'Диагностические логи'
+            finally:
+                await bot.session.close()
+        except Exception as exc:
+            logger.warning('Failed to upload logs to Telegram, storing inline', error=str(exc))
+
+    # Fallback: store logs inline using a sentinel file_id
+    return 'document', _INLINE_LOGS_FILE_ID, logs_text
 
 
 @router.get(
@@ -120,15 +161,6 @@ async def create_ticket(
     title = (body.title or '').strip()
     message_text = (body.message or '').strip()
 
-    # Append diagnostic logs to the message text if provided
-    if body.logs:
-        logs_text = body.logs.strip()
-        if logs_text:
-            _MAX_LOGS_LEN = 8000
-            if len(logs_text) > _MAX_LOGS_LEN:
-                logs_text = logs_text[-_MAX_LOGS_LEN:]
-            message_text = f'{message_text}\n\n--- Диагностические логи ---\n{logs_text}'
-
     if not title:
         raise HTTPException(status_code=422, detail='Укажите тему обращения')
     if len(title) > _MAX_TITLE_LEN:
@@ -137,6 +169,15 @@ async def create_ticket(
         raise HTTPException(status_code=422, detail='Укажите текст сообщения')
     if len(message_text) > _MAX_MESSAGE_LEN:
         raise HTTPException(status_code=422, detail='Сообщение слишком длинное')
+
+    # Handle optional diagnostic logs as a file attachment (not appended to message)
+    logs_media_type: str | None = None
+    logs_media_file_id: str | None = None
+    logs_media_caption: str | None = None
+    if body.logs:
+        logs_text = body.logs.strip()
+        if logs_text:
+            logs_media_type, logs_media_file_id, logs_media_caption = await _upload_logs_as_document(logs_text)
 
     db_url = settings.get_database_url()
     engine, factory = _make_session_factory(db_url)
@@ -159,6 +200,9 @@ async def create_ticket(
                 user_id=user.id,
                 title=title,
                 message_text=message_text,
+                media_type=logs_media_type,
+                media_file_id=logs_media_file_id,
+                media_caption=logs_media_caption,
             )
     except HTTPException:
         raise

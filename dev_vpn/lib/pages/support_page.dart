@@ -606,6 +606,20 @@ class _MessageBubble extends StatelessWidget {
             Text(msg.messageText,
                 style: TextStyle(
                     color: isAdmin ? DS.textPrimary : Colors.white, fontSize: 14)),
+            if (msg.hasMedia) ...[
+              const SizedBox(height: 6),
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.attach_file_rounded,
+                    size: 13,
+                    color: isAdmin ? DS.textMuted : Colors.white70),
+                const SizedBox(width: 4),
+                Text('Логи прикреплены',
+                    style: TextStyle(
+                        color: isAdmin ? DS.textMuted : Colors.white70,
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic)),
+              ]),
+            ],
             const SizedBox(height: 4),
             Text(fmtDate(msg.createdAt),
                 style: TextStyle(

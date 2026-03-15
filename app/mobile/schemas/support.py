@@ -35,6 +35,8 @@ class MobileTicketMessageResponse(BaseModel):
     message_text: str
     is_from_admin: bool
     created_at: int  # Unix timestamp
+    has_media: bool = False
+    media_type: str | None = None
 
 
 class MobileTicketDetailResponse(MobileTicketResponse):
