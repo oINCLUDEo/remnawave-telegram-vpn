@@ -357,12 +357,12 @@ async def upgrade_subscription(
     x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
 ) -> UpgradeResponse:
     """
-    Upgrade (extend / add traffic / add devices) an existing subscription.
+    Upgrade an existing subscription by adding devices or traffic.
 
-    At least one of period_id, traffic_add, or devices_add must be provided.
-    When only traffic_add / devices_add are provided (no period_id), the
-    subscription duration is NOT extended – only the requested parameters change.
-    Deducts cost from balance; creates YooKassa payment if balance is insufficient.
+    Only one of traffic_add or devices_add should be provided per call.
+    Uses the same incremental pricing as the Telegram bot (not a full subscription reprice).
+    Subscription duration is NEVER extended here — only the requested parameter changes.
+    Deducts cost from balance; returns payment_required if balance is insufficient.
     """
     user, db, engine = await _get_db_user(x_telegram_id)
 
@@ -376,95 +376,162 @@ async def upgrade_subscription(
                 detail='Активная подписка не найдена',
             )
 
-        if not payload.period_id and payload.traffic_add is None and payload.devices_add is None:
+        if payload.traffic_add is None and payload.devices_add is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Укажите хотя бы один параметр улучшения',
+                detail='Укажите хотя бы один параметр улучшения: traffic_add или devices_add',
             )
 
+        from app.database.crud.subscription import add_subscription_traffic
+        from app.database.crud.transaction import create_transaction
         from app.database.crud.user import subtract_user_balance
-        from app.services.subscription_purchase_service import (
-            MiniAppSubscriptionPurchaseService,
-            PurchaseBalanceError,
-            PurchaseValidationError,
-        )
+        from app.database.models import TransactionType
+        from app.utils.pricing_utils import calculate_prorated_price
 
-        service = MiniAppSubscriptionPurchaseService()
-        context = await service.build_options(db, user)
+        # Fetch tariff if present
+        tariff = None
+        if getattr(subscription, 'tariff_id', None):
+            from app.database.crud.tariff import get_tariff_by_id
 
-        # Whether the user explicitly requested a period extension.
-        # When False (traffic/device-only upgrade), the subscription duration
-        # must not be changed.
-        extend_period = bool(payload.period_id)
+            tariff = await get_tariff_by_id(db, subscription.tariff_id)
 
-        # Determine the period – used for pricing even when not extending
-        period_id = payload.period_id
-        if not period_id and context.periods:
-            period_id = context.periods[0].id
+        price = 0
+        description = ''
 
-        if not period_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Период не определён')
+        if payload.devices_add and payload.devices_add > 0:
+            # ------------------------------------------------------------------
+            # Device upgrade – same logic as bot's confirm_change_devices
+            # ------------------------------------------------------------------
+            if tariff:
+                tariff_device_price = getattr(tariff, 'device_price_kopeks', None)
+                if not tariff_device_price or tariff_device_price <= 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail='Изменение устройств недоступно для вашего тарифа',
+                    )
+                price_per_device = tariff_device_price
+            else:
+                if not settings.is_devices_selection_enabled():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail='Изменение количества устройств недоступно',
+                    )
+                price_per_device = settings.PRICE_PER_DEVICE
 
-        # Build selection keeping current values as defaults
-        current_traffic = getattr(subscription, 'traffic_limit_gb', 0) or 0
-        current_devices = getattr(subscription, 'device_limit', 1)
-        current_servers = list(getattr(subscription, 'connected_squads', []) or [])
+            current_devices = getattr(subscription, 'device_limit', 1)
+            new_devices = current_devices + payload.devices_add
 
-        new_traffic = current_traffic + (payload.traffic_add or 0)
-        new_devices = current_devices + (payload.devices_add or 0)
-        new_servers = payload.servers if payload.servers is not None else current_servers
+            if settings.MAX_DEVICES_LIMIT > 0 and new_devices > settings.MAX_DEVICES_LIMIT:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f'Превышен максимальный лимит устройств ({settings.MAX_DEVICES_LIMIT})',
+                )
 
-        selection_dict: dict[str, Any] = {
-            'period_id': period_id,
-            'traffic_value': new_traffic if new_traffic > 0 else current_traffic,
-            'devices': new_devices,
-            'servers': new_servers,
-        }
+            # Chargeable devices: only above DEFAULT_DEVICE_LIMIT (free tier) unless tariff
+            if tariff:
+                chargeable = payload.devices_add
+            else:
+                free_remaining = max(0, settings.DEFAULT_DEVICE_LIMIT - current_devices)
+                chargeable = max(0, payload.devices_add - free_remaining)
 
-        selection = service.parse_selection(context, selection_dict)
-        pricing = await service.calculate_pricing(db, context, selection)
+            if chargeable > 0:
+                monthly_price = chargeable * price_per_device
+                price, _ = calculate_prorated_price(monthly_price, subscription.end_date)
+
+            description = f'Добавление {payload.devices_add} устройств (новый лимит: {new_devices})'
+
+        elif payload.traffic_add and payload.traffic_add > 0:
+            # ------------------------------------------------------------------
+            # Traffic upgrade – same logic as bot's add_traffic
+            # ------------------------------------------------------------------
+            if tariff:
+                if not tariff.can_topup_traffic():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail='На вашем тарифе докупка трафика недоступна',
+                    )
+                base_price = tariff.get_traffic_topup_price(payload.traffic_add) or 0
+                # Tariff price is already per-purchase (no prorating)
+                price = base_price
+            else:
+                if settings.is_traffic_topup_blocked():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail='В текущем режиме трафик фиксированный',
+                    )
+                base_price = settings.get_traffic_topup_price(payload.traffic_add)
+                if base_price == 0 and payload.traffic_add != 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail='Цена для этого пакета трафика не настроена',
+                    )
+                price, _ = calculate_prorated_price(base_price, subscription.end_date)
+
+            description = f'Добавление {payload.traffic_add} ГБ трафика'
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Значения должны быть положительными',
+            )
 
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
-        if extend_period:
-            # Full renewal (± traffic/devices): delegate to submit_purchase which
-            # also handles the subscription end_date extension.
-            if balance_kopeks >= pricing.final_total:
-                result = await service.submit_purchase(db, context, pricing)
-                sub = result.get('subscription')
-                return UpgradeResponse(
-                    status='success',
-                    message='Подписка улучшена',
-                    subscription=_serialize_subscription(sub),
+        if balance_kopeks >= price:
+            # Deduct balance
+            success = await subtract_user_balance(db, user, price, description)
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail='Недостаточно средств на балансе',
                 )
-        else:
-            # Traffic / device only upgrade: deduct balance and update fields
-            # directly – subscription end_date must NOT change.
-            if balance_kopeks >= pricing.final_total:
-                from datetime import datetime, timezone
 
-                now = datetime.now(timezone.utc)
-                success = await subtract_user_balance(
-                    db,
-                    user,
-                    pricing.final_total,
-                    'Апгрейд подписки (трафик/устройства)',
-                    consume_promo_offer=pricing.promo_discount_value > 0,
-                )
-                if not success:
-                    raise PurchaseBalanceError('Недостаточно средств на балансе')
-                if payload.traffic_add:
-                    subscription.traffic_limit_gb = new_traffic
-                if payload.devices_add:
-                    subscription.device_limit = new_devices
-                subscription.updated_at = now
+            # Apply the upgrade
+            if payload.devices_add and payload.devices_add > 0:
+                current_devices = getattr(subscription, 'device_limit', 1)
+                subscription.device_limit = current_devices + payload.devices_add
+                from datetime import UTC, datetime
+
+                subscription.updated_at = datetime.now(UTC)
                 await db.commit()
                 await db.refresh(subscription)
-                return UpgradeResponse(
-                    status='success',
-                    message='Подписка улучшена',
-                    subscription=_serialize_subscription(subscription),
+
+                # Sync with Remnawave
+                try:
+                    from app.services.subscription_service import SubscriptionService
+
+                    await SubscriptionService().update_remnawave_user(db, subscription)
+                except Exception as sync_err:
+                    logger.warning('mobile upgrade: failed to sync remnawave after device add', error=sync_err)
+
+            elif payload.traffic_add and payload.traffic_add > 0:
+                await add_subscription_traffic(db, subscription, payload.traffic_add)
+                await db.refresh(subscription)
+
+                # Sync with Remnawave
+                try:
+                    from app.services.subscription_service import SubscriptionService
+
+                    await SubscriptionService().update_remnawave_user(db, subscription)
+                except Exception as sync_err:
+                    logger.warning('mobile upgrade: failed to sync remnawave after traffic add', error=sync_err)
+
+            # Create transaction record (so it appears in bot history)
+            if price > 0:
+                await create_transaction(
+                    db=db,
+                    user_id=user.id,
+                    type=TransactionType.SUBSCRIPTION_PAYMENT,
+                    amount_kopeks=price,
+                    description=description,
                 )
+
+            await db.refresh(user)
+            return UpgradeResponse(
+                status='success',
+                message='Подписка улучшена',
+                subscription=_serialize_subscription(subscription),
+            )
 
         # Insufficient balance – create YooKassa payment
         if not settings.is_yookassa_enabled():
@@ -476,21 +543,15 @@ async def upgrade_subscription(
         from app.services.payment_service import PaymentService
 
         payment_service = PaymentService()
-        amount_kopeks = pricing.final_total
-        description = (
-            f'Улучшение подписки на {selection.period.days} дней'
-            if extend_period
-            else 'Апгрейд подписки (трафик/устройства)'
-        )
-
         payment_result = await payment_service.create_yookassa_payment(
             db=db,
             user_id=user.id,
-            amount_kopeks=amount_kopeks,
+            amount_kopeks=price,
             description=description,
             metadata={
                 'type': 'mobile_subscription_upgrade_topup',
-                'period_id': period_id,
+                'traffic_add': payload.traffic_add,
+                'devices_add': payload.devices_add,
             },
         )
 
@@ -500,33 +561,31 @@ async def upgrade_subscription(
                 detail='Не удалось создать платёж',
             )
 
-        # Save a cart so the auto-purchase service can activate the upgrade
-        # immediately after the payment is confirmed and the balance is credited.
+        # Save cart so auto-purchase activates upgrade after payment
         try:
             from app.services.user_cart_service import user_cart_service
 
-            cart_data: dict[str, Any] = {
-                'traffic_gb': selection.traffic_value,
-                'devices': selection.devices,
-                'countries': list(selection.servers),
-                'source': 'mobile',
-            }
-            # Only include period_days when the user explicitly requested extension
-            if extend_period:
-                cart_data['period_days'] = selection.period.days
+            cart_data: dict[str, Any] = {'source': 'mobile'}
+            if payload.devices_add:
+                cart_data['cart_mode'] = 'add_devices'
+                cart_data['devices_to_add'] = payload.devices_add
+                cart_data['price_kopeks'] = price
+            elif payload.traffic_add:
+                cart_data['cart_mode'] = 'add_traffic'
+                cart_data['subscription_id'] = subscription.id
+                cart_data['traffic_gb'] = payload.traffic_add
+                cart_data['price_kopeks'] = price
             await user_cart_service.save_user_cart(user.id, cart_data)
         except Exception as cart_err:
-            logger.warning('mobile upgrade: failed to save cart for auto-purchase', error=cart_err)
+            logger.warning('mobile upgrade: failed to save cart', error=cart_err)
 
         return UpgradeResponse(
             status='payment_required',
             message='Пополните баланс для улучшения подписки',
             payment_url=payment_result['confirmation_url'],
-            amount_kopeks=amount_kopeks,
+            amount_kopeks=price,
         )
 
-    except (PurchaseValidationError, PurchaseBalanceError) as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -556,8 +615,8 @@ async def calc_upgrade_price(
     x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
 ) -> UpgradeCalcResponse:
     """
-    Calculate the cost of upgrading an existing subscription without applying it.
-    Uses the same pricing logic as the upgrade endpoint.
+    Calculate the incremental cost of adding devices or traffic to an existing
+    subscription.  Uses the same pricing as the bot (prorated, not a full reprice).
     Returns amount_kopeks and amount_rub without making any changes.
     """
     user, db, engine = await _get_db_user(x_telegram_id)
@@ -572,42 +631,52 @@ async def calc_upgrade_price(
                 detail='Активная подписка не найдена',
             )
 
-        from app.services.subscription_purchase_service import (
-            MiniAppSubscriptionPurchaseService,
-            PurchaseValidationError,
-        )
+        if payload.traffic_add is None and payload.devices_add is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Укажите traffic_add или devices_add',
+            )
 
-        service = MiniAppSubscriptionPurchaseService()
-        context = await service.build_options(db, user)
+        from app.utils.pricing_utils import calculate_prorated_price
 
-        period_id = payload.period_id
-        if not period_id and context.periods:
-            period_id = context.periods[0].id
+        # Fetch tariff if present
+        tariff = None
+        if getattr(subscription, 'tariff_id', None):
+            from app.database.crud.tariff import get_tariff_by_id
 
-        if not period_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Период не определён')
+            tariff = await get_tariff_by_id(db, subscription.tariff_id)
 
-        current_traffic = getattr(subscription, 'traffic_limit_gb', 0) or 0
-        current_devices = getattr(subscription, 'device_limit', 1)
-        current_servers = list(getattr(subscription, 'connected_squads', []) or [])
+        price = 0
 
-        new_traffic = current_traffic + (payload.traffic_add or 0)
-        new_devices = current_devices + (payload.devices_add or 0)
-        new_servers = payload.servers if payload.servers is not None else current_servers
+        if payload.devices_add and payload.devices_add > 0:
+            if tariff:
+                tariff_device_price = getattr(tariff, 'device_price_kopeks', None)
+                if not tariff_device_price or tariff_device_price <= 0:
+                    return UpgradeCalcResponse(amount_kopeks=0, amount_rub=0)
+                price_per_device = tariff_device_price
+                chargeable = payload.devices_add
+            else:
+                price_per_device = settings.PRICE_PER_DEVICE
+                current_devices = getattr(subscription, 'device_limit', 1)
+                free_remaining = max(0, settings.DEFAULT_DEVICE_LIMIT - current_devices)
+                chargeable = max(0, payload.devices_add - free_remaining)
 
-        selection_dict: dict[str, Any] = {
-            'period_id': period_id,
-            'traffic_value': new_traffic if new_traffic > 0 else current_traffic,
-            'devices': new_devices,
-            'servers': new_servers,
-        }
+            if chargeable > 0:
+                monthly_price = chargeable * price_per_device
+                price, _ = calculate_prorated_price(monthly_price, subscription.end_date)
 
-        selection = service.parse_selection(context, selection_dict)
-        pricing = await service.calculate_pricing(db, context, selection)
+        elif payload.traffic_add and payload.traffic_add > 0:
+            if tariff:
+                if not tariff.can_topup_traffic():
+                    return UpgradeCalcResponse(amount_kopeks=0, amount_rub=0)
+                price = tariff.get_traffic_topup_price(payload.traffic_add) or 0
+            else:
+                base_price = settings.get_traffic_topup_price(payload.traffic_add)
+                price, _ = calculate_prorated_price(base_price, subscription.end_date)
 
         return UpgradeCalcResponse(
-            amount_kopeks=pricing.final_total,
-            amount_rub=round(pricing.final_total / 100, 2),
+            amount_kopeks=price,
+            amount_rub=round(price / 100, 2),
         )
 
     except HTTPException:
