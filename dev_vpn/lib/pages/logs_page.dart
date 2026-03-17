@@ -46,8 +46,8 @@ class _LogsPageState extends State<LogsPage> {
       final level = stateStr == 'CONNECTED'
           ? AppLogLevel.info
           : stateStr == 'DISCONNECTED'
-              ? AppLogLevel.warning
-              : AppLogLevel.debug;
+          ? AppLogLevel.warning
+          : AppLogLevel.debug;
       appLogger.log(level, 'V2Ray', '[STATE] $stateStr');
     }
 
@@ -160,7 +160,7 @@ class _LogsPageState extends State<LogsPage> {
           if (entries.isNotEmpty)
             Container(
               padding:
-                  const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
               decoration: BoxDecoration(
                 color: DS.violet.withValues(alpha: 0.22),
                 borderRadius: BorderRadius.circular(10),
@@ -218,36 +218,36 @@ class _LogsPageState extends State<LogsPage> {
                 color: DS.emerald,
                 selected: _filterLevel == AppLogLevel.info,
                 onTap: () => setState(() => _filterLevel =
-                    _filterLevel == AppLogLevel.info
-                        ? null
-                        : AppLogLevel.info)),
+                _filterLevel == AppLogLevel.info
+                    ? null
+                    : AppLogLevel.info)),
             const SizedBox(width: 6),
             _FilterChip(
                 label: 'WARN',
                 color: DS.amber,
                 selected: _filterLevel == AppLogLevel.warning,
                 onTap: () => setState(() => _filterLevel =
-                    _filterLevel == AppLogLevel.warning
-                        ? null
-                        : AppLogLevel.warning)),
+                _filterLevel == AppLogLevel.warning
+                    ? null
+                    : AppLogLevel.warning)),
             const SizedBox(width: 6),
             _FilterChip(
                 label: 'ERROR',
                 color: DS.rose,
                 selected: _filterLevel == AppLogLevel.error,
                 onTap: () => setState(() => _filterLevel =
-                    _filterLevel == AppLogLevel.error
-                        ? null
-                        : AppLogLevel.error)),
+                _filterLevel == AppLogLevel.error
+                    ? null
+                    : AppLogLevel.error)),
             const SizedBox(width: 6),
             _FilterChip(
                 label: 'DEBUG',
                 color: DS.violet,
                 selected: _filterLevel == AppLogLevel.debug,
                 onTap: () => setState(() => _filterLevel =
-                    _filterLevel == AppLogLevel.debug
-                        ? null
-                        : AppLogLevel.debug)),
+                _filterLevel == AppLogLevel.debug
+                    ? null
+                    : AppLogLevel.debug)),
           ]),
         ),
 
@@ -255,98 +255,98 @@ class _LogsPageState extends State<LogsPage> {
         Expanded(
           child: entries.isEmpty
               ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.terminal,
-                          size: 56, color: DS.textMuted),
-                      const SizedBox(height: 12),
-                      Text('Логов пока нет',
-                          style: TextStyle(
-                              color: DS.textSecondary, fontSize: 15)),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Запустите VPN чтобы увидеть события',
-                        style: TextStyle(
-                            color: DS.textMuted, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                )
-              : NotificationListener<ScrollNotification>(
-                  onNotification: (n) {
-                    if (n is ScrollUpdateNotification &&
-                        _scrollCtrl.hasClients) {
-                      final atBottom =
-                          _scrollCtrl.position.pixels >=
-                              _scrollCtrl.position.maxScrollExtent - 80;
-                      if (_autoScroll != atBottom) {
-                        setState(() => _autoScroll = atBottom);
-                      }
-                    }
-                    return false;
-                  },
-                  child: ListView.builder(
-                    controller: _scrollCtrl,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 8),
-                    itemCount: entries.length,
-                    itemBuilder: (_, i) {
-                      final entry = entries[i];
-                      return Padding(
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 1.5),
-                        child: RichText(
-                          text: TextSpan(
-                            style: const TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 11,
-                                height: 1.5),
-                            children: [
-                              TextSpan(
-                                text: entry.timeStr,
-                                style:
-                                    const TextStyle(color: DS.textMuted),
-                              ),
-                              const TextSpan(text: '  '),
-                              TextSpan(
-                                text:
-                                    '[${entry.level.label}]',
-                                style: TextStyle(
-                                    color:
-                                        _levelColor(entry.level)),
-                              ),
-                              TextSpan(
-                                text: ' [${entry.source}] ',
-                                style: const TextStyle(
-                                    color: DS.textSecondary),
-                              ),
-                              TextSpan(
-                                text: entry.message,
-                                style: TextStyle(
-                                    color: _levelColor(entry.level)
-                                        .withValues(alpha: 0.9)),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.terminal,
+                    size: 56, color: DS.textMuted),
+                const SizedBox(height: 12),
+                Text('Логов пока нет',
+                    style: TextStyle(
+                        color: DS.textSecondary, fontSize: 15)),
+                const SizedBox(height: 4),
+                Text(
+                  'Запустите VPN чтобы увидеть события',
+                  style: TextStyle(
+                      color: DS.textMuted, fontSize: 12),
                 ),
+              ],
+            ),
+          )
+              : NotificationListener<ScrollNotification>(
+            onNotification: (n) {
+              if (n is ScrollUpdateNotification &&
+                  _scrollCtrl.hasClients) {
+                final atBottom =
+                    _scrollCtrl.position.pixels >=
+                        _scrollCtrl.position.maxScrollExtent - 80;
+                if (_autoScroll != atBottom) {
+                  setState(() => _autoScroll = atBottom);
+                }
+              }
+              return false;
+            },
+            child: ListView.builder(
+              controller: _scrollCtrl,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 8),
+              itemCount: entries.length,
+              itemBuilder: (_, i) {
+                final entry = entries[i];
+                return Padding(
+                  padding:
+                  const EdgeInsets.symmetric(vertical: 1.5),
+                  child: RichText(
+                    text: TextSpan(
+                      style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          height: 1.5),
+                      children: [
+                        TextSpan(
+                          text: entry.timeStr,
+                          style:
+                          const TextStyle(color: DS.textMuted),
+                        ),
+                        const TextSpan(text: '  '),
+                        TextSpan(
+                          text:
+                          '[${entry.level.label}]',
+                          style: TextStyle(
+                              color:
+                              _levelColor(entry.level)),
+                        ),
+                        TextSpan(
+                          text: ' [${entry.source}] ',
+                          style: const TextStyle(
+                              color: DS.textSecondary),
+                        ),
+                        TextSpan(
+                          text: entry.message,
+                          style: TextStyle(
+                              color: _levelColor(entry.level)
+                                  .withValues(alpha: 0.9)),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
         ),
       ]),
 
       // FAB — scroll to bottom
       floatingActionButton: (!_autoScroll && entries.isNotEmpty)
           ? FloatingActionButton.small(
-              onPressed: () {
-                setState(() => _autoScroll = true);
-                _scrollToBottom();
-              },
-              backgroundColor: DS.violet,
-              child: const Icon(Icons.keyboard_double_arrow_down),
-            )
+        onPressed: () {
+          setState(() => _autoScroll = true);
+          _scrollToBottom();
+        },
+        backgroundColor: DS.violet,
+        child: const Icon(Icons.keyboard_double_arrow_down),
+      )
           : null,
     );
   }
@@ -390,11 +390,10 @@ class _FilterChip extends StatelessWidget {
             color: selected ? c : DS.textMuted,
             fontSize: 11,
             fontWeight:
-                selected ? FontWeight.w700 : FontWeight.w500,
+            selected ? FontWeight.w700 : FontWeight.w500,
           ),
         ),
       ),
     );
   }
 }
-

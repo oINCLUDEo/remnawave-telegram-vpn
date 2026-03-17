@@ -28,13 +28,13 @@ class SupportTicket {
   });
 
   factory SupportTicket.fromJson(Map<String, dynamic> j) => SupportTicket(
-        id: j['id'] as int,
-        title: j['title'] as String? ?? '',
-        status: j['status'] as String? ?? 'open',
-        priority: j['priority'] as String? ?? 'normal',
-        createdAt: (j['created_at'] as num?)?.toInt() ?? 0,
-        updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
-      );
+    id: j['id'] as int,
+    title: j['title'] as String? ?? '',
+    status: j['status'] as String? ?? 'open',
+    priority: j['priority'] as String? ?? 'normal',
+    createdAt: (j['created_at'] as num?)?.toInt() ?? 0,
+    updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
+  );
 
   String get statusLabel {
     switch (status) {
@@ -153,10 +153,10 @@ class SupportApiService {
       if (logs != null && logs.isNotEmpty) body['logs'] = logs;
       final resp = await http
           .post(
-            Uri.parse('$_base/tickets'),
-            headers: _headers(),
-            body: jsonEncode(body),
-          )
+        Uri.parse('$_base/tickets'),
+        headers: _headers(),
+        body: jsonEncode(body),
+      )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 201) {
         return SupportTicket.fromJson(
@@ -196,10 +196,10 @@ class SupportApiService {
     try {
       final resp = await http
           .post(
-            Uri.parse('$_base/tickets/$ticketId/messages'),
-            headers: _headers(),
-            body: jsonEncode({'message': message}),
-          )
+        Uri.parse('$_base/tickets/$ticketId/messages'),
+        headers: _headers(),
+        body: jsonEncode({'message': message}),
+      )
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode == 201) {
         return SupportTicketMessage.fromJson(

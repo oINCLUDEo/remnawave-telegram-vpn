@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:country_flags/country_flags.dart';
 import 'package:flutter/material.dart';
@@ -18,7 +17,6 @@ import '../services/selected_server_state.dart';
 import '../utils/speed_calculator.dart';
 import '../widgets/telegram_login_button.dart';
 import 'auth_bottom_sheet.dart';
-import 'config_editor_page.dart';
 import '../main.dart' show DS;
 
 class HomePage extends StatefulWidget {
@@ -204,19 +202,6 @@ class _HomePageState extends State<HomePage>
     }
   }
 
-  void _openConfigEditor(ServerNode node) {
-    if (node.link == null) { _snack('Нет ссылки'); return; }
-    try {
-      final parser = FlutterV2ray.parseFromURL(node.link!);
-      final json = const JsonEncoder.withIndent('  ')
-          .convert(jsonDecode(parser.getFullConfiguration()));
-      Navigator.push(context, MaterialPageRoute(
-        builder: (_) => ConfigEditorPage(configJson: json, configName: node.name),
-      ));
-    } catch (e) { _snack('Не удалось разобрать конфиг: $e'); }
-  }
-
-  // ── Server picker sheet ────────────────────────────────────────────────────
   void _showServerPicker() {
     String? selectedCat;
     showModalBottomSheet<void>(
@@ -322,7 +307,7 @@ class _HomePageState extends State<HomePage>
                   controller: scrollCtrl,
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   itemCount: nodes.length,
-                  separatorBuilder: (_, __) => Divider(height: 1, indent: 16, endIndent: 16, color: DS.border),
+                  separatorBuilder: (_, _) => Divider(height: 1, indent: 16, endIndent: 16, color: DS.border),
                   itemBuilder: (_, i) {
                     final node = nodes[i];
                     final isSel = _selectedNode?.uuid == node.uuid;
@@ -391,15 +376,6 @@ class _HomePageState extends State<HomePage>
     ));
   }
 
-  String _countryEmoji(String code) {
-    if (code.length != 2) return '🌐';
-    final u = code.toUpperCase();
-    final f = u.codeUnitAt(0), s = u.codeUnitAt(1);
-    if (f < 0x41 || f > 0x5A || s < 0x41 || s > 0x5A) return '🌐';
-    const base = 0x1F1E6 - 0x41;
-    return String.fromCharCode(base + f) + String.fromCharCode(base + s);
-  }
-
   String _fmtBytes(int b) {
     if (b < 1024) return '${b}B';
     if (b < 1024 * 1024) return '${(b / 1024).toStringAsFixed(1)}KB';
@@ -409,7 +385,7 @@ class _HomePageState extends State<HomePage>
 
   String _fmtDuration(int sec) {
     final h = sec ~/ 3600, m = (sec % 3600) ~/ 60, s = sec % 60;
-    if (h > 0) return '${h}ч ${m.toString().padLeft(2, '0')}м';
+    if (h > 0) return '$hч ${m.toString().padLeft(2, '0')}м';
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
@@ -695,46 +671,46 @@ class _HomePageState extends State<HomePage>
         else if (_isPublicCatalog && !authState.isLoggedIn)
           _LoginPrompt()
         else if (_isPublicCatalog && authState.isLoggedIn)
-          _NoPlanPrompt(onGoToPremium: widget.onGoToPremium)
-        else if (info != null) ...[
-            // Big traffic numbers
-            Row(crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic, children: [
-                  Text(info.formattedUsed, style: const TextStyle(
-                      color: DS.textPrimary, fontSize: 28, fontWeight: FontWeight.w800, height: 1)),
-                  const SizedBox(width: 6),
-                  Text('/ ${info.formattedTotal}',
-                      style: const TextStyle(color: DS.textMuted, fontSize: 15)),
+            _NoPlanPrompt(onGoToPremium: widget.onGoToPremium)
+          else if (info != null) ...[
+              // Big traffic numbers
+              Row(crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic, children: [
+                    Text(info.formattedUsed, style: const TextStyle(
+                        color: DS.textPrimary, fontSize: 28, fontWeight: FontWeight.w800, height: 1)),
+                    const SizedBox(width: 6),
+                    Text('/ ${info.formattedTotal}',
+                        style: const TextStyle(color: DS.textMuted, fontSize: 15)),
+                  ]),
+              const SizedBox(height: 12),
+
+              // Progress bar
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: Stack(children: [
+                  Container(height: 6, color: DS.surface3),
+                  FractionallySizedBox(
+                    widthFactor: info.usedFraction.clamp(0.0, 1.0),
+                    child: Container(height: 6,
+                        decoration: BoxDecoration(
+                          color: _progressColor(info.usedFraction),
+                          boxShadow: [BoxShadow(
+                              color: _progressColor(info.usedFraction).withValues(alpha: 0.5),
+                              blurRadius: 8)],
+                        )),
+                  ),
                 ]),
-            const SizedBox(height: 12),
+              ),
+              const SizedBox(height: 10),
 
-            // Progress bar
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: Stack(children: [
-                Container(height: 6, color: DS.surface3),
-                FractionallySizedBox(
-                  widthFactor: info.usedFraction.clamp(0.0, 1.0),
-                  child: Container(height: 6,
-                      decoration: BoxDecoration(
-                        color: _progressColor(info.usedFraction),
-                        boxShadow: [BoxShadow(
-                            color: _progressColor(info.usedFraction).withValues(alpha: 0.5),
-                            blurRadius: 8)],
-                      )),
-                ),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text('Осталось: ${_remaining(info)}',
+                    style: const TextStyle(color: DS.textSecondary, fontSize: 12)),
+                Text('${(info.usedFraction * 100).toStringAsFixed(1)}%', style: TextStyle(
+                    color: _progressColor(info.usedFraction),
+                    fontSize: 12, fontWeight: FontWeight.w600)),
               ]),
-            ),
-            const SizedBox(height: 10),
-
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text('Осталось: ${_remaining(info)}',
-                  style: const TextStyle(color: DS.textSecondary, fontSize: 12)),
-              Text('${(info.usedFraction * 100).toStringAsFixed(1)}%', style: TextStyle(
-                  color: _progressColor(info.usedFraction),
-                  fontSize: 12, fontWeight: FontWeight.w600)),
-            ]),
-          ],
+            ],
       ]),
     );
   }
@@ -811,7 +787,7 @@ class _SpeedTile extends StatelessWidget {
       tween: Tween<double>(begin: 0, end: speed),
       duration: const Duration(milliseconds: 350),
       curve: Curves.easeOutCubic,
-      builder: (_, v, __) => Text(_fmt(v), style: TextStyle(
+      builder: (_, v, _) => Text(_fmt(v), style: TextStyle(
           color: color, fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 0.2)),
     ),
     const SizedBox(height: 3),
@@ -959,7 +935,7 @@ class VpnIconBtn extends StatelessWidget {
   final bool loading;
   final IconData icon;
   final VoidCallback? onTap;
-  const VpnIconBtn({required this.loading, required this.icon, this.onTap});
+  const VpnIconBtn({super.key, required this.loading, required this.icon, this.onTap});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
@@ -1003,7 +979,7 @@ class _Chip extends StatelessWidget {
 
 class VpnInfoBanner extends StatelessWidget {
   final Color color; final String text;
-  const VpnInfoBanner({required this.color, required this.text});
+  const VpnInfoBanner({super.key, required this.color, required this.text});
 
   @override
   Widget build(BuildContext context) => Container(

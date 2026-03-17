@@ -40,20 +40,20 @@ class AppLogEntry {
   // ── Serialization ──────────────────────────────────────────────────────────
 
   Map<String, dynamic> toJson() => {
-        'ts': timestamp.millisecondsSinceEpoch,
-        'lv': level.index,
-        'src': source,
-        'msg': message,
-      };
+    'ts': timestamp.millisecondsSinceEpoch,
+    'lv': level.index,
+    'src': source,
+    'msg': message,
+  };
 
   factory AppLogEntry.fromJson(Map<String, dynamic> json) => AppLogEntry(
-        timestamp: DateTime.fromMillisecondsSinceEpoch(
-            (json['ts'] as num).toInt()),
-        level: AppLogLevel.values[(json['lv'] as num).toInt()
-            .clamp(0, AppLogLevel.values.length - 1)],
-        source: json['src'] as String? ?? '',
-        message: json['msg'] as String? ?? '',
-      );
+    timestamp: DateTime.fromMillisecondsSinceEpoch(
+        (json['ts'] as num).toInt()),
+    level: AppLogLevel.values[(json['lv'] as num).toInt()
+        .clamp(0, AppLogLevel.values.length - 1)],
+    source: json['src'] as String? ?? '',
+    message: json['msg'] as String? ?? '',
+  );
 
   // ── Display ────────────────────────────────────────────────────────────────
 
@@ -81,7 +81,7 @@ class AppLogger {
   static AppLogger get instance => _instance;
 
   final ValueNotifier<List<AppLogEntry>> logsNotifier =
-      ValueNotifier<List<AppLogEntry>>([]);
+  ValueNotifier<List<AppLogEntry>>([]);
 
   bool _loaded = false;
 
@@ -106,7 +106,7 @@ class AppLogger {
     try {
       final prefs = await SharedPreferences.getInstance();
       final encoded =
-          jsonEncode(logsNotifier.value.map((e) => e.toJson()).toList());
+      jsonEncode(logsNotifier.value.map((e) => e.toJson()).toList());
       await prefs.setString(_kPrefKey, encoded);
     } catch (_) {}
   }

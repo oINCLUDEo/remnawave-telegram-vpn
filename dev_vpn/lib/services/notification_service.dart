@@ -96,7 +96,7 @@ class NotificationService {
 
   /// Currently visible notifications.
   final ValueNotifier<List<InAppNotification>> activeNotifications =
-      ValueNotifier<List<InAppNotification>>([]);
+  ValueNotifier<List<InAppNotification>>([]);
 
   Set<String> _dismissed = {};
 
@@ -160,7 +160,7 @@ class NotificationService {
 
   void dismiss(String id) {
     final notif = activeNotifications.value.firstWhere(
-      (n) => n.id == id,
+          (n) => n.id == id,
       orElse: () => const InAppNotification(id: '', title: '', body: ''),
     );
     if (notif.type == InAppNotifType.oneTime) {
