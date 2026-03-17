@@ -23,6 +23,7 @@ from app.mobile.schemas.subscription import (
     SubscriptionOptionsResponse,
     SubscriptionSelectionRequest,
     SubscriptionUpgradeRequest,
+    UpgradeCalcResponse,
     UpgradeResponse,
 )
 
@@ -359,6 +360,8 @@ async def upgrade_subscription(
     Upgrade (extend / add traffic / add devices) an existing subscription.
 
     At least one of period_id, traffic_add, or devices_add must be provided.
+    When only traffic_add / devices_add are provided (no period_id), the
+    subscription duration is NOT extended – only the requested parameters change.
     Deducts cost from balance; creates YooKassa payment if balance is insufficient.
     """
     user, db, engine = await _get_db_user(x_telegram_id)
@@ -379,6 +382,7 @@ async def upgrade_subscription(
                 detail='Укажите хотя бы один параметр улучшения',
             )
 
+        from app.database.crud.user import subtract_user_balance
         from app.services.subscription_purchase_service import (
             MiniAppSubscriptionPurchaseService,
             PurchaseBalanceError,
@@ -388,7 +392,12 @@ async def upgrade_subscription(
         service = MiniAppSubscriptionPurchaseService()
         context = await service.build_options(db, user)
 
-        # Determine the period – use the shortest available if not specified
+        # Whether the user explicitly requested a period extension.
+        # When False (traffic/device-only upgrade), the subscription duration
+        # must not be changed.
+        extend_period = bool(payload.period_id)
+
+        # Determine the period – used for pricing even when not extending
         period_id = payload.period_id
         if not period_id and context.periods:
             period_id = context.periods[0].id
@@ -417,14 +426,45 @@ async def upgrade_subscription(
 
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
-        if balance_kopeks >= pricing.final_total:
-            result = await service.submit_purchase(db, context, pricing)
-            sub = result.get('subscription')
-            return UpgradeResponse(
-                status='success',
-                message='Подписка улучшена',
-                subscription=_serialize_subscription(sub),
-            )
+        if extend_period:
+            # Full renewal (± traffic/devices): delegate to submit_purchase which
+            # also handles the subscription end_date extension.
+            if balance_kopeks >= pricing.final_total:
+                result = await service.submit_purchase(db, context, pricing)
+                sub = result.get('subscription')
+                return UpgradeResponse(
+                    status='success',
+                    message='Подписка улучшена',
+                    subscription=_serialize_subscription(sub),
+                )
+        else:
+            # Traffic / device only upgrade: deduct balance and update fields
+            # directly – subscription end_date must NOT change.
+            if balance_kopeks >= pricing.final_total:
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
+                success = await subtract_user_balance(
+                    db,
+                    user,
+                    pricing.final_total,
+                    'Апгрейд подписки (трафик/устройства)',
+                    consume_promo_offer=pricing.promo_discount_value > 0,
+                )
+                if not success:
+                    raise PurchaseBalanceError('Недостаточно средств на балансе')
+                if payload.traffic_add:
+                    subscription.traffic_limit_gb = new_traffic
+                if payload.devices_add:
+                    subscription.device_limit = new_devices
+                subscription.updated_at = now
+                await db.commit()
+                await db.refresh(subscription)
+                return UpgradeResponse(
+                    status='success',
+                    message='Подписка улучшена',
+                    subscription=_serialize_subscription(subscription),
+                )
 
         # Insufficient balance – create YooKassa payment
         if not settings.is_yookassa_enabled():
@@ -437,7 +477,11 @@ async def upgrade_subscription(
 
         payment_service = PaymentService()
         amount_kopeks = pricing.final_total
-        description = f'Улучшение подписки на {selection.period.days} дней'
+        description = (
+            f'Улучшение подписки на {selection.period.days} дней'
+            if extend_period
+            else 'Апгрейд подписки (трафик/устройства)'
+        )
 
         payment_result = await payment_service.create_yookassa_payment(
             db=db,
@@ -462,12 +506,14 @@ async def upgrade_subscription(
             from app.services.user_cart_service import user_cart_service
 
             cart_data: dict[str, Any] = {
-                'period_days': selection.period.days,
                 'traffic_gb': selection.traffic_value,
                 'devices': selection.devices,
                 'countries': list(selection.servers),
                 'source': 'mobile',
             }
+            # Only include period_days when the user explicitly requested extension
+            if extend_period:
+                cart_data['period_days'] = selection.period.days
             await user_cart_service.save_user_cart(user.id, cart_data)
         except Exception as cart_err:
             logger.warning('mobile upgrade: failed to save cart for auto-purchase', error=cart_err)
@@ -488,6 +534,89 @@ async def upgrade_subscription(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при улучшении подписки',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/upgrade/calc
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    '/subscription/upgrade/calc',
+    response_model=UpgradeCalcResponse,
+    summary='Рассчитать стоимость улучшения подписки',
+    tags=['mobile'],
+)
+async def calc_upgrade_price(
+    payload: SubscriptionUpgradeRequest,
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> UpgradeCalcResponse:
+    """
+    Calculate the cost of upgrading an existing subscription without applying it.
+    Uses the same pricing logic as the upgrade endpoint.
+    Returns amount_kopeks and amount_rub without making any changes.
+    """
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        await db.refresh(user, ['subscription'])
+        subscription = getattr(user, 'subscription', None)
+
+        if subscription is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Активная подписка не найдена',
+            )
+
+        from app.services.subscription_purchase_service import (
+            MiniAppSubscriptionPurchaseService,
+            PurchaseValidationError,
+        )
+
+        service = MiniAppSubscriptionPurchaseService()
+        context = await service.build_options(db, user)
+
+        period_id = payload.period_id
+        if not period_id and context.periods:
+            period_id = context.periods[0].id
+
+        if not period_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Период не определён')
+
+        current_traffic = getattr(subscription, 'traffic_limit_gb', 0) or 0
+        current_devices = getattr(subscription, 'device_limit', 1)
+        current_servers = list(getattr(subscription, 'connected_squads', []) or [])
+
+        new_traffic = current_traffic + (payload.traffic_add or 0)
+        new_devices = current_devices + (payload.devices_add or 0)
+        new_servers = payload.servers if payload.servers is not None else current_servers
+
+        selection_dict: dict[str, Any] = {
+            'period_id': period_id,
+            'traffic_value': new_traffic if new_traffic > 0 else current_traffic,
+            'devices': new_devices,
+            'servers': new_servers,
+        }
+
+        selection = service.parse_selection(context, selection_dict)
+        pricing = await service.calculate_pricing(db, context, selection)
+
+        return UpgradeCalcResponse(
+            amount_kopeks=pricing.final_total,
+            amount_rub=round(pricing.final_total / 100, 2),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error calculating upgrade price', telegram_id=x_telegram_id, error=exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
         ) from exc
     finally:
         await db.close()

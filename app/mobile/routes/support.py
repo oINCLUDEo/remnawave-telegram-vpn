@@ -274,3 +274,41 @@ async def reply_to_ticket(
         await engine.dispose()
 
     return _message_to_response(msg)
+
+
+@router.post(
+    '/tickets/{ticket_id}/close',
+    response_model=MobileTicketResponse,
+    summary='Закрыть тикет',
+    tags=['mobile'],
+)
+async def close_ticket(
+    ticket_id: int = Path(..., gt=0),
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> MobileTicketResponse:
+    """Close an open support ticket. Only the ticket owner can close it."""
+    db_url = settings.get_database_url()
+    engine, factory = _make_session_factory(db_url)
+    try:
+        async with factory() as db:
+            user = await _get_user_or_raise(db, x_telegram_id)
+            ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False)
+            if not ticket or ticket.user_id != user.id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
+            if ticket.status == TicketStatus.CLOSED.value:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail='Тикет уже закрыт'
+                )
+            closed = await TicketCRUD.close_ticket(db, ticket_id)
+            if not closed:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Не удалось закрыть тикет')
+            await db.refresh(ticket)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Mobile POST /support/tickets/{id}/close error', ticket_id=ticket_id, error=exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Ошибка базы данных') from exc
+    finally:
+        await engine.dispose()
+
+    return _ticket_to_response(ticket)

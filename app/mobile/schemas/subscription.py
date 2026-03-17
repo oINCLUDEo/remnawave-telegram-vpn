@@ -110,3 +110,10 @@ class BalanceTopupResponse(BaseModel):
     payment_url: str | None = None
     message: str | None = None
     amount_kopeks: int | None = None
+
+
+class UpgradeCalcResponse(BaseModel):
+    """Response from POST /mobile/v1/subscription/upgrade/calc."""
+
+    amount_kopeks: int
+    amount_rub: float

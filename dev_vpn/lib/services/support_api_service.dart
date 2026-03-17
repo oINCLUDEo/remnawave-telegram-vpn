@@ -213,6 +213,28 @@ class SupportApiService {
     }
   }
 
+  /// POST /mobile/v1/support/tickets/{id}/close
+  static Future<SupportTicket?> closeTicket(int ticketId) async {
+    try {
+      final resp = await http
+          .post(
+        Uri.parse('$_base/tickets/$ticketId/close'),
+        headers: _headers(),
+        body: '{}',
+      )
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        return SupportTicket.fromJson(
+            jsonDecode(resp.body) as Map<String, dynamic>);
+      }
+      debugPrint('SupportApiService.closeTicket: ${resp.statusCode} ${resp.body}');
+      return null;
+    } on Exception catch (e) {
+      debugPrint('SupportApiService.closeTicket error: $e');
+      return null;
+    }
+  }
+
   /// Decode a backend error response to a user-friendly string.
   static String errorFromResponse(String body) {
     try {

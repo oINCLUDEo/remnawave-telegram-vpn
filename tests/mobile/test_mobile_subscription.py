@@ -16,10 +16,12 @@ import pytest
 from app.mobile.routes.subscription import (
     buy_subscription,
     calc_subscription_price,
+    calc_upgrade_price,
     get_balance,
     get_subscription_options,
     set_autopay,
     topup_balance,
+    upgrade_subscription,
 )
 
 
@@ -448,3 +450,117 @@ async def test_buy_subscription_saves_cart_on_insufficient_balance():
     saved_cart = call_args[0][1] if call_args[0] else call_args[1].get('cart_data') or list(call_args[1].values())[0]
     assert saved_cart.get('period_days') == 30
     assert saved_cart.get('source') == 'mobile'
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/upgrade/calc
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_calc_upgrade_price_returns_amount():
+    """upgrade/calc returns amount_kopeks without applying any changes."""
+    user = _make_user()
+    sub = _make_subscription()
+    user.subscription = sub
+    mock_db, mock_session_class, mock_engine = _db_patch(user)
+
+    mock_period = MagicMock()
+    mock_period.id = 'days:30'
+    mock_period.days = 30
+    mock_context = MagicMock()
+    mock_context.periods = [mock_period]
+
+    mock_pricing = MagicMock()
+    mock_pricing.final_total = 8000
+
+    mock_service = MagicMock()
+    mock_service.build_options = AsyncMock(return_value=mock_context)
+    mock_service.parse_selection = MagicMock(return_value=MagicMock())
+    mock_service.calculate_pricing = AsyncMock(return_value=mock_pricing)
+
+    from app.mobile.schemas.subscription import SubscriptionUpgradeRequest
+
+    with (
+        patch('app.mobile.routes.subscription.settings') as mock_settings,
+        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
+        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
+        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
+        patch(
+            'app.services.subscription_purchase_service.MiniAppSubscriptionPurchaseService',
+            return_value=mock_service,
+        ),
+    ):
+        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+        result = await calc_upgrade_price(
+            payload=SubscriptionUpgradeRequest(traffic_add=50),
+            x_telegram_id=123456789,
+        )
+
+    assert result.amount_kopeks == 8000
+    assert result.amount_rub == 80.0
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/upgrade — traffic-only (no period extension)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upgrade_subscription_traffic_only_does_not_extend_period():
+    """Traffic-only upgrade must NOT extend the subscription end_date."""
+    from datetime import UTC, datetime
+
+    user = _make_user(balance_kopeks=50000)
+    sub = _make_subscription()
+    original_end_date = sub.end_date
+    user.subscription = sub
+    mock_db, mock_session_class, mock_engine = _db_patch(user)
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock(side_effect=lambda obj, attrs=None: None)
+
+    mock_period = MagicMock()
+    mock_period.id = 'days:30'
+    mock_period.days = 30
+    mock_context = MagicMock()
+    mock_context.periods = [mock_period]
+
+    mock_pricing = MagicMock()
+    mock_pricing.final_total = 5000
+    mock_pricing.promo_discount_value = 0
+
+    mock_service = MagicMock()
+    mock_service.build_options = AsyncMock(return_value=mock_context)
+    mock_service.parse_selection = MagicMock(return_value=MagicMock())
+    mock_service.calculate_pricing = AsyncMock(return_value=mock_pricing)
+
+    from app.mobile.schemas.subscription import SubscriptionUpgradeRequest
+
+    with (
+        patch('app.mobile.routes.subscription.settings') as mock_settings,
+        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
+        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
+        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
+        patch(
+            'app.services.subscription_purchase_service.MiniAppSubscriptionPurchaseService',
+            return_value=mock_service,
+        ),
+        patch(
+            'app.database.crud.user.subtract_user_balance',
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+        result = await upgrade_subscription(
+            payload=SubscriptionUpgradeRequest(traffic_add=50),
+            x_telegram_id=123456789,
+        )
+
+    assert result.status == 'success'
+    # end_date must not have been modified
+    assert sub.end_date == original_end_date
+    # traffic_limit_gb must have been incremented
+    assert sub.traffic_limit_gb == 150
+    # submit_purchase (which extends period) must NOT have been called
+    mock_service.submit_purchase.assert_not_called()
