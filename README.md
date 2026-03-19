@@ -183,6 +183,10 @@ docker compose up -d
    docker compose up -d --build bot
    ```
    Если наружу нужен другой порт (например 8080 вместо дефолтного 8081), задайте `WEB_API_PORT=8080` в `.env` перед запуском.
+   Если Docker жалуется на `invalid pool request: Pool overlaps with other one`, удалите старую сеть и запустите ещё раз — в новой версии подсеть не фиксируется:
+   ```bash
+   docker network rm remnawave-telegram-vpn_bot_network || true
+   ```
 4. Проверить готовность:
    ```bash
    curl http://localhost:${WEB_API_PORT:-8081}/health
