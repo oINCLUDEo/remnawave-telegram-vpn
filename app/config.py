@@ -26,8 +26,6 @@ logger = structlog.get_logger(__name__)
 
 
 class Settings(BaseSettings):
-    TELEGRAM_BOT_ENABLED: bool = True
-
     BOT_TOKEN: str | None = None
     BOT_USERNAME: str | None = None
     ADMIN_IDS: str = ''
