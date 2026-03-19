@@ -289,33 +289,24 @@ async def main():
                 stage.warning(f'Не удалось загрузить конфигурацию: {error}')
                 logger.error('❌ Не удалось загрузить конфигурацию', error=error)
 
-        bot = None
-        dp = None
-        if settings.TELEGRAM_BOT_ENABLED:
-            async with timeline.stage('Настройка бота', '🤖', success_message='Бот настроен') as stage:
-                bot, dp = await setup_bot()
-                stage.log('Кеш и FSM подготовлены')
-        else:
-            timeline.add_manual_step(
-                'Настройка бота',
-                '⏭️',
-                'Пропущено',
-                'TELEGRAM_BOT_ENABLED=false (API-only режим)',
-            )
+        async with timeline.stage('Настройка бота', '🤖', success_message='Бот настроен') as stage:
+            bot, dp = await setup_bot()
+            if not bot:
+                raise RuntimeError('Telegram bot must be configured')
+            stage.log('Кеш и FSM подготовлены')
 
-        if bot:
-            bot_user = await bot.get_me()
-            if bot_user.username and not settings.BOT_USERNAME:
-                settings.BOT_USERNAME = bot_user.username
-                logger.info('BOT_USERNAME auto-detected', bot_username=bot_user.username)
+        bot_user = await bot.get_me()
+        if bot_user.username and not settings.BOT_USERNAME:
+            settings.BOT_USERNAME = bot_user.username
+            logger.info('BOT_USERNAME auto-detected', bot_username=bot_user.username)
 
-            monitoring_service.bot = bot
-            maintenance_service.set_bot(bot)
-            broadcast_service.set_bot(bot)
-            ban_notification_service.set_bot(bot)
-            traffic_monitoring_scheduler.set_bot(bot)
-            daily_subscription_service.set_bot(bot)
-            telegram_notifier.set_bot(bot)
+        monitoring_service.bot = bot
+        maintenance_service.set_bot(bot)
+        broadcast_service.set_bot(bot)
+        ban_notification_service.set_bot(bot)
+        traffic_monitoring_scheduler.set_bot(bot)
+        daily_subscription_service.set_bot(bot)
+        telegram_notifier.set_bot(bot)
 
         from app.services.channel_subscription_service import channel_subscription_service
 
@@ -329,91 +320,66 @@ async def main():
 
         from app.services.admin_notification_service import AdminNotificationService
 
-        if bot:
-            async with timeline.stage(
-                'Интеграция сервисов',
-                '🔗',
-                success_message='Сервисы подключены',
-            ) as stage:
-                admin_notification_service = AdminNotificationService(bot)
-                version_service.bot = bot
-                version_service.set_notification_service(admin_notification_service)
-                referral_contest_service.set_bot(bot)
-                stage.log(f'Репозиторий версий: {version_service.repo}')
-                stage.log(f'Текущая версия: {version_service.current_version}')
-                stage.success('Мониторинг, уведомления и рассылки подключены')
-        else:
-            timeline.add_manual_step(
-                'Интеграция сервисов',
-                '⏭️',
-                'Пропущено',
-                'Telegram бот не активен',
-            )
+        async with timeline.stage(
+            'Интеграция сервисов',
+            '🔗',
+            success_message='Сервисы подключены',
+        ) as stage:
+            admin_notification_service = AdminNotificationService(bot)
+            version_service.bot = bot
+            version_service.set_notification_service(admin_notification_service)
+            referral_contest_service.set_bot(bot)
+            stage.log(f'Репозиторий версий: {version_service.repo}')
+            stage.log(f'Текущая версия: {version_service.current_version}')
+            stage.success('Мониторинг, уведомления и рассылки подключены')
 
-        if bot:
-            async with timeline.stage(
-                'Сервис бекапов',
-                '🗄️',
-                success_message='Сервис бекапов инициализирован',
-            ) as stage:
-                try:
-                    backup_service.bot = bot
-                    settings_obj = await backup_service.get_backup_settings()
-                    if settings_obj.auto_backup_enabled:
-                        await backup_service.start_auto_backup()
-                        stage.log(
-                            'Автобекапы включены: интервал '
-                            f'{settings_obj.backup_interval_hours}ч, запуск {settings_obj.backup_time}'
-                        )
-                    else:
-                        stage.log('Автобекапы отключены настройками')
-                    stage.success('Сервис бекапов инициализирован')
-                except Exception as e:
-                    stage.warning(f'Ошибка инициализации сервиса бекапов: {e}')
-                    logger.error('❌ Ошибка инициализации сервиса бекапов', error=e)
-        else:
-            timeline.add_manual_step(
-                'Сервис бекапов',
-                '⏭️',
-                'Пропущено',
-                'Telegram бот не активен',
-            )
+        async with timeline.stage(
+            'Сервис бекапов',
+            '🗄️',
+            success_message='Сервис бекапов инициализирован',
+        ) as stage:
+            try:
+                backup_service.bot = bot
+                settings_obj = await backup_service.get_backup_settings()
+                if settings_obj.auto_backup_enabled:
+                    await backup_service.start_auto_backup()
+                    stage.log(
+                        'Автобекапы включены: интервал '
+                        f'{settings_obj.backup_interval_hours}ч, запуск {settings_obj.backup_time}'
+                    )
+                else:
+                    stage.log('Автобекапы отключены настройками')
+                stage.success('Сервис бекапов инициализирован')
+            except Exception as e:
+                stage.warning(f'Ошибка инициализации сервиса бекапов: {e}')
+                logger.error('❌ Ошибка инициализации сервиса бекапов', error=e)
 
-        if bot:
-            async with timeline.stage(
-                'Сервис отчетов',
-                '📊',
-                success_message='Сервис отчетов готов',
-            ) as stage:
-                try:
-                    reporting_service.set_bot(bot)
-                    await reporting_service.start()
-                except Exception as e:
-                    stage.warning(f'Ошибка запуска сервиса отчетов: {e}')
-                    logger.error('❌ Ошибка запуска сервиса отчетов', error=e)
-        else:
-            timeline.add_manual_step(
-                'Сервис отчетов',
-                '⏭️',
-                'Пропущено',
-                'Telegram бот не активен',
-            )
+        async with timeline.stage(
+            'Сервис отчетов',
+            '📊',
+            success_message='Сервис отчетов готов',
+        ) as stage:
+            try:
+                reporting_service.set_bot(bot)
+                await reporting_service.start()
+            except Exception as e:
+                stage.warning(f'Ошибка запуска сервиса отчетов: {e}')
+                logger.error('❌ Ошибка запуска сервиса отчетов', error=e)
 
-        if bot:
-            async with timeline.stage(
-                'Реферальные конкурсы',
-                '🏆',
-                success_message='Сервис конкурсов готов',
-            ) as stage:
-                try:
-                    await referral_contest_service.start()
-                    if referral_contest_service.is_running():
-                        stage.log('Автосводки по конкурсам запущены')
-                    else:
-                        stage.skip('Сервис конкурсов выключен настройками')
-                except Exception as e:
-                    stage.warning(f'Ошибка запуска сервиса конкурсов: {e}')
-                    logger.error('❌ Ошибка запуска сервиса конкурсов', error=e)
+        async with timeline.stage(
+            'Реферальные конкурсы',
+            '🏆',
+            success_message='Сервис конкурсов готов',
+        ) as stage:
+            try:
+                await referral_contest_service.start()
+                if referral_contest_service.is_running():
+                    stage.log('Автосводки по конкурсам запущены')
+                else:
+                    stage.skip('Сервис конкурсов выключен настройками')
+            except Exception as e:
+                stage.warning(f'Ошибка запуска сервиса конкурсов: {e}')
+                logger.error('❌ Ошибка запуска сервиса конкурсов', error=e)
 
         async with timeline.stage(
             'Ротация игр',

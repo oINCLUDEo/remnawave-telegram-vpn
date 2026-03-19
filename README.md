@@ -158,6 +158,44 @@ docker compose up -d
 
 ---
 
+### 🔄 Обновление только контейнера бота (с уже работающими Postgres/Redis)
+
+Если БД и Redis уже крутятся в контейнерах `remnawave_bot_db` и `remnawave_bot_redis`, а нужно заменить только бот на сборку из этого репозитория (ветка `copilot/extend-dev-vpn-subscription-management`), достаточно:
+
+1. Забрать код и подменить `.env` на ваш боевой:
+   ```bash
+   git clone https://github.com/oINCLUDEo/remnawave-telegram-vpn.git
+   cd remnawave-telegram-vpn
+   git checkout copilot/extend-dev-vpn-subscription-management
+   cp /path/to/old/.env .env   # использовать уже заполненный env
+   ```
+2. Остановить и удалить только старый контейнер бота (остальные сервисы не трогаем):
+   ```bash
+   docker stop remnawave_bot || true
+   docker rm remnawave_bot || true
+   ```
+   При необходимости можно убрать старый образ:
+   ```bash
+   docker image rm remnawave-bedolaga-telegram-bot-bot || true
+   ```
+3. Поднять новый бот из текущего репозитория, не трогая БД/Redis (тома `postgres_data`/`redis_data` сохранятся):
+   ```bash
+   docker compose up -d --build bot
+   ```
+   Если наружу нужен другой порт (например 8080 вместо дефолтного 8081), задайте `WEB_API_PORT=8080` в `.env` перед запуском.
+   Если Docker жалуется на `invalid pool request: Pool overlaps with other one`, удалите старую сеть и запустите ещё раз — в новой версии подсеть не фиксируется:
+   ```bash
+   docker network rm remnawave-telegram-vpn_bot_network || true
+   ```
+4. Проверить готовность:
+   ```bash
+   curl http://localhost:${WEB_API_PORT:-8081}/health
+   ```
+
+> Мобильный бекенд уже встроен в сервис `bot`: в docker-compose для него включён FastAPI (`WEB_API_ENABLED=true`) и открыт порт `${WEB_API_PORT:-8081}`. Все мобильные эндпоинты `/mobile/v1/...` будут доступны сразу после старта контейнера.
+
+---
+
 ## 🏗 Стек
 
 | | Компонент | Технология |
