@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
 from app.database.crud.user import get_user_by_telegram_id
+from app.database.crud.tariff import get_tariff_by_id
 from app.mobile.schemas.subscription import (
     AutopayRequest,
     AutopayResponse,
@@ -26,6 +27,7 @@ from app.mobile.schemas.subscription import (
     UpgradeCalcResponse,
     UpgradeResponse,
 )
+from app.services.pricing_engine import pricing_engine
 
 
 logger = structlog.get_logger(__name__)
@@ -96,6 +98,66 @@ def _serialize_subscription(sub: Any) -> dict[str, Any] | None:
     }
 
 
+async def _build_topup_info(db: AsyncSession, subscription: Any, user: Any) -> dict[str, Any]:
+    """Mirror cabinet/miniapp top-up logic for current tariff."""
+    if not subscription or not getattr(subscription, 'tariff_id', None):
+        return {}
+
+    tariff = await get_tariff_by_id(db, subscription.tariff_id)
+    if not tariff:
+        return {}
+
+    max_topup_traffic_gb = getattr(tariff, 'max_topup_traffic_gb', 0) or 0
+    current_subscription_traffic = subscription.traffic_limit_gb or 0
+    available_topup_gb = None
+    if max_topup_traffic_gb > 0:
+        available_topup_gb = max(0, max_topup_traffic_gb - current_subscription_traffic)
+
+    traffic_topup_enabled = getattr(tariff, 'traffic_topup_enabled', False) and tariff.traffic_limit_gb > 0
+    traffic_topup_packages: list[dict[str, Any]] = []
+
+    if traffic_topup_enabled and hasattr(tariff, 'get_traffic_topup_packages'):
+        packages = tariff.get_traffic_topup_packages()
+        for gb in sorted(packages.keys()):
+            if available_topup_gb is not None and gb > available_topup_gb:
+                continue
+
+            base_price = packages[gb]
+            discounted_price, _discount_val, traffic_discount_pct = pricing_engine.calculate_traffic_discount(
+                base_price,
+                user,
+            )
+            if traffic_discount_pct > 0:
+                traffic_topup_packages.append(
+                    {
+                        'gb': gb,
+                        'price_kopeks': discounted_price,
+                        'price_label': settings.format_price(discounted_price),
+                        'original_price_kopeks': base_price,
+                        'original_price_label': settings.format_price(base_price),
+                        'discount_percent': traffic_discount_pct,
+                    }
+                )
+            else:
+                traffic_topup_packages.append(
+                    {
+                        'gb': gb,
+                        'price_kopeks': base_price,
+                        'price_label': settings.format_price(base_price),
+                    }
+                )
+
+    if traffic_topup_enabled and not traffic_topup_packages and available_topup_gb == 0:
+        traffic_topup_enabled = False
+
+    return {
+        'traffic_topup_enabled': traffic_topup_enabled,
+        'traffic_topup_packages': traffic_topup_packages,
+        'max_topup_traffic_gb': max_topup_traffic_gb,
+        'available_topup_gb': available_topup_gb,
+    }
+
+
 # ---------------------------------------------------------------------------
 # GET /mobile/v1/subscription/options
 # ---------------------------------------------------------------------------
@@ -133,6 +195,10 @@ async def get_subscription_options(
 
         if subscription:
             context_payload['current_subscription'] = _serialize_subscription(subscription)
+            # Provide top-up options consistent with cabinet/miniapp
+            topup_info = await _build_topup_info(db, subscription, user)
+            if topup_info:
+                context_payload.update(topup_info)
 
     except HTTPException:
         raise
