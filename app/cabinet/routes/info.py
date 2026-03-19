@@ -91,7 +91,7 @@ class SupportConfigResponse(BaseModel):
     """Support/tickets configuration for miniapp."""
 
     tickets_enabled: bool
-    support_type: str  # "tickets", "profile", "url"
+    support_type: str  # "tickets", "profile", "url", "both"
     support_url: str | None = None
     support_username: str | None = None
 
@@ -160,7 +160,7 @@ async def get_rules(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get service rules - uses same function as bot."""
-    requested_lang = language.split('-')[0].lower()
+    requested_lang = language.split('-', maxsplit=1)[0].lower()
 
     # Use the same function as bot to ensure consistent content
     content = await get_current_rules_content(db, requested_lang)
@@ -299,7 +299,7 @@ async def get_support_config():
         support_type = 'profile'
     else:  # both
         tickets_enabled = True
-        support_type = 'tickets'
+        support_type = 'both'
 
     return SupportConfigResponse(
         tickets_enabled=tickets_enabled,

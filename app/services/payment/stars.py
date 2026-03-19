@@ -18,9 +18,6 @@ from app.database.crud.transaction import create_transaction
 from app.database.crud.user import get_user_by_id
 from app.database.models import PaymentMethod, TransactionType
 from app.external.telegram_stars import TelegramStarsService
-from app.services.subscription_auto_purchase_service import (
-    auto_purchase_saved_cart_after_topup,
-)
 from app.utils.payment_logger import payment_logger as logger
 from app.utils.user_utils import format_referrer_info
 
@@ -263,6 +260,14 @@ class TelegramStarsMixin:
             logger.error('Не удалось активировать pending подписку пользователя', user_id=user.id)
             return False
 
+        # Consume promo-offer discount (invoice was created with discounted price)
+        try:
+            from app.utils.promo_offer import consume_user_promo_offer
+
+            await consume_user_promo_offer(db, user.id)
+        except Exception as promo_error:
+            logger.warning('Ошибка потребления промо-оффера при Stars оплате', user_id=user.id, error=promo_error)
+
         try:
             from app.services.subscription_service import SubscriptionService
 
@@ -348,6 +353,7 @@ class TelegramStarsMixin:
                     transaction,
                     period_display,
                     was_trial_conversion=False,
+                    purchase_type='renewal' if user.has_had_paid_subscription else 'first_purchase',
                 )
             except Exception as admin_error:  # pragma: no cover - диагностический лог
                 logger.error(
@@ -385,6 +391,11 @@ class TelegramStarsMixin:
         telegram_payment_charge_id: str,
     ) -> bool:
         """Начисляет баланс пользователю после оплаты Stars и запускает автопокупку."""
+
+        # Lock user row to prevent concurrent balance race conditions
+        from app.database.crud.user import lock_user_for_update
+
+        user = await lock_user_for_update(db, user)
 
         # Запоминаем старые значения, чтобы корректно построить уведомления.
         old_balance = user.balance_kopeks
@@ -431,7 +442,7 @@ class TelegramStarsMixin:
                 "❌ Описание '' не подходит для реферальной логики", description_for_referral=description_for_referral
             )
 
-        if was_first_topup and not user.has_made_first_topup:
+        if was_first_topup and not user.has_made_first_topup and not user.referred_by_id:
             user.has_made_first_topup = True
             await db.commit()
 
@@ -465,73 +476,9 @@ class TelegramStarsMixin:
 
         # Проверяем наличие сохраненной корзины для возврата к оформлению подписки
         try:
-            from aiogram import types
+            from app.services.payment.common import send_cart_notification_after_topup
 
-            from app.localization.texts import get_texts
-            from app.services.user_cart_service import user_cart_service
-
-            has_saved_cart = await user_cart_service.has_user_cart(user.id)
-            auto_purchase_success = False
-            if has_saved_cart:
-                try:
-                    auto_purchase_success = await auto_purchase_saved_cart_after_topup(
-                        db,
-                        user,
-                        bot=getattr(self, 'bot', None),
-                    )
-                except Exception as auto_error:  # pragma: no cover - диагностический лог
-                    logger.error(
-                        'Ошибка автоматической покупки подписки для пользователя',
-                        user_id=user.id,
-                        auto_error=auto_error,
-                        exc_info=True,
-                    )
-
-                if auto_purchase_success:
-                    has_saved_cart = False
-
-            if has_saved_cart and getattr(self, 'bot', None) and user.telegram_id:
-                texts = get_texts(user.language)
-                cart_message = texts.t(
-                    'BALANCE_TOPUP_CART_REMINDER_DETAILED',
-                    '🛒 У вас есть неоформленный заказ.\n\nВы можете продолжить оформление с теми же параметрами.',
-                ).format(total_amount=settings.format_price(amount_kopeks))
-
-                keyboard = types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT,
-                                callback_data='return_to_saved_cart',
-                            )
-                        ],
-                        [
-                            types.InlineKeyboardButton(
-                                text='💰 Мой баланс',
-                                callback_data='menu_balance',
-                            )
-                        ],
-                        [
-                            types.InlineKeyboardButton(
-                                text='🏠 Главное меню',
-                                callback_data='back_to_menu',
-                            )
-                        ],
-                    ]
-                )
-
-                await self.bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=f'✅ Баланс пополнен на {settings.format_price(amount_kopeks)}!\n\n'
-                    f'⚠️ <b>Важно:</b> Пополнение баланса не активирует подписку автоматически. '
-                    f'Обязательно активируйте подписку отдельно!\n\n'
-                    f'🔄 При наличии сохранённой корзины подписки и включенной автопокупке, '
-                    f'подписка будет приобретена автоматически после пополнения баланса.\n\n{cart_message}',
-                    reply_markup=keyboard,
-                )
-                logger.info(
-                    'Отправлено уведомление с кнопкой возврата к оформлению подписки пользователю', user_id=user.id
-                )
+            await send_cart_notification_after_topup(user, amount_kopeks, db, getattr(self, 'bot', None))
         except Exception as error:  # pragma: no cover - диагностический лог
             logger.error(
                 'Ошибка при работе с сохраненной корзиной для пользователя', user_id=user.id, error=error, exc_info=True

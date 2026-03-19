@@ -13,9 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.models import PaymentMethod, TransactionType
 from app.services.freekassa_service import freekassa_service
-from app.services.subscription_auto_purchase_service import (
-    auto_purchase_saved_cart_after_topup,
-)
 from app.utils.payment_logger import payment_logger as logger
 from app.utils.user_utils import format_referrer_info
 
@@ -27,11 +24,13 @@ class FreekassaPaymentMixin:
         self,
         db: AsyncSession,
         *,
-        user_id: int,
+        user_id: int | None,
         amount_kopeks: int,
         description: str = 'Пополнение баланса',
         email: str | None = None,
         language: str = 'ru',
+        payment_system_id: int | None = None,
+        payment_method: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Создает платеж Freekassa.
@@ -69,7 +68,7 @@ class FreekassaPaymentMixin:
             return None
 
         # Генерируем уникальный order_id
-        order_id = f'fk_{user_id}_{uuid.uuid4().hex[:12]}'
+        order_id = f'fk_{user_id or "guest"}_{uuid.uuid4().hex[:12]}'
         amount_rubles = amount_kopeks / 100
         currency = settings.FREEKASSA_CURRENCY
 
@@ -83,18 +82,23 @@ class FreekassaPaymentMixin:
             'description': description,
             'language': language,
             'type': 'balance_topup',
+            'payment_method': payment_method or 'freekassa',
         }
 
         try:
+            # Определяем payment_system_id: явно переданный > из настроек
+            ps_id = payment_system_id or settings.FREEKASSA_PAYMENT_SYSTEM_ID
+
             # Выбираем способ создания платежа: API или форма
-            if settings.FREEKASSA_USE_API:
-                # Используем API для создания заказа (нужно для NSPK СБП)
+            # Если указан payment_system_id — всегда используем API
+            if settings.FREEKASSA_USE_API or ps_id:
+                # Используем API для создания заказа
                 payment_url = await freekassa_service.create_order_and_get_url(
                     order_id=order_id,
                     amount=amount_rubles,
                     currency=currency,
                     email=email,
-                    payment_system_id=settings.FREEKASSA_PAYMENT_SYSTEM_ID,
+                    payment_system_id=ps_id,
                 )
                 logger.info('Freekassa API: создан заказ order_id url', order_id=order_id, payment_url=payment_url)
             else:
@@ -120,7 +124,7 @@ class FreekassaPaymentMixin:
                 description=description,
                 payment_url=payment_url,
                 expires_at=expires_at,
-                metadata_json=json.dumps(metadata, ensure_ascii=False),
+                metadata_json=metadata,
             )
 
             logger.info(
@@ -246,10 +250,31 @@ class FreekassaPaymentMixin:
         """Создаёт транзакцию, начисляет баланс и отправляет уведомления."""
         payment_module = import_module('app.services.payment_service')
 
+        freekassa_lock_crud = import_module('app.database.crud.freekassa')
+        locked = await freekassa_lock_crud.get_freekassa_payment_by_id_for_update(db, payment.id)
+        if not locked:
+            logger.error('Freekassa: не удалось заблокировать платёж', payment_id=payment.id)
+            return False
+        payment = locked
+
         if payment.transaction_id:
             logger.info(
                 'Freekassa платеж уже привязан к транзакции (trigger=)', order_id=payment.order_id, trigger=trigger
             )
+            return True
+
+        # --- Guest purchase flow (landing page) ---
+        fk_metadata = dict(getattr(payment, 'metadata_json', {}) or {})
+        from app.services.payment.common import try_fulfill_guest_purchase
+
+        guest_result = await try_fulfill_guest_purchase(
+            db,
+            metadata=fk_metadata,
+            payment_amount_kopeks=payment.amount_kopeks,
+            provider_payment_id=str(intid) if intid else payment.order_id,
+            provider_name='freekassa',
+        )
+        if guest_result is not None:
             return True
 
         # Получаем пользователя
@@ -274,16 +299,18 @@ class FreekassaPaymentMixin:
             external_id=str(intid) if intid else payment.order_id,
             is_completed=True,
             created_at=getattr(payment, 'created_at', None),
+            commit=False,
         )
 
-        # Связываем платеж с транзакцией
-        freekassa_crud = import_module('app.database.crud.freekassa')
-        await freekassa_crud.update_freekassa_payment_status(
-            db=db,
-            payment=payment,
-            status=payment.status,
-            transaction_id=transaction.id,
-        )
+        # Связываем платеж с транзакцией (без commit, чтобы сохранить атомарность)
+        payment.transaction_id = transaction.id
+        payment.updated_at = datetime.now(UTC)
+        await db.flush()
+
+        # Lock user row to prevent concurrent balance race conditions
+        from app.database.crud.user import lock_user_for_update
+
+        user = await lock_user_for_update(db, user)
 
         old_balance = user.balance_kopeks
         was_first_topup = not user.has_made_first_topup
@@ -299,6 +326,19 @@ class FreekassaPaymentMixin:
 
         await db.commit()
 
+        # Emit deferred side-effects after atomic commit
+        from app.database.crud.transaction import emit_transaction_side_effects
+
+        await emit_transaction_side_effects(
+            db,
+            transaction,
+            amount_kopeks=payment.amount_kopeks,
+            user_id=payment.user_id,
+            type=TransactionType.DEPOSIT,
+            payment_method=PaymentMethod.FREEKASSA,
+            external_id=str(intid) if intid else payment.order_id,
+        )
+
         # Обработка реферального пополнения
         try:
             from app.services.referral_service import process_referral_topup
@@ -307,7 +347,7 @@ class FreekassaPaymentMixin:
         except Exception as error:
             logger.error('Ошибка обработки реферального пополнения Freekassa', error=error)
 
-        if was_first_topup and not user.has_made_first_topup:
+        if was_first_topup and not user.has_made_first_topup and not user.referred_by_id:
             user.has_made_first_topup = True
             await db.commit()
 
@@ -339,7 +379,24 @@ class FreekassaPaymentMixin:
         if getattr(self, 'bot', None) and user.telegram_id:
             try:
                 keyboard = await self.build_topup_success_keyboard(user)
-                display_name = settings.get_freekassa_display_name()
+
+                # Resolve display name from payment metadata (sub-method aware)
+                display_name = settings.get_freekassa_display_name_html()
+                try:
+                    raw = payment.metadata_json
+                    if isinstance(raw, dict):
+                        meta = raw
+                    elif raw:
+                        meta = json.loads(raw)
+                    else:
+                        meta = {}
+                    pm = meta.get('payment_method', 'freekassa')
+                    if pm == 'freekassa_sbp':
+                        display_name = settings.get_freekassa_sbp_display_name_html()
+                    elif pm == 'freekassa_card':
+                        display_name = settings.get_freekassa_card_display_name_html()
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    pass
                 await self.bot.send_message(
                     user.telegram_id,
                     (
@@ -355,67 +412,11 @@ class FreekassaPaymentMixin:
             except Exception as error:
                 logger.error('Ошибка отправки уведомления пользователю Freekassa', error=error)
 
-        # Автопокупка подписки
+        # Автопокупка подписки и уведомление о корзине
         try:
-            from aiogram import types
+            from app.services.payment.common import send_cart_notification_after_topup
 
-            from app.services.user_cart_service import user_cart_service
-
-            has_saved_cart = await user_cart_service.has_user_cart(user.id)
-            auto_purchase_success = False
-
-            if has_saved_cart:
-                try:
-                    auto_purchase_success = await auto_purchase_saved_cart_after_topup(
-                        db,
-                        user,
-                        bot=getattr(self, 'bot', None),
-                    )
-                except Exception as auto_error:
-                    logger.error(
-                        'Ошибка автоматической покупки подписки для пользователя',
-                        user_id=user.id,
-                        auto_error=auto_error,
-                        exc_info=True,
-                    )
-
-                if auto_purchase_success:
-                    has_saved_cart = False
-
-            if has_saved_cart and getattr(self, 'bot', None) and user.telegram_id:
-                from app.localization.texts import get_texts
-
-                texts = get_texts(user.language)
-                cart_message = texts.t(
-                    'BALANCE_TOPUP_CART_REMINDER',
-                    'У вас есть незавершенное оформление подписки. Вернуться?',
-                )
-
-                keyboard = types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text=texts.t(
-                                    'BALANCE_TOPUP_CART_BUTTON',
-                                    '🛒 Продолжить оформление',
-                                ),
-                                callback_data='return_to_saved_cart',
-                            )
-                        ],
-                        [
-                            types.InlineKeyboardButton(
-                                text='🏠 Главное меню',
-                                callback_data='back_to_menu',
-                            )
-                        ],
-                    ]
-                )
-
-                await self.bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=(f'✅ Баланс пополнен на {settings.format_price(payment.amount_kopeks)}!\n\n{cart_message}'),
-                    reply_markup=keyboard,
-                )
+            await send_cart_notification_after_topup(user, payment.amount_kopeks, db, getattr(self, 'bot', None))
         except Exception as error:
             logger.error(
                 'Ошибка при работе с сохраненной корзиной для пользователя', user_id=user.id, error=error, exc_info=True

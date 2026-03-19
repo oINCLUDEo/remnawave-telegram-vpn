@@ -137,12 +137,15 @@ def _build_notification_settings_view(language: str):
     return summary_text, keyboard
 
 
-def _build_notification_preview_message(language: str, notification_type: str):
+async def _build_notification_preview_message(language: str, notification_type: str):
     texts = get_texts(language)
     now = datetime.now(UTC)
     price_30_days = settings.format_price(settings.PRICE_30_DAYS)
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from app.keyboards.inline import get_channel_sub_keyboard
+    from app.services.channel_subscription_service import channel_subscription_service
 
     header = '🧪 <b>Тестовое уведомление мониторинга</b>\n\n'
 
@@ -157,25 +160,9 @@ def _build_notification_preview_message(language: str, notification_type: str):
         )
         check_button = texts.t('CHANNEL_CHECK_BUTTON', '✅ Я подписался')
         message = template.format(check_button=check_button)
-        buttons: list[list[InlineKeyboardButton]] = []
-        if settings.CHANNEL_LINK:
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CHANNEL_SUBSCRIBE_BUTTON', '🔗 Подписаться'),
-                        url=settings.CHANNEL_LINK,
-                    )
-                ]
-            )
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=check_button,
-                    callback_data='sub_channel_check',
-                )
-            ]
-        )
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        # Use all required channels for the preview keyboard
+        required_channels = await channel_subscription_service.get_required_channels()
+        keyboard = get_channel_sub_keyboard(required_channels, language=language)
     elif notification_type == 'expired_1d':
         template = texts.get(
             'SUBSCRIPTION_EXPIRED_1D',
@@ -307,7 +294,7 @@ def _build_notification_preview_message(language: str, notification_type: str):
 
 
 async def _send_notification_preview(bot, chat_id: int, language: str, notification_type: str) -> None:
-    message, keyboard = _build_notification_preview_message(language, notification_type)
+    message, keyboard = await _build_notification_preview_message(language, notification_type)
     await bot.send_message(
         chat_id,
         message,
@@ -1363,12 +1350,12 @@ async def _do_reconcile_logs(callback: CallbackQuery):
         await callback.answer('🔄 Анализирую логи платежей...', show_alert=False)
 
         # Путь к файлу логов платежей (logs/current/)
-        log_file_path = Path(settings.LOG_FILE).resolve()
+        log_file_path = await asyncio.to_thread(Path(settings.LOG_FILE).resolve)
         log_dir = log_file_path.parent
         current_dir = log_dir / 'current'
         payments_log = current_dir / settings.LOG_PAYMENTS_FILE
 
-        if not payments_log.exists():
+        if not await asyncio.to_thread(payments_log.exists):
             try:
                 await callback.message.edit_text(
                     '❌ <b>Файл логов не найден</b>\n\n'
@@ -1504,12 +1491,12 @@ async def receipts_reconcile_logs_details_callback(callback: CallbackQuery):
         await callback.answer('🔄 Загружаю детали...', show_alert=False)
 
         # Путь к логам (logs/current/)
-        log_file_path = Path(settings.LOG_FILE).resolve()
+        log_file_path = await asyncio.to_thread(Path(settings.LOG_FILE).resolve)
         log_dir = log_file_path.parent
         current_dir = log_dir / 'current'
         payments_log = current_dir / settings.LOG_PAYMENTS_FILE
 
-        if not payments_log.exists():
+        if not await asyncio.to_thread(payments_log.exists):
             await callback.answer('❌ Файл логов не найден', show_alert=True)
             return
 

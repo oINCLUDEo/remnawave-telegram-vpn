@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.crud.transaction import get_user_transactions
 from app.database.models import TransactionType, User
+from app.handlers.subscription.autopay import handle_confirm_unlink, handle_saved_cards_list, handle_unlink_card
 from app.keyboards.inline import (
     get_back_keyboard,
     get_balance_keyboard,
@@ -17,12 +18,20 @@ from app.keyboards.inline import (
 from app.localization.texts import get_texts
 from app.states import BalanceStates
 from app.utils.decorators import error_handler
-from app.utils.price_display import calculate_user_price
 
 
 logger = structlog.get_logger(__name__)
 
 TRANSACTIONS_PER_PAGE = 10
+
+CREDIT_TRANSACTION_TYPES: frozenset[str] = frozenset(
+    {
+        TransactionType.DEPOSIT.value,
+        TransactionType.REFERRAL_REWARD.value,
+        TransactionType.REFUND.value,
+        TransactionType.POLL_REWARD.value,
+    }
+)
 
 
 async def route_payment_by_method(
@@ -113,99 +122,39 @@ async def route_payment_by_method(
             await process_cloudpayments_payment_amount(message, db_user, db, amount_kopeks, state)
         return True
 
-    if payment_method == 'freekassa':
+    if payment_method in ('freekassa', 'freekassa_sbp', 'freekassa_card'):
         from .freekassa import process_freekassa_payment_amount
 
         async with AsyncSessionLocal() as db:
-            await process_freekassa_payment_amount(message, db_user, db, amount_kopeks, state)
+            await process_freekassa_payment_amount(
+                message, db_user, db, amount_kopeks, state, payment_method=payment_method
+            )
         return True
 
-    if payment_method == 'kassa_ai':
+    if payment_method in ('kassa_ai', 'kassa_ai_sbp', 'kassa_ai_card'):
         from .kassa_ai import process_kassa_ai_payment_amount
 
         async with AsyncSessionLocal() as db:
-            await process_kassa_ai_payment_amount(message, db_user, db, amount_kopeks, state)
+            await process_kassa_ai_payment_amount(
+                message, db_user, db, amount_kopeks, state, payment_method=payment_method
+            )
+        return True
+
+    if payment_method == 'severpay':
+        from .severpay import process_severpay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_severpay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method == 'riopay':
+        from .riopay import process_riopay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_riopay_payment_amount(message, db_user, db, amount_kopeks, state)
         return True
 
     return False
-
-
-async def get_quick_amount_buttons(language: str, user: User) -> list:
-    """
-    Generate quick amount buttons with user-specific pricing and discounts.
-
-    Args:
-        language: User's language for formatting
-        user: User object to calculate personalized discounts
-
-    Returns:
-        List of button rows for inline keyboard
-    """
-    if not settings.is_quick_amount_buttons_enabled():
-        return []
-
-    from app.config import PERIOD_PRICES
-    from app.localization.texts import get_texts
-
-    texts = get_texts(language)
-
-    # В режиме тарифов получаем цены из тарифа пользователя
-    tariff_prices = None
-    tariff_periods = None
-    if settings.is_tariffs_mode():
-        from app.database.crud.subscription import get_subscription_by_user_id
-        from app.database.crud.tariff import get_tariff_by_id
-        from app.database.database import AsyncSessionLocal
-
-        async with AsyncSessionLocal() as db:
-            subscription = await get_subscription_by_user_id(db, user.id)
-            if subscription and subscription.tariff_id:
-                tariff = await get_tariff_by_id(db, subscription.tariff_id)
-                if tariff and tariff.period_prices:
-                    tariff_prices = {int(k): v for k, v in tariff.period_prices.items()}
-                    tariff_periods = sorted(tariff_prices.keys())
-
-    buttons = []
-
-    # Используем периоды тарифа в режиме тарифов, иначе стандартные
-    if tariff_periods:
-        periods = tariff_periods[:6]
-    else:
-        periods = settings.get_available_subscription_periods()[:6]
-
-    for period in periods:
-        # Получаем цену из тарифа или из PERIOD_PRICES
-        if tariff_prices and period in tariff_prices:
-            base_price_kopeks = tariff_prices[period]
-        else:
-            base_price_kopeks = PERIOD_PRICES.get(period, 0)
-
-        if base_price_kopeks > 0:
-            # Calculate price with user's promo group discount using unified system
-            price_info = calculate_user_price(user, base_price_kopeks, period, 'period')
-
-            callback_data = f'quick_amount_{price_info.final_price}'
-
-            # Format button text with discount display
-            period_label = f'{period} дней'
-
-            # For balance buttons, use simpler format without emoji and period label prefix
-            if price_info.has_discount:
-                button_text = (
-                    f'{texts.format_price(price_info.base_price)} ➜ '
-                    f'{texts.format_price(price_info.final_price)} '
-                    f'(-{price_info.discount_percent}%) • {period_label}'
-                )
-            else:
-                button_text = f'{texts.format_price(price_info.final_price)} • {period_label}'
-
-            buttons.append(types.InlineKeyboardButton(text=button_text, callback_data=callback_data))
-
-    keyboard_rows = []
-    for i in range(0, len(buttons), 2):
-        keyboard_rows.append(buttons[i : i + 2])
-
-    return keyboard_rows
 
 
 @error_handler
@@ -275,10 +224,11 @@ async def show_balance_history(callback: types.CallbackQuery, db_user: User, db:
     text = '📊 <b>История операций</b>\n\n'
 
     for transaction in unique_transactions:
-        emoji = '💰' if transaction.type == TransactionType.DEPOSIT.value else '💸'
+        is_credit = transaction.type in CREDIT_TRANSACTION_TYPES
+        emoji = '💰' if is_credit else '💸'
         amount_text = (
             f'+{texts.format_price(transaction.amount_kopeks)}'
-            if transaction.type == TransactionType.DEPOSIT.value
+            if is_credit
             else f'-{texts.format_price(abs(transaction.amount_kopeks))}'
         )
 
@@ -310,10 +260,7 @@ async def handle_balance_history_pagination(callback: types.CallbackQuery, db_us
 @error_handler
 async def show_payment_methods(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
     from app.config import settings
-    from app.database.crud.subscription import get_subscription_by_user_id
-    from app.services.subscription_service import SubscriptionService
     from app.utils.payment_utils import get_payment_methods_text
-    from app.utils.pricing_utils import apply_percentage_discount, calculate_months_from_days
 
     texts = get_texts(db_user.language)
 
@@ -336,109 +283,22 @@ async def show_payment_methods(callback: types.CallbackQuery, db_user: User, db:
 
     payment_text = get_payment_methods_text(db_user.language)
 
-    # Добавляем информацию о текущем тарифе пользователя
-    subscription = await get_subscription_by_user_id(db, db_user.id)
-    tariff_info = ''
-    if subscription and not subscription.is_trial:
-        # Рассчитываем приблизительную стоимость продления на 30 дней
-        duration_days = 30  # Берем для примера 30 дней
-        current_traffic = subscription.traffic_limit_gb
-        current_connected_squads = subscription.connected_squads or []
-        current_device_limit = subscription.device_limit or settings.DEFAULT_DEVICE_LIMIT
+    # Проверяем сохранённую корзину для автоподстановки суммы пополнения
+    amount_kopeks = 0
+    try:
+        from app.services.user_cart_service import user_cart_service
 
-        try:
-            # Получаем цены для текущих параметров
-            from app.config import PERIOD_PRICES
-            from app.database.crud.tariff import get_tariff_by_id
+        cart_data = await user_cart_service.get_user_cart(db_user.id)
+        if cart_data and cart_data.get('saved_cart'):
+            missing = cart_data.get('missing_amount', 0)
+            if missing > 0:
+                amount_kopeks = missing
+    except Exception:
+        pass
 
-            # В режиме тарифов берём цену из тарифа пользователя
-            base_price_original = 0
-            if settings.is_tariffs_mode() and subscription.tariff_id:
-                tariff = await get_tariff_by_id(db, subscription.tariff_id)
-                if tariff and tariff.period_prices:
-                    base_price_original = tariff.period_prices.get(str(duration_days), 0)
+    full_text = payment_text
 
-            # Если не нашли в тарифе - используем PERIOD_PRICES
-            if base_price_original <= 0:
-                base_price_original = PERIOD_PRICES.get(duration_days, 0)
-
-            period_discount_percent = db_user.get_promo_discount('period', duration_days)
-            base_price, base_discount_total = apply_percentage_discount(
-                base_price_original,
-                period_discount_percent,
-            )
-
-            # Рассчитываем стоимость серверов
-            from app.services.subscription_service import SubscriptionService
-
-            subscription_service = SubscriptionService()
-            (
-                servers_price_per_month,
-                per_server_monthly_prices,
-            ) = await subscription_service.get_countries_price_by_uuids(
-                current_connected_squads,
-                db,
-                promo_group_id=db_user.promo_group_id,
-            )
-            servers_discount_percent = db_user.get_promo_discount('servers', duration_days)
-            total_servers_price = 0
-            for server_price in per_server_monthly_prices:
-                discounted_per_month, discount_per_month = apply_percentage_discount(
-                    server_price,
-                    servers_discount_percent,
-                )
-                total_servers_price += discounted_per_month
-
-            # Рассчитываем стоимость трафика
-            traffic_price_per_month = settings.get_traffic_price(current_traffic)
-            traffic_discount_percent = db_user.get_promo_discount('traffic', duration_days)
-            traffic_discounted_per_month, traffic_discount_per_month = apply_percentage_discount(
-                traffic_price_per_month,
-                traffic_discount_percent,
-            )
-
-            # Рассчитываем стоимость устройств
-            additional_devices = max(0, (current_device_limit or 0) - settings.DEFAULT_DEVICE_LIMIT)
-            devices_price_per_month = additional_devices * settings.PRICE_PER_DEVICE
-            devices_discount_percent = db_user.get_promo_discount('devices', duration_days)
-            devices_discounted_per_month, devices_discount_per_month = apply_percentage_discount(
-                devices_price_per_month,
-                devices_discount_percent,
-            )
-
-            # Общая стоимость
-            months_in_period = calculate_months_from_days(duration_days)
-            total_price = (
-                base_price
-                + total_servers_price * months_in_period
-                + traffic_discounted_per_month * months_in_period
-                + devices_discounted_per_month * months_in_period
-            )
-
-            traffic_value = current_traffic or 0
-            if traffic_value <= 0:
-                traffic_display = texts.t('TRAFFIC_UNLIMITED_SHORT', 'Безлимит')
-            else:
-                traffic_display = texts.format_traffic(traffic_value)
-
-            current_tariff_desc = (
-                f'📱 Подписка: {len(current_connected_squads)} серверов, '
-                f'{traffic_display}, {current_device_limit} устр.'
-            )
-            estimated_price_info = (
-                f'💰 Стоимость продления (примерно): {texts.format_price(total_price)} за {duration_days} дней'
-            )
-
-            tariff_info = f'\n\n📋 <b>Ваш текущий тариф:</b>\n{current_tariff_desc}\n{estimated_price_info}'
-        except Exception as e:
-            logger.warning(
-                'Не удалось рассчитать стоимость текущей подписки для пользователя', db_user_id=db_user.id, error=e
-            )
-            tariff_info = ''
-
-    full_text = payment_text + tariff_info
-
-    keyboard = get_payment_methods_keyboard(0, db_user.language)
+    keyboard = get_payment_methods_keyboard(amount_kopeks, db_user.language)
 
     # Если сообщение недоступно, отправляем новое
     if isinstance(callback.message, InaccessibleMessage):
@@ -513,15 +373,17 @@ async def handle_successful_topup_with_cart(user_id: int, amount_kopeks: int, bo
                 ]
             )
 
+            if 0 < total_price <= user.balance_kopeks:
+                balance_hint = 'Средств на балансе достаточно для оформления.'
+            else:
+                missing = max(total_price - user.balance_kopeks, 0)
+                balance_hint = f'Не хватает: {texts.format_price(missing)}'
+
             success_text = (
                 f'✅ Баланс пополнен на {texts.format_price(amount_kopeks)}!\n\n'
                 f'💰 Текущий баланс: {texts.format_price(user.balance_kopeks)}\n\n'
-                f'⚠️ <b>Важно:</b> Пополнение баланса не активирует подписку автоматически. '
-                f'Обязательно активируйте подписку отдельно!\n\n'
-                f'🔄 При наличии сохранённой корзины подписки и включенной автопокупке, '
-                f'подписка будет приобретена автоматически после пополнения баланса.\n\n'
-                f'🛒 У вас есть сохраненная корзина подписки\n'
-                f'Стоимость: {texts.format_price(total_price)}\n\n'
+                f'🛒 У вас есть сохранённая корзина на {texts.format_price(total_price)}\n'
+                f'{balance_hint}\n\n'
                 f'Хотите продолжить оформление?'
             )
 
@@ -606,11 +468,13 @@ async def process_topup_amount(message: types.Message, db_user: User, state: FSM
         amount_rubles = float(amount_text.replace(',', '.'))
 
         if amount_rubles < 1:
-            await message.answer('Минимальная сумма пополнения: 1 ₽')
+            await message.answer('Минимальная сумма пополнения: 1 ₽', reply_markup=get_back_keyboard(db_user.language))
             return
 
         if amount_rubles > 50000:
-            await message.answer('Максимальная сумма пополнения: 50,000 ₽')
+            await message.answer(
+                'Максимальная сумма пополнения: 50,000 ₽', reply_markup=get_back_keyboard(db_user.language)
+            )
             return
 
         amount_kopeks = int(amount_rubles * 100)
@@ -620,13 +484,17 @@ async def process_topup_amount(message: types.Message, db_user: User, state: FSM
         if payment_method in ['yookassa', 'yookassa_sbp']:
             if amount_kopeks < settings.YOOKASSA_MIN_AMOUNT_KOPEKS:
                 min_rubles = settings.YOOKASSA_MIN_AMOUNT_KOPEKS / 100
-                await message.answer(f'❌ Минимальная сумма для оплаты через YooKassa: {min_rubles:.0f} ₽')
+                await message.answer(
+                    f'❌ Минимальная сумма для оплаты через YooKassa: {min_rubles:.0f} ₽',
+                    reply_markup=get_back_keyboard(db_user.language),
+                )
                 return
 
             if amount_kopeks > settings.YOOKASSA_MAX_AMOUNT_KOPEKS:
                 max_rubles = settings.YOOKASSA_MAX_AMOUNT_KOPEKS / 100
                 await message.answer(
-                    f'❌ Максимальная сумма для оплаты через YooKassa: {max_rubles:,.0f} ₽'.replace(',', ' ')
+                    f'❌ Максимальная сумма для оплаты через YooKassa: {max_rubles:,.0f} ₽'.replace(',', ' '),
+                    reply_markup=get_back_keyboard(db_user.language),
                 )
                 return
 
@@ -674,37 +542,6 @@ async def handle_sbp_payment(callback: types.CallbackQuery, db: AsyncSession):
     except Exception as e:
         logger.error('Ошибка обработки embedded платежа СБП', error=e)
         await callback.answer('❌ Ошибка обработки платежа', show_alert=True)
-
-
-@error_handler
-async def handle_quick_amount_selection(callback: types.CallbackQuery, db_user: User, state: FSMContext):
-    """
-    Обработчик выбора суммы через кнопки быстрого выбора
-    """
-    # Проверяем, что пользователь в правильном состоянии FSM
-    current_state = await state.get_state()
-    if current_state != BalanceStates.waiting_for_amount:
-        await callback.answer('❌ Сначала выберите способ оплаты', show_alert=True)
-        return
-
-    # Извлекаем сумму из callback_data
-    try:
-        amount_kopeks = int(callback.data.split('_')[-1])
-
-        # Получаем метод оплаты из состояния
-        data = await state.get_data()
-        payment_method = data.get('payment_method', 'yookassa')
-
-        # Роутим платеж на соответствующий обработчик
-        if not await route_payment_by_method(callback.message, db_user, amount_kopeks, state, payment_method):
-            await callback.answer('❌ Неизвестный способ оплаты', show_alert=True)
-            return
-
-    except ValueError:
-        await callback.answer('❌ Ошибка обработки суммы', show_alert=True)
-    except Exception as e:
-        logger.error('Ошибка обработки быстрого выбора суммы', error=e)
-        await callback.answer('❌ Ошибка обработки запроса', show_alert=True)
 
 
 @error_handler
@@ -833,20 +670,37 @@ def register_balance_handlers(dp: Dispatcher):
     dp.callback_query.register(start_heleket_payment, F.data == 'topup_heleket')
     dp.callback_query.register(check_heleket_payment_status, F.data.startswith('check_heleket_'))
 
-    from .cloudpayments import handle_cloudpayments_quick_amount, start_cloudpayments_payment
+    from .cloudpayments import start_cloudpayments_payment
 
     dp.callback_query.register(start_cloudpayments_payment, F.data == 'topup_cloudpayments')
-    dp.callback_query.register(handle_cloudpayments_quick_amount, F.data.startswith('topup_amount|cloudpayments|'))
 
-    from .freekassa import process_freekassa_quick_amount, start_freekassa_topup
+    from .freekassa import (
+        start_freekassa_card_topup,
+        start_freekassa_sbp_topup,
+        start_freekassa_topup,
+    )
 
     dp.callback_query.register(start_freekassa_topup, F.data == 'topup_freekassa')
-    dp.callback_query.register(process_freekassa_quick_amount, F.data.startswith('topup_amount|freekassa|'))
+    dp.callback_query.register(start_freekassa_sbp_topup, F.data == 'topup_freekassa_sbp')
+    dp.callback_query.register(start_freekassa_card_topup, F.data == 'topup_freekassa_card')
 
-    from .kassa_ai import process_kassa_ai_quick_amount, start_kassa_ai_topup
+    from .kassa_ai import (
+        start_kassa_ai_card_topup,
+        start_kassa_ai_sbp_topup,
+        start_kassa_ai_topup,
+    )
 
     dp.callback_query.register(start_kassa_ai_topup, F.data == 'topup_kassa_ai')
-    dp.callback_query.register(process_kassa_ai_quick_amount, F.data.startswith('topup_amount|kassa_ai|'))
+    dp.callback_query.register(start_kassa_ai_sbp_topup, F.data == 'topup_kassa_ai_sbp')
+    dp.callback_query.register(start_kassa_ai_card_topup, F.data == 'topup_kassa_ai_card')
+
+    from .riopay import start_riopay_topup
+
+    dp.callback_query.register(start_riopay_topup, F.data == 'topup_riopay')
+
+    from .severpay import start_severpay_topup
+
+    dp.callback_query.register(start_severpay_topup, F.data == 'topup_severpay')
 
     from .mulenpay import check_mulenpay_payment_status
 
@@ -866,7 +720,8 @@ def register_balance_handlers(dp: Dispatcher):
 
     dp.callback_query.register(handle_payment_methods_unavailable, F.data == 'payment_methods_unavailable')
 
-    # Регистрируем обработчик для кнопок быстрого выбора суммы
-    dp.callback_query.register(handle_quick_amount_selection, F.data.startswith('quick_amount_'))
-
     dp.callback_query.register(handle_topup_amount_callback, F.data.startswith('topup_amount|'))
+
+    dp.callback_query.register(handle_saved_cards_list, F.data == 'saved_cards_list')
+    dp.callback_query.register(handle_unlink_card, F.data.startswith('unlink_card_'))
+    dp.callback_query.register(handle_confirm_unlink, F.data.startswith('confirm_unlink_'))

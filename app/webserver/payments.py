@@ -312,7 +312,7 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                 )
 
             signature = request.headers.get('Crypto-Pay-API-Signature')
-            secret = settings.CRYPTOBOT_WEBHOOK_SECRET
+            secret = settings.CRYPTOBOT_WEBHOOK_SECRET or settings.CRYPTOBOT_API_TOKEN
             if secret:
                 if not signature:
                     return JSONResponse(
@@ -392,21 +392,13 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
 
             if client_ip is None:
                 return JSONResponse(
-                    {
-                        'status': 'error',
-                        'reason': 'unknown_ip',
-                        'candidates': header_ip_candidates + ([remote_ip] if remote_ip else []),
-                    },
+                    {'status': 'error', 'reason': 'unknown_ip'},
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
             if not yookassa_webhook_module.is_yookassa_ip_allowed(client_ip):
                 return JSONResponse(
-                    {
-                        'status': 'error',
-                        'reason': 'forbidden_ip',
-                        'ip': str(client_ip),
-                    },
+                    {'status': 'error', 'reason': 'forbidden_ip'},
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
@@ -713,8 +705,10 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                 if success:
                     return JSONResponse({'status': 'ok'})
 
-                transaction_id = payload.get('transactionId', 'unknown')
-                logger.error('Platega webhook processing failed: transactionId', transaction_id=transaction_id)
+                transaction_id = (
+                    payload.get('id') or payload.get('transactionId') or payload.get('transaction_id') or 'unknown'
+                )
+                logger.error('Platega webhook processing failed', transaction_id=transaction_id)
                 return JSONResponse(
                     {'status': 'error', 'reason': 'not_processed'},
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -1108,6 +1102,125 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
 
         routes_registered = True
 
+    # RioPay webhook
+    if settings.is_riopay_enabled():
+
+        @router.get(settings.RIOPAY_WEBHOOK_PATH)
+        async def riopay_health() -> JSONResponse:
+            return JSONResponse(
+                {
+                    'status': 'ok',
+                    'service': 'riopay_webhook',
+                    'enabled': settings.is_riopay_enabled(),
+                }
+            )
+
+        @router.post(settings.RIOPAY_WEBHOOK_PATH)
+        async def riopay_webhook(request: Request) -> Response:
+            # Получаем JSON тело
+            try:
+                raw_body = await request.body()
+                payload = json.loads(raw_body)
+            except Exception as parse_error:
+                logger.error('RioPay webhook: не удалось прочитать JSON', parse_error=parse_error)
+                return Response('Error reading JSON', status_code=status.HTTP_400_BAD_REQUEST)
+
+            # Подпись из заголовка (обязательна)
+            signature = request.headers.get('X-Signature') or request.headers.get('x-signature')
+            if not signature:
+                logger.warning('RioPay webhook: отсутствует подпись')
+                return JSONResponse(
+                    {'status': 'error', 'reason': 'missing_signature'},
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+            from app.services.riopay_service import riopay_service
+
+            if not riopay_service.verify_webhook_signature(raw_body, signature):
+                logger.warning('RioPay webhook: неверная подпись')
+                return JSONResponse(
+                    {'status': 'error', 'reason': 'invalid_signature'},
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Обрабатываем webhook
+            db_generator = get_db()
+            try:
+                db = await db_generator.__anext__()
+            except StopAsyncIteration:
+                return Response('DB Error', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            try:
+                success = await payment_service.process_riopay_webhook(
+                    db,
+                    payload=payload,
+                )
+                if success:
+                    return JSONResponse({'status': 'ok'}, status_code=status.HTTP_200_OK)
+
+                logger.error(
+                    'RioPay webhook processing failed',
+                    order_id=payload.get('id'),
+                    status=payload.get('status'),
+                )
+                return Response('Error', status_code=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                logger.exception('RioPay webhook processing error', e=e)
+                return Response('Error', status_code=status.HTTP_400_BAD_REQUEST)
+            finally:
+                try:
+                    await db_generator.__anext__()
+                except StopAsyncIteration:
+                    pass
+
+        routes_registered = True
+
+    # SeverPay webhook
+    if settings.is_severpay_enabled():
+
+        @router.get(settings.SEVERPAY_WEBHOOK_PATH)
+        async def severpay_health() -> JSONResponse:
+            return JSONResponse(
+                {
+                    'status': 'ok',
+                    'service': 'severpay_webhook',
+                    'enabled': settings.is_severpay_enabled(),
+                }
+            )
+
+        @router.post(settings.SEVERPAY_WEBHOOK_PATH)
+        async def severpay_webhook(request: Request) -> JSONResponse:
+            try:
+                raw_body = await request.body()
+                payload = json.loads(raw_body)
+            except Exception as parse_error:
+                logger.error('SeverPay webhook: failed to parse JSON', parse_error=parse_error)
+                return JSONResponse({'status': False}, status_code=status.HTTP_400_BAD_REQUEST)
+
+            from app.services.severpay_service import severpay_service
+
+            if not severpay_service.verify_webhook_signature(raw_body):
+                logger.warning('SeverPay webhook: invalid signature')
+                return JSONResponse({'status': False}, status_code=status.HTTP_403_FORBIDDEN)
+
+            try:
+                success = await _process_payment_service_callback(
+                    payment_service,
+                    payload,
+                    'process_severpay_webhook',
+                )
+                if not success:
+                    logger.error(
+                        'SeverPay webhook processing failed',
+                        data=payload.get('data'),
+                    )
+            except Exception as e:
+                logger.exception('SeverPay webhook processing error', error=e)
+            # Always return 200 {"status": true} — SeverPay retries on any non-200
+            return JSONResponse({'status': True}, status_code=status.HTTP_200_OK)
+
+        routes_registered = True
+
     if routes_registered:
 
         @router.get('/health/payment-webhooks')
@@ -1126,6 +1239,8 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                     'cloudpayments_enabled': settings.is_cloudpayments_enabled(),
                     'freekassa_enabled': settings.is_freekassa_enabled(),
                     'kassa_ai_enabled': settings.is_kassa_ai_enabled(),
+                    'riopay_enabled': settings.is_riopay_enabled(),
+                    'severpay_enabled': settings.is_severpay_enabled(),
                 }
             )
 

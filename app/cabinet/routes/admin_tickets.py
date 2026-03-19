@@ -16,7 +16,7 @@ from app.database.crud.ticket import TicketCRUD
 from app.database.crud.ticket_notification import TicketNotificationCRUD
 from app.database.models import Ticket, TicketMessage, User
 
-from ..dependencies import get_cabinet_db, get_current_admin_user
+from ..dependencies import get_cabinet_db, require_permission
 from ..schemas.tickets import TicketMessageResponse
 
 
@@ -197,7 +197,7 @@ def _ticket_to_admin_response(ticket: Ticket, include_messages: bool = False) ->
 
 @router.get('/stats', response_model=AdminStatsResponse)
 async def get_ticket_stats(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get ticket statistics."""
@@ -222,7 +222,7 @@ async def get_ticket_stats(
 
 @router.get('/settings', response_model=TicketSettingsResponse)
 async def get_ticket_settings(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:settings')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get ticket system settings."""
@@ -242,10 +242,11 @@ async def get_ticket_settings(
 @router.patch('/settings', response_model=TicketSettingsResponse)
 async def update_ticket_settings(
     request: TicketSettingsUpdateRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:settings')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Update ticket system settings."""
+    import asyncio
     from pathlib import Path
 
     from app.services.support_settings_service import SupportSettingsService
@@ -280,8 +281,8 @@ async def update_ticket_settings(
     # Try to persist to .env file
     try:
         env_file = Path('.env')
-        if env_file.exists():
-            lines = env_file.read_text().splitlines()
+        if await asyncio.to_thread(env_file.exists):
+            lines = (await asyncio.to_thread(env_file.read_text)).splitlines()
             updates = {}
 
             if request.sla_enabled is not None:
@@ -314,7 +315,7 @@ async def update_ticket_settings(
                 if key not in updated_keys:
                     new_lines.append(f'{key}={value}')
 
-            env_file.write_text('\n'.join(new_lines) + '\n')
+            await asyncio.to_thread(env_file.write_text, '\n'.join(new_lines) + '\n')
             logger.info('Updated ticket settings in .env file')
     except Exception as e:
         logger.warning('Failed to update .env file', error=e)
@@ -337,7 +338,7 @@ async def get_all_tickets(
     status_filter: str | None = Query(None, alias='status', description='Filter by status'),
     priority_filter: str | None = Query(None, alias='priority', description='Filter by priority'),
     user_id: int | None = Query(None, description='Filter by user ID'),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get all tickets for admin."""
@@ -386,7 +387,7 @@ async def get_all_tickets(
 @router.get('/{ticket_id}', response_model=AdminTicketDetailResponse)
 async def get_ticket_detail(
     ticket_id: int,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get ticket with all messages for admin."""
@@ -428,7 +429,7 @@ async def get_ticket_detail(
 async def reply_to_ticket(
     ticket_id: int,
     request: AdminReplyRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:reply')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Reply to a ticket as admin."""
@@ -497,7 +498,7 @@ async def reply_to_ticket(
 async def update_ticket_status(
     ticket_id: int,
     request: AdminStatusUpdateRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:close')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Update ticket status."""
@@ -556,7 +557,7 @@ async def update_ticket_status(
 async def update_ticket_priority(
     ticket_id: int,
     request: AdminPriorityUpdateRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('tickets:close')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Update ticket priority."""

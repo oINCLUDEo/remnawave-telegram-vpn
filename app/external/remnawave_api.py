@@ -296,12 +296,6 @@ class RemnaWaveAPI:
             'X-Real-IP': '127.0.0.1',
         }
 
-        # Caddy авторизация — добавляется поверх основной
-        if self.caddy_token:
-            # Caddy Security: готовый base64 токен используется как есть
-            headers['Authorization'] = f'Basic {self.caddy_token}'
-            logger.debug('Используем Caddy Basic Auth')
-
         # Основная авторизация RemnaWave API
         if self.auth_type == 'basic' and self.username and self.password:
             credentials = f'{self.username}:{self.password}'
@@ -309,16 +303,16 @@ class RemnaWaveAPI:
             headers['X-Api-Key'] = f'Basic {encoded_credentials}'
             logger.debug('Используем Basic Auth в X-Api-Key заголовке')
         elif self.auth_type == 'caddy':
-            # Для caddy auth_type основная авторизация уже в Authorization header
-            # Но API ключ всё равно нужен для RemnaWave
+            # Caddy Security: caddy_token → X-Api-Key, api_key → Authorization: Bearer
             if self.api_key:
-                headers['X-Api-Key'] = self.api_key
-                logger.debug('Используем API ключ для RemnaWave + Caddy авторизацию')
+                headers['Authorization'] = f'Bearer {self.api_key}'
+            if self.caddy_token:
+                headers['X-Api-Key'] = self.caddy_token
+            logger.debug('Используем Caddy авторизацию')
         else:
             # api_key или bearer — стандартный режим
             headers['X-Api-Key'] = self.api_key
-            if not self.caddy_token:
-                headers['Authorization'] = f'Bearer {self.api_key}'
+            headers['Authorization'] = f'Bearer {self.api_key}'
             logger.debug('Используем API ключ в X-Api-Key заголовке')
 
         return headers
@@ -416,7 +410,12 @@ class RemnaWaveAPI:
 
                     if response.status >= 400:
                         error_message = response_data.get('message', f'HTTP {response.status}')
-                        log = logger.warning if response.status in (502, 503, 504) else logger.error
+                        # Downgrade known-harmless 400s to warning (caller handles them as success)
+                        error_lower = str(error_message).lower()
+                        is_harmless = response.status == 400 and (
+                            'already enabled' in error_lower or 'already disabled' in error_lower
+                        )
+                        log = logger.warning if response.status in (502, 503, 504) or is_harmless else logger.error
                         log('API Error %s: %s', response.status, error_message)
                         log('Response: %s', response_text[:500])
                         raise RemnaWaveAPIError(error_message, response.status, response_data)
@@ -455,6 +454,7 @@ class RemnaWaveAPI:
         description: str | None = None,
         tag: str | None = None,
         active_internal_squads: list[str] | None = None,
+        external_squad_uuid: str | None = None,
     ) -> RemnaWaveUser:
         data = {
             'username': username,
@@ -476,10 +476,22 @@ class RemnaWaveAPI:
             data['tag'] = tag
         if active_internal_squads:
             data['activeInternalSquads'] = active_internal_squads
+        if external_squad_uuid is not None:
+            data['externalSquadUuid'] = external_squad_uuid
 
-        logger.debug('Создание пользователя в панели', data=data)
+        logger.info(
+            'POST /api/users payload',
+            username=data.get('username'),
+            hwidDeviceLimit=data.get('hwidDeviceLimit'),
+            status=data.get('status'),
+        )
         response = await self._make_request('POST', '/api/users', data)
         user = self._parse_user(response['response'])
+        logger.info(
+            'POST /api/users response',
+            uuid=user.uuid,
+            response_hwidDeviceLimit=user.hwid_device_limit,
+        )
         return await self.enrich_user_with_happ_link(user)
 
     async def get_user_by_uuid(self, uuid: str) -> RemnaWaveUser | None:
@@ -545,6 +557,7 @@ class RemnaWaveAPI:
         description: str | None = None,
         tag: str | None = None,
         active_internal_squads: list[str] | None = None,
+        external_squad_uuid: str | None | type(...) = ...,
     ) -> RemnaWaveUser:
         data = {'uuid': uuid}
 
@@ -568,9 +581,21 @@ class RemnaWaveAPI:
             data['tag'] = tag
         if active_internal_squads is not None:
             data['activeInternalSquads'] = active_internal_squads
+        if external_squad_uuid is not ...:
+            data['externalSquadUuid'] = external_squad_uuid
 
-        response = await self._make_request('PATCH', '/api/users', data)
+        try:
+            response = await self._make_request('PATCH', '/api/users', data)
+        except Exception:
+            # Логируем полный payload при ошибке для диагностики A039
+            logger.error('PATCH /api/users FAILED — full payload', payload=data)
+            raise
         user = self._parse_user(response['response'])
+        logger.info(
+            'PATCH /api/users response',
+            uuid=uuid,
+            response_hwidDeviceLimit=user.hwid_device_limit,
+        )
         return await self.enrich_user_with_happ_link(user)
 
     async def delete_user(self, uuid: str) -> bool:

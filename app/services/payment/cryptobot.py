@@ -13,9 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.database import AsyncSessionLocal
 from app.database.models import PaymentMethod, TransactionType
-from app.services.subscription_auto_purchase_service import (
-    auto_purchase_saved_cart_after_topup,
-)
+from app.services.pricing_engine import RenewalPricing, pricing_engine
 from app.services.subscription_renewal_service import (
     RenewalPaymentDescriptor,
     SubscriptionRenewalChargeError,
@@ -52,21 +50,13 @@ class _UserNotificationPayload:
     asset: str
 
 
-@dataclass(slots=True)
-class _SavedCartNotificationPayload:
-    telegram_id: int
-    text: str
-    reply_markup: Any
-    user_id: int
-
-
 class CryptoBotPaymentMixin:
     """Mixin, отвечающий за генерацию инвойсов CryptoBot и обработку webhook."""
 
     async def create_cryptobot_payment(
         self,
         db: AsyncSession,
-        user_id: int,
+        user_id: int | None,
         amount_usd: float,
         asset: str = 'USDT',
         description: str = 'Пополнение баланса',
@@ -174,7 +164,13 @@ class CryptoBotPaymentMixin:
             else:
                 paid_at = datetime.now(UTC)
 
-            updated_payment = await cryptobot_crud.update_cryptobot_payment_status(db, invoice_id, status, paid_at)
+            updated_payment = await cryptobot_crud.update_cryptobot_payment_status(
+                db,
+                invoice_id,
+                status,
+                paid_at,
+                commit=False,
+            )
 
             descriptor = decode_payment_payload(
                 getattr(updated_payment, 'payload', '') or '',
@@ -204,6 +200,44 @@ class CryptoBotPaymentMixin:
                     cryptobot_crud,
                 )
                 if renewal_handled:
+                    return True
+
+            locked = await cryptobot_crud.get_cryptobot_payment_by_id_for_update(db, updated_payment.id)
+            if not locked:
+                logger.error('CryptoBot: не удалось заблокировать платёж', payment_id=updated_payment.id)
+                return False
+            updated_payment = locked
+
+            # --- Guest purchase flow (landing page) ---
+            # CryptoBot stores guest metadata in the payload field (JSON string),
+            # not in metadata_json (which doesn't exist on CryptoBotPayment).
+            crypto_payload_str = getattr(updated_payment, 'payload', '') or ''
+            crypto_guest_meta: dict[str, Any] | None = None
+            if crypto_payload_str:
+                try:
+                    import json as _json
+
+                    parsed = _json.loads(crypto_payload_str)
+                    if isinstance(parsed, dict) and parsed.get('purpose') == 'guest_purchase':
+                        crypto_guest_meta = parsed
+                except (ValueError, TypeError):
+                    pass
+
+            if crypto_guest_meta is not None:
+                from app.services.payment.common import try_fulfill_guest_purchase
+
+                guest_result = await try_fulfill_guest_purchase(
+                    db,
+                    metadata=crypto_guest_meta,
+                    payment_amount_kopeks=0,  # not used: skip_amount_check=True
+                    provider_payment_id=invoice_id,
+                    provider_name='cryptobot',
+                    skip_amount_check=True,  # USD->RUB conversion introduces imprecision
+                )
+                if guest_result is not None:
+                    locked.status = 'paid'
+                    locked.paid_at = datetime.now(UTC)
+                    await db.commit()
                     return True
 
             if not updated_payment.transaction_id:
@@ -252,6 +286,7 @@ class CryptoBotPaymentMixin:
                     external_id=invoice_id,
                     is_completed=True,
                     created_at=getattr(updated_payment, 'created_at', None),
+                    commit=False,
                 )
 
                 await cryptobot_crud.link_cryptobot_payment_to_transaction(db, invoice_id, transaction.id)
@@ -261,6 +296,11 @@ class CryptoBotPaymentMixin:
                 if not user:
                     logger.error('Пользователь с ID не найден при пополнении баланса', user_id=updated_payment.user_id)
                     return False
+
+                # Lock user row to prevent concurrent balance race conditions
+                from app.database.crud.user import lock_user_for_update
+
+                user = await lock_user_for_update(db, user)
 
                 old_balance = user.balance_kopeks
                 was_first_topup = not user.has_made_first_topup
@@ -272,6 +312,19 @@ class CryptoBotPaymentMixin:
                 topup_status = '🆕 Первое пополнение' if was_first_topup else '🔄 Пополнение'
 
                 await db.commit()
+
+                # Emit deferred side-effects after atomic commit
+                from app.database.crud.transaction import emit_transaction_side_effects
+
+                await emit_transaction_side_effects(
+                    db,
+                    transaction,
+                    amount_kopeks=amount_kopeks,
+                    user_id=updated_payment.user_id,
+                    type=TransactionType.DEPOSIT,
+                    payment_method=PaymentMethod.CRYPTOBOT,
+                    external_id=invoice_id,
+                )
 
                 try:
                     from app.services.referral_service import process_referral_topup
@@ -285,7 +338,7 @@ class CryptoBotPaymentMixin:
                 except Exception as error:
                     logger.error('Ошибка обработки реферального пополнения CryptoBot', error=error)
 
-                if was_first_topup and not user.has_made_first_topup:
+                if was_first_topup and not user.has_made_first_topup and not user.referred_by_id:
                     user.has_made_first_topup = True
                     await db.commit()
 
@@ -293,7 +346,6 @@ class CryptoBotPaymentMixin:
 
                 admin_notification: _AdminNotificationContext | None = None
                 user_notification: _UserNotificationPayload | None = None
-                saved_cart_notification: _SavedCartNotificationPayload | None = None
 
                 bot_instance = getattr(self, 'bot', None)
                 if bot_instance:
@@ -326,64 +378,17 @@ class CryptoBotPaymentMixin:
                     except Exception as error:
                         logger.error('Ошибка подготовки уведомления о пополнении CryptoBot', error=error)
 
+                if admin_notification:
+                    await self._deliver_admin_topup_notification(admin_notification)
+
+                if user_notification and bot_instance:
+                    await self._deliver_user_topup_notification(user_notification)
+
                 # Проверяем наличие сохраненной корзины для возврата к оформлению подписки
                 try:
-                    from aiogram import types
+                    from app.services.payment.common import send_cart_notification_after_topup
 
-                    from app.services.user_cart_service import user_cart_service
-
-                    has_saved_cart = await user_cart_service.has_user_cart(user.id)
-                    auto_purchase_success = False
-                    if has_saved_cart:
-                        try:
-                            auto_purchase_success = await auto_purchase_saved_cart_after_topup(
-                                db,
-                                user,
-                                bot=bot_instance,
-                            )
-                        except Exception as auto_error:
-                            logger.error(
-                                'Ошибка автоматической покупки подписки для пользователя',
-                                user_id=user.id,
-                                auto_error=auto_error,
-                                exc_info=True,
-                            )
-
-                        if auto_purchase_success:
-                            has_saved_cart = False
-
-                    if has_saved_cart and bot_instance:
-                        from app.localization.texts import get_texts
-
-                        texts = get_texts(user.language)
-                        cart_message = texts.BALANCE_TOPUP_CART_REMINDER_DETAILED.format(
-                            total_amount=settings.format_price(amount_kopeks)
-                        )
-
-                        keyboard = types.InlineKeyboardMarkup(
-                            inline_keyboard=[
-                                [
-                                    types.InlineKeyboardButton(
-                                        text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT, callback_data='return_to_saved_cart'
-                                    )
-                                ],
-                                [types.InlineKeyboardButton(text='💰 Мой баланс', callback_data='menu_balance')],
-                                [types.InlineKeyboardButton(text='🏠 Главное меню', callback_data='back_to_menu')],
-                            ]
-                        )
-
-                        saved_cart_notification = _SavedCartNotificationPayload(
-                            telegram_id=user.telegram_id,
-                            text=(
-                                f'✅ Баланс пополнен на {settings.format_price(amount_kopeks)}!\n\n'
-                                f'⚠️ <b>Важно:</b> Пополнение баланса не активирует подписку автоматически. '
-                                f'Обязательно активируйте подписку отдельно!\n\n'
-                                f'🔄 При наличии сохранённой корзины подписки и включенной автопокупке, '
-                                f'подписка будет приобретена автоматически после пополнения баланса.\n\n{cart_message}'
-                            ),
-                            reply_markup=keyboard,
-                            user_id=user.id,
-                        )
+                    await send_cart_notification_after_topup(user, amount_kopeks, db, bot_instance)
                 except Exception as error:
                     logger.error(
                         'Ошибка при работе с сохраненной корзиной для пользователя',
@@ -391,15 +396,6 @@ class CryptoBotPaymentMixin:
                         error=error,
                         exc_info=True,
                     )
-
-                if admin_notification:
-                    await self._deliver_admin_topup_notification(admin_notification)
-
-                if user_notification and bot_instance:
-                    await self._deliver_user_topup_notification(user_notification)
-
-                if saved_cart_notification and bot_instance:
-                    await self._deliver_saved_cart_reminder(saved_cart_notification)
 
             return True
 
@@ -420,7 +416,7 @@ class CryptoBotPaymentMixin:
         except Exception as error:
             logger.error(
                 'Не удалось загрузить пользователя для продления через CryptoBot',
-                getattr=getattr(payment, 'user_id', None),
+                payment_user_id=getattr(payment, 'user_id', None),
                 error=error,
             )
             return False
@@ -428,7 +424,7 @@ class CryptoBotPaymentMixin:
         if not user:
             logger.error(
                 'Пользователь не найден при обработке продления через CryptoBot',
-                getattr=getattr(payment, 'user_id', None),
+                payment_user_id=getattr(payment, 'user_id', None),
             )
             return False
 
@@ -436,12 +432,27 @@ class CryptoBotPaymentMixin:
         if not subscription or subscription.id != descriptor.subscription_id:
             logger.warning(
                 'Продление через CryptoBot отклонено: подписка не совпадает с ожидаемой',
-                getattr=getattr(subscription, 'id', None),
-                subscription_id=descriptor.subscription_id,
+                current_subscription_id=getattr(subscription, 'id', None),
+                expected_subscription_id=descriptor.subscription_id,
             )
             return False
 
-        pricing_model: SubscriptionRenewalPricing | None = None
+        # Validate period_days against allowed periods
+        tariff = getattr(subscription, 'tariff', None)
+        if tariff and tariff.period_prices:
+            allowed_periods = [int(p) for p in tariff.period_prices.keys()]
+        else:
+            allowed_periods = settings.get_available_renewal_periods()
+        if descriptor.period_days not in allowed_periods:
+            logger.error(
+                'CryptoBot renewal rejected: period_days not in allowed periods',
+                invoice_id=payment.invoice_id,
+                period_days=descriptor.period_days,
+                allowed_periods=allowed_periods,
+            )
+            return False
+
+        pricing_model: SubscriptionRenewalPricing | RenewalPricing | None = None
         if descriptor.pricing_snapshot:
             try:
                 pricing_model = SubscriptionRenewalPricing.from_payload(descriptor.pricing_snapshot)
@@ -454,11 +465,11 @@ class CryptoBotPaymentMixin:
 
         if pricing_model is None:
             try:
-                pricing_model = await renewal_service.calculate_pricing(
+                pricing_model = await pricing_engine.calculate_renewal_price(
                     db,
-                    user,
                     subscription,
                     descriptor.period_days,
+                    user=user,
                 )
             except Exception as error:
                 logger.error(
@@ -470,27 +481,40 @@ class CryptoBotPaymentMixin:
 
             if pricing_model.final_total != descriptor.total_amount_kopeks:
                 logger.warning(
-                    'Сумма продления через CryptoBot изменилась (ожидалось , получено)',
+                    'Сумма продления через CryptoBot изменилась',
                     invoice_id=payment.invoice_id,
-                    total_amount_kopeks=descriptor.total_amount_kopeks,
-                    final_total=pricing_model.final_total,
+                    expected_kopeks=descriptor.total_amount_kopeks,
+                    actual_kopeks=pricing_model.final_total,
                 )
-                pricing_model.final_total = descriptor.total_amount_kopeks
-                pricing_model.per_month = (
-                    descriptor.total_amount_kopeks // pricing_model.months
-                    if pricing_model.months
-                    else descriptor.total_amount_kopeks
+                if pricing_model.final_total > descriptor.total_amount_kopeks:
+                    # Price increased since invoice creation — user would be undercharged.
+                    # Reject and let the user create a new invoice at the current price.
+                    logger.error(
+                        'CryptoBot renewal rejected: recalculated price exceeds agreed amount',
+                        invoice_id=payment.invoice_id,
+                        agreed_kopeks=descriptor.total_amount_kopeks,
+                        recalculated_kopeks=pricing_model.final_total,
+                    )
+                    return False
+                # Price decreased — charge recalculated (lower) amount, user benefits
+                logger.info(
+                    'CryptoBot renewal: price decreased, user benefits',
+                    invoice_id=payment.invoice_id,
+                    agreed_kopeks=descriptor.total_amount_kopeks,
+                    recalculated_kopeks=pricing_model.final_total,
+                    delta_kopeks=descriptor.total_amount_kopeks - pricing_model.final_total,
                 )
 
-        pricing_model.period_days = descriptor.period_days
-        pricing_model.period_id = build_renewal_period_id(descriptor.period_days)
+        # Override period_days/period_id only on mutable SubscriptionRenewalPricing
+        if isinstance(pricing_model, SubscriptionRenewalPricing):
+            pricing_model.period_days = descriptor.period_days
+            pricing_model.period_id = build_renewal_period_id(descriptor.period_days)
 
+        # When price drops, recalculate balance portion: total minus the fixed external payment
+        # This ensures the user isn't overcharged from balance when crypto already covers more
         required_balance = max(
             0,
-            min(
-                pricing_model.final_total,
-                descriptor.balance_component_kopeks,
-            ),
+            pricing_model.final_total - descriptor.missing_amount_kopeks,
         )
 
         current_balance = getattr(user, 'balance_kopeks', 0)
@@ -622,40 +646,13 @@ class CryptoBotPaymentMixin:
                 reply_markup=payload.reply_markup,
             )
             logger.info(
-                '✅ Отправлено уведомление пользователю %s о пополнении на %s₽ (%s)',
-                payload.telegram_id,
-                f'{payload.amount_rubles:.2f}',
-                payload.asset,
+                'Отправлено уведомление пользователю о пополнении',
+                telegram_id=payload.telegram_id,
+                amount_rubles=f'{payload.amount_rubles:.2f}',
+                asset=payload.asset,
             )
         except Exception as error:
             logger.error('Ошибка отправки уведомления о пополнении CryptoBot', error=error)
-
-    async def _deliver_saved_cart_reminder(self, payload: _SavedCartNotificationPayload) -> None:
-        bot_instance = getattr(self, 'bot', None)
-        if not bot_instance:
-            return
-
-        # Skip email-only users (no telegram_id)
-        if not payload.telegram_id:
-            logger.debug('Пропуск напоминания о корзине для email-пользователя')
-            return
-
-        try:
-            await bot_instance.send_message(
-                chat_id=payload.telegram_id,
-                text=payload.text,
-                reply_markup=payload.reply_markup,
-            )
-            logger.info(
-                'Отправлено уведомление с кнопкой возврата к оформлению подписки пользователю', user_id=payload.user_id
-            )
-        except Exception as error:
-            logger.error(
-                'Ошибка отправки уведомления о сохраненной корзине для пользователя',
-                user_id=payload.user_id,
-                error=error,
-                exc_info=True,
-            )
 
     async def get_cryptobot_payment_status(
         self,

@@ -1,9 +1,11 @@
+import functools
 import json
 from datetime import timedelta
 from typing import Any
 
 import redis.asyncio as redis
 import structlog
+from redis.exceptions import NoScriptError
 
 from app.config import settings
 
@@ -21,6 +23,8 @@ class CacheService:
             self.redis_client = redis.from_url(settings.REDIS_URL)
             await self.redis_client.ping()
             self._connected = True
+            # Invalidate cached Lua script SHA (new connection = new script cache)
+            RateLimitCache._rate_limit_sha = None
             logger.info('✅ Подключение к Redis кешу установлено')
         except Exception as e:
             logger.warning('⚠️ Не удалось подключиться к Redis', error=e)
@@ -81,6 +85,23 @@ class CacheService:
         except Exception as e:
             logger.error('Ошибка setnx в кеш', key=key, error=e)
             return False
+
+    async def getdel(self, key: str) -> Any | None:
+        """Atomically get and delete a key (Redis GETDEL).
+
+        Returns the deserialized value if it existed, None otherwise.
+        """
+        if not self._connected:
+            return None
+
+        try:
+            value = await self.redis_client.getdel(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            logger.error('Ошибка атомарного getdel из кеша', key=key, error=e)
+            return None
 
     async def delete(self, key: str) -> bool:
         if not self._connected:
@@ -246,8 +267,9 @@ def cache_key(*parts) -> str:
     return ':'.join(str(part) for part in parts)
 
 
-async def cached_function(key: str, expire: int = 300):
+def cached_function(key: str, expire: int = 300):
     def decorator(func):
+        @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             cache_result = await cache.get(key)
             if cache_result is not None:
@@ -323,22 +345,187 @@ class SystemCache:
 
 
 class RateLimitCache:
+    # Lua script: atomic INCR + conditional EXPIRE (only on key creation).
+    # Prevents sliding window — TTL is set once, not refreshed on every request.
+    _RATE_LIMIT_SCRIPT = """
+local c = redis.call('INCR', KEYS[1])
+if c == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return c
+"""
+    _rate_limit_sha: str | None = None
+
+    @staticmethod
+    async def _atomic_rate_check(key: str, limit: int, window: int, *, fail_closed: bool = False) -> bool:
+        """Atomic rate limit check using Lua INCR + conditional EXPIRE.
+
+        Returns True if rate limited, False if allowed.
+        EXPIRE is set only on key creation (INCR returns 1), preventing
+        sliding window where each request would reset the TTL.
+        When fail_closed=True, blocks requests when Redis is unavailable
+        (use for security-critical unauthenticated endpoints).
+        """
+        if not cache._connected or cache.redis_client is None:
+            logger.warning('Rate limiter unavailable: Redis disconnected', key=key)
+            return fail_closed
+
+        try:
+            # Cache the script SHA for performance (avoids sending script body every time)
+            if RateLimitCache._rate_limit_sha is None:
+                RateLimitCache._rate_limit_sha = await cache.redis_client.script_load(
+                    RateLimitCache._RATE_LIMIT_SCRIPT,
+                )
+            try:
+                current = await cache.redis_client.evalsha(
+                    RateLimitCache._rate_limit_sha,
+                    1,
+                    key,
+                    window,
+                )
+            except NoScriptError:
+                # SHA evicted from Redis script cache — reload and retry
+                RateLimitCache._rate_limit_sha = await cache.redis_client.script_load(
+                    RateLimitCache._RATE_LIMIT_SCRIPT,
+                )
+                current = await cache.redis_client.evalsha(
+                    RateLimitCache._rate_limit_sha,
+                    1,
+                    key,
+                    window,
+                )
+            return int(current) > limit
+        except Exception:
+            logger.warning('Rate limiter error', key=key, exc_info=True)
+            return fail_closed
+
     @staticmethod
     async def is_rate_limited(user_id: int, action: str, limit: int, window: int) -> bool:
         key = cache_key('rate_limit', user_id, action)
-        current = await cache.get(key)
-
-        if current is None:
-            await cache.set(key, 1, window)
-            return False
-
-        if current >= limit:
-            return True
-
-        await cache.increment(key)
-        return False
+        return await RateLimitCache._atomic_rate_check(key, limit, window)
 
     @staticmethod
     async def reset_rate_limit(user_id: int, action: str) -> bool:
         key = cache_key('rate_limit', user_id, action)
         return await cache.delete(key)
+
+    @staticmethod
+    async def is_ip_rate_limited(ip: str, action: str, limit: int, window: int, *, fail_closed: bool = False) -> bool:
+        """IP-based rate limiting for unauthenticated endpoints."""
+        key = cache_key('rate_limit', 'ip', ip, action)
+        return await RateLimitCache._atomic_rate_check(key, limit, window, fail_closed=fail_closed)
+
+
+class TokenReplayCache:
+    """Prevents OIDC id_token replay by storing token hashes with TTL."""
+
+    @staticmethod
+    async def is_token_replayed(token_hash: str, ttl: int = 300) -> bool:
+        """Check if token was already used. Returns True if replayed.
+
+        Sets the token hash in Redis with TTL on first use.
+        If Redis is unavailable, allows the request (fail-open,
+        since rate limiting already provides protection).
+        """
+        if not cache._connected or cache.redis_client is None:
+            return False
+        try:
+            key = cache_key('oidc_token', token_hash)
+            was_set = await cache.redis_client.set(key, '1', ex=ttl, nx=True)
+            return not was_set  # nx=True returns None if key already exists
+        except Exception:
+            return False
+
+
+class ChannelSubCache:
+    """Cache for user channel subscription statuses.
+
+    Redis keys:
+    - channel_sub:{telegram_id}:{channel_id} -> "1" or "0" (TTL 600s)
+    - required_channels:active -> JSON list of active channels (TTL 60s)
+    """
+
+    SUB_TTL = 600  # 10 min -- individual user subscription status
+    CHANNELS_TTL = 60  # 1 min -- list of required channels
+
+    @staticmethod
+    async def get_sub_status(telegram_id: int, channel_id: str) -> bool | None:
+        """Get subscription status from cache. None = cache miss."""
+        key = cache_key('channel_sub', telegram_id, channel_id)
+        result = await cache.get(key)
+        if result is None:
+            return None
+        return result == 1
+
+    @staticmethod
+    async def get_sub_statuses(telegram_id: int, channel_ids: list[str]) -> dict[str, bool | None]:
+        """Batch-fetch subscription statuses via Redis MGET (single round-trip).
+
+        Returns {channel_id: True/False/None} where None = cache miss.
+        Falls back to sequential gets if Redis pipeline is unavailable.
+        """
+        if not channel_ids:
+            return {}
+
+        if not cache._connected or cache.redis_client is None:
+            return dict.fromkeys(channel_ids, None)
+
+        keys = [cache_key('channel_sub', telegram_id, ch_id) for ch_id in channel_ids]
+        try:
+            raw_values = await cache.redis_client.mget(keys)
+        except Exception as e:
+            logger.warning('Redis MGET failed, falling back to sequential', error=str(e))
+            result: dict[str, bool | None] = {}
+            for ch_id in channel_ids:
+                result[ch_id] = await ChannelSubCache.get_sub_status(telegram_id, ch_id)
+            return result
+
+        statuses: dict[str, bool | None] = {}
+        for ch_id, raw in zip(channel_ids, raw_values, strict=True):
+            if raw is None:
+                statuses[ch_id] = None
+            else:
+                try:
+                    parsed = json.loads(raw)
+                    statuses[ch_id] = parsed == 1
+                except (ValueError, TypeError):
+                    statuses[ch_id] = None
+        return statuses
+
+    @staticmethod
+    async def set_sub_status(telegram_id: int, channel_id: str, is_member: bool) -> None:
+        key = cache_key('channel_sub', telegram_id, channel_id)
+        await cache.set(key, 1 if is_member else 0, expire=ChannelSubCache.SUB_TTL)
+
+    @staticmethod
+    async def invalidate_sub(telegram_id: int, channel_id: str) -> None:
+        key = cache_key('channel_sub', telegram_id, channel_id)
+        await cache.delete(key)
+
+    @staticmethod
+    async def invalidate_user_channels(telegram_id: int, channel_ids: list[str]) -> None:
+        """Invalidate specific channel keys for a user using single Redis DELETE.
+
+        Uses multi-key DELETE (O(K)) instead of delete_pattern() which uses KEYS (O(N)).
+        At 100k users * 5 channels = 500k keys, KEYS would block Redis for seconds.
+        """
+        if not channel_ids or not cache._connected or not cache.redis_client:
+            return
+        keys = [cache_key('channel_sub', telegram_id, ch_id) for ch_id in channel_ids]
+        try:
+            await cache.redis_client.delete(*keys)
+        except Exception as e:
+            logger.warning('Failed to invalidate user channel cache', telegram_id=telegram_id, error=e)
+
+    @staticmethod
+    async def get_required_channels() -> list[dict] | None:
+        """Get the list of required channels from cache."""
+        return await cache.get('required_channels:active')
+
+    @staticmethod
+    async def set_required_channels(channels: list[dict]) -> None:
+        await cache.set('required_channels:active', channels, expire=ChannelSubCache.CHANNELS_TTL)
+
+    @staticmethod
+    async def invalidate_channels() -> None:
+        await cache.delete('required_channels:active')

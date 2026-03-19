@@ -323,14 +323,11 @@ class ReferralContestService:
         if not self.bot:
             return
 
-        channel_id_raw = settings.CHANNEL_SUB_ID
-        if not channel_id_raw:
-            return
+        from app.services.channel_subscription_service import channel_subscription_service
 
-        try:
-            channel_id = int(channel_id_raw)
-        except Exception:
-            channel_id = channel_id_raw
+        channel_id = await channel_subscription_service.get_first_channel_id()
+        if not channel_id:
+            return
 
         lines = [
             f'🏆 {contest.title}',
@@ -358,9 +355,9 @@ class ReferralContestService:
                 disable_web_page_preview=True,
             )
         except (TelegramForbiddenError, TelegramNotFound):
-            logger.info('Не удалось отправить сводку конкурса в канал', channel_id_raw=channel_id_raw)
+            logger.info('Не удалось отправить сводку конкурса в канал', channel_id=channel_id)
         except Exception as exc:
-            logger.error('Ошибка отправки сводки конкурса в канал', channel_id_raw=channel_id_raw, exc=exc)
+            logger.error('Ошибка отправки сводки конкурса в канал', channel_id=channel_id, exc=exc)
 
     def _build_participant_message(
         self,
@@ -536,6 +533,9 @@ class ReferralContestService:
                 user_created_at = user.created_at
                 contest_start = contest.start_at
                 contest_end = contest.end_at
+                # Нормализация конца дня (полночь → 23:59:59) как в CRUD-слое
+                if contest_end.hour == 0 and contest_end.minute == 0 and contest_end.second == 0:
+                    contest_end = contest_end.replace(hour=23, minute=59, second=59, microsecond=999999)
 
                 if user_created_at < contest_start or user_created_at > contest_end:
                     logger.debug(
@@ -593,6 +593,9 @@ class ReferralContestService:
                 user_created_at = user.created_at
                 contest_start = contest.start_at
                 contest_end = contest.end_at
+                # Нормализация конца дня (полночь → 23:59:59) как в CRUD-слое
+                if contest_end.hour == 0 and contest_end.minute == 0 and contest_end.second == 0:
+                    contest_end = contest_end.replace(hour=23, minute=59, second=59, microsecond=999999)
 
                 if user_created_at < contest_start or user_created_at > contest_end:
                     logger.debug(

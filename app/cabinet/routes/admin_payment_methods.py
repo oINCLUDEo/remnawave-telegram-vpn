@@ -4,7 +4,7 @@ from datetime import datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import User
@@ -17,7 +17,7 @@ from app.services.payment_method_config_service import (
     update_sort_order,
 )
 
-from ..dependencies import get_cabinet_db, get_current_admin_user
+from ..dependencies import get_cabinet_db, require_permission
 
 
 logger = structlog.get_logger(__name__)
@@ -60,10 +60,23 @@ class PaymentMethodConfigResponse(BaseModel):
 class PaymentMethodConfigUpdateRequest(BaseModel):
     is_enabled: bool | None = None
     display_name: str | None = Field(default=None, description='Null to reset to default')
-    sub_options: dict | None = None
+    sub_options: dict[str, bool] | None = None
     min_amount_kopeks: int | None = Field(default=None, ge=0)
     max_amount_kopeks: int | None = Field(default=None, ge=0)
     user_type_filter: str | None = Field(default=None, pattern='^(all|telegram|email)$')
+
+    @field_validator('sub_options', mode='before')
+    @classmethod
+    def validate_sub_options(cls, v: dict[str, bool] | None) -> dict[str, bool] | None:
+        if not v:
+            return None
+        if len(v) > 20:
+            raise ValueError('sub_options cannot have more than 20 keys')
+        for key in v:
+            if not isinstance(key, str) or len(key) > 50:
+                raise ValueError('sub_options keys must be strings of at most 50 characters')
+        return v
+
     first_topup_filter: str | None = Field(default=None, pattern='^(any|yes|no)$')
     promo_group_filter_mode: str | None = Field(default=None, pattern='^(all|selected)$')
     allowed_promo_group_ids: list[int] | None = None
@@ -124,7 +137,7 @@ def _enrich_config(config, defaults: dict) -> PaymentMethodConfigResponse:
 
 @router.get('', response_model=list[PaymentMethodConfigResponse])
 async def list_payment_methods(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payment_methods:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """List all payment method configurations."""
@@ -135,7 +148,7 @@ async def list_payment_methods(
 
 @router.get('/promo-groups', response_model=list[PromoGroupSimple])
 async def list_promo_groups(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payment_methods:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """List all promo groups for filter selector."""
@@ -146,7 +159,7 @@ async def list_promo_groups(
 @router.get('/{method_id}', response_model=PaymentMethodConfigResponse)
 async def get_payment_method(
     method_id: str,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payment_methods:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get a single payment method configuration."""
@@ -163,7 +176,7 @@ async def get_payment_method(
 @router.put('/order')
 async def update_payment_methods_order(
     request: SortOrderRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payment_methods:edit')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Batch update sort order for payment methods."""
@@ -176,7 +189,7 @@ async def update_payment_methods_order(
 async def update_payment_method(
     method_id: str,
     request: PaymentMethodConfigUpdateRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payment_methods:edit')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Update a payment method configuration."""
