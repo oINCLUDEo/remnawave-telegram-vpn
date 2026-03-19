@@ -1017,6 +1017,19 @@ class _UpgradeSectionState extends State<_UpgradeSection>
   List<TrafficOption> get _trafficOpts {
     final current = _resolveCurrentTrafficGb();
     if (current <= 0) return const <TrafficOption>[];
+    final topupPkgs = widget.options.trafficTopupPackages
+        .where((p) => p.enabled && p.gb > 0)
+        .toList();
+    if (topupPkgs.isNotEmpty) {
+      return topupPkgs
+          .map((p) => TrafficOption(
+                value: p.gb,
+                label:
+                    '+${p.gb} ГБ · ${(p.priceKopeks / 100).toStringAsFixed(p.priceKopeks % 100 == 0 ? 0 : 2)} ₽',
+                priceKopeks: p.priceKopeks,
+              ))
+          .toList();
+    }
     final first = widget.options.periods.firstOrNull;
     final opts = first?.traffic?.options
         .where((o) => o.value > 0)
