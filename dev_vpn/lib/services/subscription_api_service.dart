@@ -15,7 +15,6 @@ class SubscriptionOptions {
   final double balanceRub;
   final String currency;
   final Map<String, dynamic>? currentSubscription;
-  final List<TrafficTopupPackage> trafficTopupPackages;
 
   const SubscriptionOptions({
     required this.hasSubscription,
@@ -23,14 +22,12 @@ class SubscriptionOptions {
     required this.balanceKopeks,
     required this.balanceRub,
     required this.currency,
-    this.trafficTopupPackages = const [],
     this.currentSubscription,
   });
 
   factory SubscriptionOptions.fromJson(Map<String, dynamic> json) {
     final ctx = json['context'] as Map<String, dynamic>? ?? {};
     final periodsRaw = ctx['periods'] as List<dynamic>? ?? [];
-    final topupRaw = ctx['traffic_topup_packages'] as List<dynamic>? ?? [];
     return SubscriptionOptions(
       hasSubscription: json['has_subscription'] as bool? ?? false,
       periods: periodsRaw
@@ -40,10 +37,6 @@ class SubscriptionOptions {
       balanceKopeks: (ctx['balance_kopeks'] as num?)?.toInt() ?? 0,
       balanceRub: (ctx['balance_rub'] as num?)?.toDouble() ?? 0.0,
       currency: ctx['currency'] as String? ?? 'RUB',
-      trafficTopupPackages: topupRaw
-          .whereType<Map<String, dynamic>>()
-          .map(TrafficTopupPackage.fromJson)
-          .toList(),
       currentSubscription: ctx['current_subscription'] as Map<String, dynamic>?,
     );
   }
@@ -138,28 +131,6 @@ class TrafficConfig {
       defaultValue: (json['default'] as num?)?.toInt(),
       currentValue: (json['current'] as num?)?.toInt(),
       options: opts,
-    );
-  }
-}
-
-class TrafficTopupPackage {
-  final int gb;
-  final int priceKopeks;
-  final bool enabled;
-
-  const TrafficTopupPackage({
-    required this.gb,
-    required this.priceKopeks,
-    required this.enabled,
-  });
-
-  factory TrafficTopupPackage.fromJson(Map<String, dynamic> json) {
-    return TrafficTopupPackage(
-      gb: (json['gb'] as num?)?.toInt() ?? 0,
-      priceKopeks: (json['price'] as num?)?.toInt() ??
-          (json['price_kopeks'] as num?)?.toInt() ??
-          0,
-      enabled: json['enabled'] as bool? ?? true,
     );
   }
 }

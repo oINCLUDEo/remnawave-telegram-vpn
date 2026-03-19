@@ -129,11 +129,6 @@ async def get_subscription_options(
             'balance_kopeks': context.balance_kopeks,
             'balance_rub': round(context.balance_kopeks / 100, 2),
             'currency': context.currency,
-            # Traffic top-up packages (same source as cabinet)
-            'traffic_topup_packages': [
-                pkg for pkg in settings.get_traffic_topup_packages()
-                if pkg.get('enabled', True)
-            ],
         }
 
         if subscription:
