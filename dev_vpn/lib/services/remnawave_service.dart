@@ -54,6 +54,17 @@ class RemnawaveService {
     await prefs.setString(_prefSubscriptionUrl, url.trim());
   }
 
+  /// Clears cached nodes, subscription info and selection while keeping
+  /// user-specific data like subscription URL and HWID.
+  static Future<void> clearCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefCachedNodes);
+    await prefs.remove(_prefCachedSubscriptionInfo);
+    await prefs.remove(_prefSelectedNodeUUID);
+    _lastSubscriptionInfo = null;
+    _lastFetchWasFromCache = false;
+  }
+
   // ── Device HWID ───────────────────────────────────────────────────────────
 
   /// Returns the stable hardware ID for this device installation.

@@ -1011,26 +1011,17 @@ class _UpgradeSectionState extends State<_UpgradeSection>
     return widget.sub.trafficLimitGb;
   }
 
-  /// Traffic add options derived from backend subscription options.
-  /// We take the first period's traffic options (they already include labels/pricing)
-  /// and keep only positive values. If backend gives nothing – no buttons.
-  List<int> get _trafficOpts {
+  /// Traffic add options derived from backend traffic options (as-is).
+  /// If backend returns no positive options or traffic is already unlimited,
+  /// hide the top-up section.
+  List<TrafficOption> get _trafficOpts {
     final current = _resolveCurrentTrafficGb();
-    if (current <= 0) return const [];
+    if (current <= 0) return const <TrafficOption>[];
     final first = widget.options.periods.firstOrNull;
     final opts = first?.traffic?.options
-        .map((o) => o.value)
-        .where((v) => v > 0)
+        .where((o) => o.value > 0)
         .toList();
-    if (opts == null || opts.isEmpty) return const [];
-    final additions = opts
-        .where((v) => v > current)
-        .map((v) => v - current)
-        .where((v) => v > 0)
-        .toSet()
-        .toList()
-      ..sort();
-    return additions;
+    return opts ?? const <TrafficOption>[];
   }
 
   /// Device add options derived from backend subscription options.
@@ -1062,7 +1053,7 @@ class _UpgradeSectionState extends State<_UpgradeSection>
     _tabCtrl = TabController(length: 3, vsync: this)
       ..addListener(() { if (mounted) setState(() => _tab = _tabCtrl.index); });
     if (widget.options.periods.isNotEmpty) _renewPeriodId = widget.options.periods.first.id;
-    _addTrafficGb = _trafficOpts.firstOrNull;
+    _addTrafficGb = _trafficOpts.firstOrNull?.value;
     _addDevices   = _devicesOpts.firstOrNull;
     _calcTrafficPrice(_addTrafficGb);
     _calcDevicesPrice(_addDevices);
@@ -1291,7 +1282,7 @@ class _RenewTab extends StatelessWidget {
 
 class _AddTrafficTab extends StatelessWidget {
   final int currentGb; final int? selectedAdd;
-  final List<int> options;
+  final List<TrafficOption> options;
   final ValueChanged<int> onSelected;
   final bool loading; final VoidCallback? onConfirm;
   final int? amountKopeks;
@@ -1319,7 +1310,11 @@ class _AddTrafficTab extends StatelessWidget {
       _RowLabel(icon: Icons.data_usage_rounded, label: 'Добавить трафик'),
       const SizedBox(height: 12),
       _OptionChips<int>(
-          options: options.map((gb) => _OItem<int>(value: gb, label: '+$gb ГБ')).toList(),
+          options: options.map((opt) => _OItem<int>(
+            value: opt.value,
+            label: opt.label.isNotEmpty ? opt.label : '+${opt.value} ГБ',
+            hot: opt.isDefault,
+          )).toList(),
           selected: selectedAdd, onSelected: onSelected, accent: _DS.sky),
       const SizedBox(height: 12),
       _BeforeAfter(icon: Icons.data_usage_rounded, label: 'Трафик',
