@@ -14,7 +14,7 @@ from app.database.crud.promocode import (
 from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
 from app.database.crud.user import add_user_balance, get_user_by_id
 from app.database.crud.user_promo_group import add_user_to_promo_group, has_user_promo_group
-from app.database.models import PromoCode, PromoCodeType, User
+from app.database.models import PromoCode, PromoCodeType, SubscriptionStatus, User
 from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
 
@@ -62,7 +62,7 @@ class PromoCodeService:
             if recent_count >= 5:
                 logger.warning(
                     'Promo stacking limit: user has activations in 24h',
-                    format_user_log=self._format_user_log(user),
+                    _format_user_log=self._format_user_log(user),
                     recent_count=recent_count,
                 )
                 return {'success': False, 'error': 'daily_limit'}
@@ -74,11 +74,24 @@ class PromoCodeService:
 
             balance_before_kopeks = user.balance_kopeks
 
+            # Резервируем запись использования ДО применения эффектов (защита от race condition)
+            promo_use = await create_promocode_use(db, promocode.id, user_id)
+            if promo_use is None:
+                return {'success': False, 'error': 'already_used_by_user'}
+
             try:
                 result_description = await self._apply_promocode_effects(db, user, promocode)
             except ValueError as e:
-                if str(e) == 'active_discount_exists':
-                    return {'success': False, 'error': 'active_discount_exists'}
+                # Эффекты не применены — удаляем зарезервированную запись использования
+                async with db.begin_nested():
+                    await db.delete(promo_use)
+                    await db.flush()
+                error_key = str(e)
+                if error_key in (
+                    'active_discount_exists',
+                    'no_subscription_for_days',
+                ):
+                    return {'success': False, 'error': error_key}
                 raise
             balance_after_kopeks = user.balance_kopeks
 
@@ -140,9 +153,13 @@ class PromoCodeService:
                     )
                     # Don't fail the whole promocode activation if promo group assignment fails
 
-            await create_promocode_use(db, promocode.id, user_id)
+            from sqlalchemy import update as sql_update
 
-            promocode.current_uses += 1
+            await db.execute(
+                sql_update(PromoCode)
+                .where(PromoCode.id == promocode.id)
+                .values(current_uses=PromoCode.current_uses + 1)
+            )
             await db.commit()
 
             logger.info('✅ Пользователь активировал промокод', _format_user_log=self._format_user_log(user), code=code)
@@ -241,66 +258,33 @@ class PromoCodeService:
             effects.append(f'💰 Баланс пополнен на {balance_bonus_rubles}₽')
 
         if promocode.type == PromoCodeType.SUBSCRIPTION_DAYS.value and promocode.subscription_days > 0:
-            from app.config import settings
-
             subscription = await get_subscription_by_user_id(db, user.id)
 
-            if subscription:
-                await extend_subscription(db, subscription, promocode.subscription_days)
+            if not subscription:
+                raise ValueError('no_subscription_for_days')
 
-                await self.subscription_service.update_remnawave_user(db, subscription)
-
-                effects.append(f'⏰ Подписка продлена на {promocode.subscription_days} дней')
+            # Конвертация триала в платную подписку при активации промокода на дни
+            if subscription.is_trial:
+                subscription.is_trial = False
+                if subscription.status == SubscriptionStatus.TRIAL.value:
+                    subscription.status = SubscriptionStatus.ACTIVE.value
+                subscription.updated_at = datetime.now(UTC)
                 logger.info(
-                    '✅ Подписка пользователя продлена на дней в RemnaWave с текущими сквадами',
-                    _format_user_log=self._format_user_log(user),
-                    subscription_days=promocode.subscription_days,
+                    '🎓 Промокод: конвертация триала в платную подписку',
+                    subscription_id=subscription.id,
+                    code=promocode.code,
                 )
 
-            else:
-                from app.database.crud.subscription import create_paid_subscription
+            await extend_subscription(db, subscription, promocode.subscription_days)
 
-                trial_squads = []
-                try:
-                    from app.database.crud.server_squad import get_random_trial_squad_uuid
+            await self.subscription_service.update_remnawave_user(db, subscription)
 
-                    trial_uuid = await get_random_trial_squad_uuid(db)
-                    if trial_uuid:
-                        trial_squads = [trial_uuid]
-                except Exception as error:
-                    logger.error(
-                        'Не удалось подобрать сквад для подписки по промокоду',
-                        promocode_code=promocode.code,
-                        error=error,
-                    )
-
-                forced_devices = None
-                if not settings.is_devices_selection_enabled():
-                    forced_devices = settings.get_disabled_mode_device_limit()
-
-                device_limit = settings.DEFAULT_DEVICE_LIMIT
-                if forced_devices is not None:
-                    device_limit = forced_devices
-
-                new_subscription = await create_paid_subscription(
-                    db=db,
-                    user_id=user.id,
-                    duration_days=promocode.subscription_days,
-                    traffic_limit_gb=0,
-                    device_limit=device_limit,
-                    connected_squads=trial_squads,
-                    update_server_counters=True,
-                )
-
-                await self.subscription_service.create_remnawave_user(db, new_subscription)
-
-                effects.append(f'🎉 Получена подписка на {promocode.subscription_days} дней')
-                logger.info(
-                    '✅ Создана новая подписка для пользователя на дней с триал сквадом',
-                    _format_user_log=self._format_user_log(user),
-                    subscription_days=promocode.subscription_days,
-                    trial_squads=trial_squads,
-                )
+            effects.append(f'⏰ Подписка продлена на {promocode.subscription_days} дней')
+            logger.info(
+                '✅ Подписка пользователя продлена на дней в RemnaWave с текущими сквадами',
+                _format_user_log=self._format_user_log(user),
+                subscription_days=promocode.subscription_days,
+            )
 
         if promocode.type == PromoCodeType.TRIAL_SUBSCRIPTION.value:
             from app.config import settings

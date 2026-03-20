@@ -12,9 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.models import PaymentMethod, TransactionType
 from app.services.pal24_service import Pal24APIError
-from app.services.subscription_auto_purchase_service import (
-    auto_purchase_saved_cart_after_topup,
-)
 from app.utils.payment_logger import payment_logger as logger
 from app.utils.user_utils import format_referrer_info
 
@@ -26,7 +23,7 @@ class Pal24PaymentMixin:
         self,
         db: AsyncSession,
         *,
-        user_id: int,
+        user_id: int | None,
         amount_kopeks: int,
         description: str,
         language: str,
@@ -56,7 +53,7 @@ class Pal24PaymentMixin:
             )
             return None
 
-        order_id = f'pal24_{user_id}_{uuid.uuid4().hex}'
+        order_id = f'pal24_{user_id or "guest"}_{uuid.uuid4().hex}'
 
         custom_payload = {
             'user_id': user_id,
@@ -349,8 +346,29 @@ class Pal24PaymentMixin:
             except Exception as error:  # pragma: no cover - diagnostics
                 logger.warning('Не удалось обновить метаданные PayPalych после удаления счёта', error=error)
 
+        pal24_lock_crud = import_module('app.database.crud.pal24')
+        locked = await pal24_lock_crud.get_pal24_payment_by_id_for_update(db, payment.id)
+        if not locked:
+            logger.error('Pal24: не удалось заблокировать платёж', payment_id=payment.id)
+            return False
+        payment = locked
+
         if payment.transaction_id:
             logger.info('Pal24 платеж уже привязан к транзакции (trigger=)', bill_id=payment.bill_id, trigger=trigger)
+            return True
+
+        # --- Guest purchase flow (landing page) ---
+        payment_meta = dict(getattr(payment, 'metadata_json', {}) or {})
+        from app.services.payment.common import try_fulfill_guest_purchase
+
+        guest_result = await try_fulfill_guest_purchase(
+            db,
+            metadata=payment_meta,
+            payment_amount_kopeks=payment.amount_kopeks,
+            provider_payment_id=payment.bill_id,
+            provider_name='pal24',
+        )
+        if guest_result is not None:
             return True
 
         user = await payment_module.get_user_by_id(db, payment.user_id)
@@ -373,9 +391,15 @@ class Pal24PaymentMixin:
             external_id=str(payment_id) if payment_id else payment.bill_id,
             is_completed=True,
             created_at=getattr(payment, 'created_at', None),
+            commit=False,
         )
 
         await payment_module.link_pal24_payment_to_transaction(db, payment, transaction.id)
+
+        # Lock user row to prevent concurrent balance race conditions
+        from app.database.crud.user import lock_user_for_update
+
+        user = await lock_user_for_update(db, user)
 
         old_balance = user.balance_kopeks
         was_first_topup = not user.has_made_first_topup
@@ -390,6 +414,19 @@ class Pal24PaymentMixin:
 
         await db.commit()
 
+        # Emit deferred side-effects after atomic commit
+        from app.database.crud.transaction import emit_transaction_side_effects
+
+        await emit_transaction_side_effects(
+            db,
+            transaction,
+            amount_kopeks=payment.amount_kopeks,
+            user_id=payment.user_id,
+            type=TransactionType.DEPOSIT,
+            payment_method=PaymentMethod.PAL24,
+            external_id=payment.bill_id,
+        )
+
         try:
             from app.services.referral_service import process_referral_topup
 
@@ -397,7 +434,7 @@ class Pal24PaymentMixin:
         except Exception as error:
             logger.error('Ошибка обработки реферального пополнения Pal24', error=error)
 
-        if was_first_topup and not user.has_made_first_topup:
+        if was_first_topup and not user.has_made_first_topup and not user.referred_by_id:
             user.has_made_first_topup = True
             await db.commit()
 
@@ -443,76 +480,9 @@ class Pal24PaymentMixin:
                 logger.error('Ошибка отправки уведомления пользователю Pal24', error=error)
 
         try:
-            from aiogram import types
+            from app.services.payment.common import send_cart_notification_after_topup
 
-            from app.services.user_cart_service import user_cart_service
-
-            has_saved_cart = await user_cart_service.has_user_cart(user.id)
-            auto_purchase_success = False
-            if has_saved_cart:
-                try:
-                    auto_purchase_success = await auto_purchase_saved_cart_after_topup(
-                        db,
-                        user,
-                        bot=getattr(self, 'bot', None),
-                    )
-                except Exception as auto_error:
-                    logger.error(
-                        'Ошибка автоматической покупки подписки для пользователя',
-                        user_id=user.id,
-                        auto_error=auto_error,
-                        exc_info=True,
-                    )
-
-                if auto_purchase_success:
-                    has_saved_cart = False
-
-            if has_saved_cart and getattr(self, 'bot', None) and user.telegram_id:
-                from app.localization.texts import get_texts
-
-                texts = get_texts(user.language)
-                cart_message = texts.t(
-                    'BALANCE_TOPUP_CART_REMINDER',
-                    'У вас есть незавершенное оформление подписки. Вернуться?',
-                )
-
-                keyboard = types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text=texts.t(
-                                    'BALANCE_TOPUP_CART_BUTTON',
-                                    '🛒 Продолжить оформление',
-                                ),
-                                callback_data='return_to_saved_cart',
-                            )
-                        ],
-                        [
-                            types.InlineKeyboardButton(
-                                text='🏠 Главное меню',
-                                callback_data='back_to_menu',
-                            )
-                        ],
-                    ]
-                )
-
-                await self.bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=(
-                        '✅ Баланс пополнен на '
-                        f'{settings.format_price(payment.amount_kopeks)}!\n\n'
-                        f'⚠️ <b>Важно:</b> Пополнение баланса не активирует подписку автоматически. '
-                        f'Обязательно активируйте подписку отдельно!\n\n'
-                        f'🔄 При наличии сохранённой корзины подписки и включенной автопокупке, '
-                        f'подписка будет приобретена автоматически после пополнения баланса.\n\n{cart_message}'
-                    ),
-                    reply_markup=keyboard,
-                )
-                logger.info(
-                    'Отправлено уведомление с кнопкой возврата к оформлению подписки пользователю', user_id=user.id
-                )
-            else:
-                logger.info('У пользователя нет сохраненной корзины или автопокупка выполнена', user_id=user.id)
+            await send_cart_notification_after_topup(user, payment.amount_kopeks, db, getattr(self, 'bot', None))
         except Exception as error:
             logger.error(
                 'Ошибка при работе с сохраненной корзиной для пользователя', user_id=user.id, error=error, exc_info=True

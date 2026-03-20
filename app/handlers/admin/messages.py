@@ -613,7 +613,9 @@ async def show_messages_history(callback: types.CallbackQuery, db_user: User, db
             )
 
             message_preview = (
-                broadcast.message_text[:100] + '...' if len(broadcast.message_text) > 100 else broadcast.message_text
+                broadcast.message_text[:100] + '...'
+                if broadcast.message_text and len(broadcast.message_text) > 100
+                else (broadcast.message_text or '📊 Опрос')
             )
 
             import html
@@ -1101,13 +1103,27 @@ async def confirm_button_selection(callback: types.CallbackQuery, db_user: User,
                 await callback.message.delete()
             except Exception:
                 pass
-            await callback.bot.send_photo(
-                chat_id=callback.message.chat.id,
-                photo=media_file_id,
-                caption=preview_text,
-                reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
-                parse_mode='HTML',
-            )
+            # Telegram ограничивает caption до 1024 символов
+            if len(preview_text) <= 1024:
+                await callback.bot.send_photo(
+                    chat_id=callback.message.chat.id,
+                    photo=media_file_id,
+                    caption=preview_text,
+                    reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+                    parse_mode='HTML',
+                )
+            else:
+                # Фото без caption + текст отдельным сообщением
+                await callback.bot.send_photo(
+                    chat_id=callback.message.chat.id,
+                    photo=media_file_id,
+                )
+                await callback.bot.send_message(
+                    chat_id=callback.message.chat.id,
+                    text=preview_text,
+                    reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+                    parse_mode='HTML',
+                )
         else:
             # Если нет file_id, используем safe редактирование
             await safe_edit_or_send_text(
@@ -1242,13 +1258,27 @@ async def confirm_broadcast(callback: types.CallbackQuery, db_user: User, state:
                             'video': 'video',
                             'document': 'document',
                         }[media_type]
-                        await send_method(
-                            chat_id=telegram_id,
-                            **{media_kwarg: media_file_id},
-                            caption=message_text,
-                            parse_mode='HTML',
-                            reply_markup=broadcast_keyboard,
-                        )
+                        # Telegram ограничивает caption до 1024 символов
+                        if len(message_text) <= 1024:
+                            await send_method(
+                                chat_id=telegram_id,
+                                **{media_kwarg: media_file_id},
+                                caption=message_text,
+                                parse_mode='HTML',
+                                reply_markup=broadcast_keyboard,
+                            )
+                        else:
+                            # Медиа без caption + текст отдельным сообщением
+                            await send_method(
+                                chat_id=telegram_id,
+                                **{media_kwarg: media_file_id},
+                            )
+                            await callback.bot.send_message(
+                                chat_id=telegram_id,
+                                text=message_text,
+                                parse_mode='HTML',
+                                reply_markup=broadcast_keyboard,
+                            )
                     else:
                         # Неизвестный media_type — отправляем как текст
                         await callback.bot.send_message(
@@ -1555,7 +1585,11 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
     if target == 'expired':
         # Истекшие подписки
         now = datetime.now(UTC)
-        expired_statuses = [SubscriptionStatus.EXPIRED.value, SubscriptionStatus.DISABLED.value]
+        expired_statuses = [
+            SubscriptionStatus.EXPIRED.value,
+            SubscriptionStatus.DISABLED.value,
+            SubscriptionStatus.LIMITED.value,
+        ]
         query = (
             select(sql_func.count(distinct(User.id)))
             .outerjoin(Subscription, User.id == Subscription.user_id)
@@ -1574,7 +1608,11 @@ async def get_target_users_count(db: AsyncSession, target: str) -> int:
     if target == 'expired_subscribers':
         # То же что и expired
         now = datetime.now(UTC)
-        expired_statuses = [SubscriptionStatus.EXPIRED.value, SubscriptionStatus.DISABLED.value]
+        expired_statuses = [
+            SubscriptionStatus.EXPIRED.value,
+            SubscriptionStatus.DISABLED.value,
+            SubscriptionStatus.LIMITED.value,
+        ]
         query = (
             select(sql_func.count(distinct(User.id)))
             .outerjoin(Subscription, User.id == Subscription.user_id)

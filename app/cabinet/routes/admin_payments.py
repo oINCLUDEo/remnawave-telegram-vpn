@@ -1,14 +1,26 @@
 """Admin routes for payment verification in cabinet."""
 
 import math
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.models import PaymentMethod, User
+from app.services.payment_search_service import (
+    MAX_ALL_TIME_DAYS,
+    PeriodPreset,
+    SearchParams,
+    StatusFilter,
+    search_payments,
+    search_payments_stats,
+)
 from app.services.payment_service import PaymentService
 from app.services.payment_verification_service import (
     SUPPORTED_MANUAL_CHECK_METHODS,
@@ -19,7 +31,7 @@ from app.services.payment_verification_service import (
     run_manual_check,
 )
 
-from ..dependencies import get_cabinet_db, get_current_admin_user
+from ..dependencies import get_cabinet_db, require_permission
 
 
 logger = structlog.get_logger(__name__)
@@ -80,6 +92,16 @@ class PaymentsStatsResponse(BaseModel):
     """Statistics about pending payments."""
 
     total_pending: int
+    by_method: dict
+
+
+class SearchStatsResponse(BaseModel):
+    """Statistics for payment search results."""
+
+    total: int
+    pending: int
+    paid: int
+    cancelled: int
     by_method: dict
 
 
@@ -206,7 +228,7 @@ def _is_checkable(record: PendingPayment) -> bool:
     if record.method == PaymentMethod.YOOKASSA:
         return status_str in {'pending', 'waiting_for_capture'}
     if record.method == PaymentMethod.CRYPTOBOT:
-        return status_str in {'active'}
+        return status_str == 'active'
     if record.method == PaymentMethod.CLOUDPAYMENTS:
         return status_str in {'pending', 'authorized'}
     if record.method == PaymentMethod.FREEKASSA:
@@ -237,6 +259,8 @@ def _get_payment_url(record: PendingPayment) -> str | None:
     elif record.method == PaymentMethod.CLOUDPAYMENTS or record.method == PaymentMethod.FREEKASSA:
         payment_url = getattr(payment, 'payment_url', None) or payment_url
 
+    if payment_url and not payment_url.startswith(('https://', 'http://')):
+        return None
     return payment_url
 
 
@@ -272,7 +296,7 @@ async def get_all_pending_payments(
     page: int = Query(1, ge=1, description='Page number'),
     per_page: int = Query(20, ge=1, le=100, description='Items per page'),
     method_filter: str | None = Query(None, description='Filter by payment method'),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payments:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get all pending payments for admin verification."""
@@ -306,7 +330,7 @@ async def get_all_pending_payments(
 
 @router.get('/stats', response_model=PaymentsStatsResponse)
 async def get_payments_stats(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payments:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get statistics about pending payments."""
@@ -325,11 +349,145 @@ async def get_payments_stats(
     )
 
 
+@router.get('/search', response_model=PendingPaymentListResponse)
+async def search_payments_endpoint(
+    search: str | None = Query(
+        None, max_length=256, description='Search query (invoice, @username, telegram_id, email)'
+    ),
+    status_filter: str = Query('all', description='Status filter: all, pending, paid, cancelled'),
+    method_filter: str | None = Query(None, description='Filter by payment method'),
+    period: str = Query('24h', description='Period preset: 24h, 7d, 30d, all'),
+    date_from: datetime | None = Query(None, description='Custom range start (ISO 8601)'),
+    date_to: datetime | None = Query(None, description='Custom range end (ISO 8601)'),
+    page: int = Query(1, ge=1, description='Page number'),
+    per_page: int = Query(20, ge=1, le=100, description='Items per page'),
+    admin: User = Depends(require_permission('payments:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Search payments across all providers with filters."""
+    try:
+        parsed_status = StatusFilter(status_filter)
+    except ValueError:
+        parsed_status = StatusFilter.ALL
+
+    try:
+        parsed_period = PeriodPreset(period)
+    except ValueError:
+        parsed_period = PeriodPreset.H24
+
+    parsed_method: PaymentMethod | None = None
+    if method_filter:
+        try:
+            parsed_method = PaymentMethod(method_filter)
+        except ValueError:
+            pass
+
+    # Ensure custom dates are timezone-aware
+    if date_from is not None and date_from.tzinfo is None:
+        date_from = date_from.replace(tzinfo=UTC)
+    if date_to is not None and date_to.tzinfo is None:
+        date_to = date_to.replace(tzinfo=UTC)
+
+    # Clamp custom dates to safety limit
+    min_allowed = datetime.now(UTC) - timedelta(days=MAX_ALL_TIME_DAYS)
+    if date_from is not None and date_from < min_allowed:
+        date_from = min_allowed
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='date_from must be before date_to')
+
+    params = SearchParams(
+        search=search.strip() if search else None,
+        status_filter=parsed_status,
+        method_filter=parsed_method,
+        period=parsed_period,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        per_page=per_page,
+    )
+
+    page_items, total = await search_payments(db, params)
+    pages = math.ceil(total / per_page) if total > 0 else 1
+    items = [_record_to_response(p) for p in page_items]
+
+    return PendingPaymentListResponse(
+        items=items,
+        total=total,
+        page=page,
+        per_page=per_page,
+        pages=pages,
+    )
+
+
+@router.get('/search/stats', response_model=SearchStatsResponse)
+async def search_payments_stats_endpoint(
+    search: str | None = Query(
+        None, max_length=256, description='Search query (invoice, @username, telegram_id, email)'
+    ),
+    status_filter: str = Query('all', description='Status filter: all, pending, paid, cancelled'),
+    method_filter: str | None = Query(None, description='Filter by payment method'),
+    period: str = Query('24h', description='Period preset: 24h, 7d, 30d, all'),
+    date_from: datetime | None = Query(None, description='Custom range start (ISO 8601)'),
+    date_to: datetime | None = Query(None, description='Custom range end (ISO 8601)'),
+    admin: User = Depends(require_permission('payments:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get aggregated statistics for payment search results."""
+    try:
+        parsed_status = StatusFilter(status_filter)
+    except ValueError:
+        parsed_status = StatusFilter.ALL
+
+    try:
+        parsed_period = PeriodPreset(period)
+    except ValueError:
+        parsed_period = PeriodPreset.H24
+
+    parsed_method: PaymentMethod | None = None
+    if method_filter:
+        try:
+            parsed_method = PaymentMethod(method_filter)
+        except ValueError:
+            pass
+
+    # Ensure custom dates are timezone-aware
+    if date_from is not None and date_from.tzinfo is None:
+        date_from = date_from.replace(tzinfo=UTC)
+    if date_to is not None and date_to.tzinfo is None:
+        date_to = date_to.replace(tzinfo=UTC)
+
+    # Clamp custom dates to safety limit
+    min_allowed = datetime.now(UTC) - timedelta(days=MAX_ALL_TIME_DAYS)
+    if date_from is not None and date_from < min_allowed:
+        date_from = min_allowed
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='date_from must be before date_to')
+
+    params = SearchParams(
+        search=search.strip() if search else None,
+        status_filter=parsed_status,
+        method_filter=parsed_method,
+        period=parsed_period,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    stats = await search_payments_stats(db, params)
+
+    return SearchStatsResponse(
+        total=stats.total,
+        pending=stats.pending,
+        paid=stats.paid,
+        cancelled=stats.cancelled,
+        by_method=stats.by_method or {},
+    )
+
+
 @router.get('/{method}/{payment_id}', response_model=PendingPaymentResponse)
 async def get_pending_payment_details(
     method: str,
     payment_id: int,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payments:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get details of a specific pending payment."""
@@ -338,7 +496,7 @@ async def get_pending_payment_details(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Invalid payment method: {method}',
+            detail='Invalid payment method',
         )
 
     record = await get_payment_record(db, payment_method, payment_id)
@@ -356,7 +514,7 @@ async def get_pending_payment_details(
 async def check_payment_status(
     method: str,
     payment_id: int,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('payments:edit')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Manually check and update payment status."""
@@ -365,7 +523,7 @@ async def check_payment_status(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Invalid payment method: {method}',
+            detail='Invalid payment method',
         )
 
     # Get current record
@@ -390,8 +548,12 @@ async def check_payment_status(
     old_is_paid = record.is_paid
 
     # Run manual check
-    payment_service = PaymentService()
-    updated = await run_manual_check(db, payment_method, payment_id, payment_service)
+    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        payment_service = PaymentService(bot=bot)
+        updated = await run_manual_check(db, payment_method, payment_id, payment_service)
+    finally:
+        await bot.session.close()
 
     if not updated:
         return ManualCheckResponse(

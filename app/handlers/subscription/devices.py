@@ -1,13 +1,14 @@
+import html as html_mod
 from datetime import UTC, datetime
 
 from aiogram import types
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud.subscription import add_subscription_devices
 from app.database.crud.transaction import create_transaction
-from app.database.crud.user import subtract_user_balance
-from app.database.models import TransactionType, User
+from app.database.crud.user import lock_user_for_pricing, subtract_user_balance
+from app.database.models import Subscription, TransactionType, User
 from app.keyboards.inline import (
     get_app_selection_keyboard,
     get_back_keyboard,
@@ -20,27 +21,24 @@ from app.keyboards.inline import (
     get_specific_app_keyboard,
 )
 from app.localization.texts import get_texts
+from app.services.pricing_engine import PricingEngine
 from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.utils.pagination import paginate_list
 from app.utils.pricing_utils import (
     apply_percentage_discount,
-    calculate_prorated_price,
-    get_remaining_months,
 )
 from app.utils.subscription_utils import (
     get_display_subscription_link,
 )
 
 from .common import (
-    _get_addon_discount_percent_for_user,
     _get_period_hint_from_subscription,
-    format_additional_section,
-    get_apps_for_device,
+    get_apps_for_platform_async,
     get_device_name,
-    get_step_description,
     logger,
+    render_guide_blocks,
 )
 from .countries import _get_available_countries
 
@@ -84,7 +82,7 @@ async def get_servers_display_names(squad_uuids: list[str]) -> str:
             for uuid in squad_uuids:
                 server = await get_server_squad_by_uuid(db, uuid)
                 if server:
-                    server_names.append(server.display_name)
+                    server_names.append(html_mod.escape(server.display_name))
                     logger.debug('Найден сервер в БД', uuid=uuid, display_name=server.display_name)
                 else:
                     logger.warning('Сервер с UUID не найден в БД', uuid=uuid)
@@ -94,7 +92,7 @@ async def get_servers_display_names(squad_uuids: list[str]) -> str:
             for uuid in squad_uuids:
                 for country in countries:
                     if country['uuid'] == uuid:
-                        server_names.append(country['name'])
+                        server_names.append(html_mod.escape(country['name']))
                         logger.debug('Найден сервер в кэше', uuid=uuid, country=country['name'])
                         break
 
@@ -176,7 +174,7 @@ async def handle_change_devices(callback: types.CallbackQuery, db_user: User, db
     current_devices = subscription.device_limit
 
     period_hint_days = _get_period_hint_from_subscription(subscription)
-    devices_discount_percent = _get_addon_discount_percent_for_user(
+    devices_discount_percent = PricingEngine.get_addon_discount_percent(
         db_user,
         'devices',
         period_hint_days,
@@ -277,12 +275,15 @@ async def confirm_change_devices(callback: types.CallbackQuery, db_user: User, d
         )
         return
 
-    if settings.MAX_DEVICES_LIMIT > 0 and new_devices_count > settings.MAX_DEVICES_LIMIT:
+    # Используем max_device_limit из тарифа если есть, иначе глобальную настройку
+    tariff_max_devices = getattr(tariff, 'max_device_limit', None) if tariff else None
+    effective_max = tariff_max_devices or (settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else None)
+    if effective_max and new_devices_count > effective_max:
         await callback.answer(
             texts.t(
                 'DEVICES_LIMIT_EXCEEDED',
                 '⚠️ Превышен максимальный лимит устройств ({limit})',
-            ).format(limit=settings.MAX_DEVICES_LIMIT),
+            ).format(limit=effective_max),
             show_alert=True,
         )
         return
@@ -324,7 +325,7 @@ async def confirm_change_devices(callback: types.CallbackQuery, db_user: User, d
             days_left = max(1, (subscription.end_date - now).days)
             period_hint_days = days_left
 
-            devices_discount_percent = _get_addon_discount_percent_for_user(
+            devices_discount_percent = PricingEngine.get_addon_discount_percent(
                 db_user,
                 'devices',
                 period_hint_days,
@@ -339,11 +340,12 @@ async def confirm_change_devices(callback: types.CallbackQuery, db_user: User, d
             total_discount = int(discount_per_month * days_left / 30)
             period_label = f'{days_left} дн.' if days_left > 1 else '1 день'
         else:
-            # Для обычных тарифов - по месяцам
-            months_hint = get_remaining_months(subscription.end_date)
-            period_hint_days = months_hint * 30 if months_hint > 0 else None
+            # Для обычных тарифов - по дням (как в кабинете)
+            now = datetime.now(UTC)
+            days_left = max(1, (subscription.end_date - now).days)
+            period_hint_days = days_left
 
-            devices_discount_percent = _get_addon_discount_percent_for_user(
+            devices_discount_percent = PricingEngine.get_addon_discount_percent(
                 db_user,
                 'devices',
                 period_hint_days,
@@ -352,12 +354,11 @@ async def confirm_change_devices(callback: types.CallbackQuery, db_user: User, d
                 devices_price_per_month,
                 devices_discount_percent,
             )
-            price, charged_months = calculate_prorated_price(
-                discounted_per_month,
-                subscription.end_date,
-            )
-            total_discount = discount_per_month * charged_months
-            period_label = f'{charged_months} мес'
+            # Цена = месячная_цена * days_left / 30
+            price = int(discounted_per_month * days_left / 30)
+            price = max(100, price)  # Минимум 1 рубль
+            total_discount = int(discount_per_month * days_left / 30)
+            period_label = f'{days_left} дн.' if days_left > 1 else '1 день'
 
         if price > 0 and db_user.balance_kopeks < price:
             missing_kopeks = price - db_user.balance_kopeks
@@ -491,10 +492,17 @@ async def confirm_change_devices(callback: types.CallbackQuery, db_user: User, d
 async def execute_change_devices(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     callback_parts = callback.data.split('_')
     new_devices_count = int(callback_parts[3])
-    price = int(callback_parts[4])
+
+    db_user = await lock_user_for_pricing(db, db_user.id)
 
     texts = get_texts(db_user.language)
     subscription = db_user.subscription
+    if not subscription:
+        await callback.answer(
+            texts.t('NO_ACTIVE_SUBSCRIPTION', '⚠️ У вас нет активной подписки'),
+            show_alert=True,
+        )
+        return
     current_devices = subscription.device_limit
 
     # Проверяем тариф подписки
@@ -513,12 +521,15 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
                 show_alert=True,
             )
             return
+        price_per_device = tariff_device_price
     elif not settings.is_devices_selection_enabled():
         await callback.answer(
             texts.t('DEVICES_SELECTION_DISABLED', '⚠️ Изменение количества устройств недоступно'),
             show_alert=True,
         )
         return
+    else:
+        price_per_device = settings.PRICE_PER_DEVICE
 
     # Проверяем минимальное количество устройств на тарифе
     tariff_min_devices = (getattr(tariff, 'device_limit', 1) or 1) if tariff else 1
@@ -531,6 +542,33 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
             show_alert=True,
         )
         return
+
+    # Recompute price under lock (callback-baked value may be stale)
+    devices_difference = new_devices_count - current_devices
+    if devices_difference > 0:
+        if tariff:
+            chargeable_devices = devices_difference
+        elif current_devices < settings.DEFAULT_DEVICE_LIMIT:
+            free_devices = settings.DEFAULT_DEVICE_LIMIT - current_devices
+            chargeable_devices = max(0, devices_difference - free_devices)
+        else:
+            chargeable_devices = devices_difference
+
+        devices_price_per_month = chargeable_devices * price_per_device
+        days_left = max(1, (subscription.end_date - datetime.now(UTC)).days)
+        devices_discount_percent = PricingEngine.get_addon_discount_percent(
+            db_user,
+            'devices',
+            days_left,
+        )
+        discounted_per_month, _ = apply_percentage_discount(
+            devices_price_per_month,
+            devices_discount_percent,
+        )
+        price = int(discounted_per_month * days_left / 30)
+        price = max(100, price)
+    else:
+        price = 0
 
     try:
         if price > 0:
@@ -545,22 +583,77 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
                 )
                 return
 
-            charged_months = get_remaining_months(subscription.end_date)
+            charged_days = max(1, (subscription.end_date - datetime.now(UTC)).days)
             await create_transaction(
                 db=db,
                 user_id=db_user.id,
                 type=TransactionType.SUBSCRIPTION_PAYMENT,
                 amount_kopeks=price,
-                description=f'Изменение устройств с {current_devices} до {new_devices_count} на {charged_months} мес',
+                description=f'Изменение устройств с {current_devices} до {new_devices_count} за {charged_days} дн.',
             )
+
+        # Re-lock subscription after subtract_user_balance committed (released all locks)
+        relock_result = await db.execute(
+            select(Subscription)
+            .where(Subscription.id == subscription.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        subscription = relock_result.scalar_one()
+
+        # Re-validate: prevent double-charge and max-limit violation
+        if new_devices_count > current_devices:
+            tariff_max_recheck = getattr(tariff, 'max_device_limit', None) if tariff else None
+            max_devices = tariff_max_recheck or (settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else None)
+            if max_devices and new_devices_count > max_devices:
+                if price > 0:
+                    user_refund = await db.execute(
+                        select(User)
+                        .where(User.id == db_user.id)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                    refund_user = user_refund.scalar_one()
+                    refund_user.balance_kopeks += price
+                    await db.commit()
+                await callback.answer(
+                    f'⚠️ Лимит устройств ({max_devices}) превышен. Баланс возвращён.',
+                    show_alert=True,
+                )
+                return
+            # Check if concurrent request already applied the same change
+            if price > 0 and subscription.device_limit >= new_devices_count:
+                user_refund = await db.execute(
+                    select(User)
+                    .where(User.id == db_user.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                refund_user = user_refund.scalar_one()
+                refund_user.balance_kopeks += price
+                await db.commit()
+                await callback.answer(
+                    '⚠️ Изменение уже применено. Баланс возвращён.',
+                    show_alert=True,
+                )
+                return
 
         subscription.device_limit = new_devices_count
         subscription.updated_at = datetime.now(UTC)
 
         await db.commit()
 
+        # Реактивируем подписку если она была DISABLED/EXPIRED (например, после LIMITED/EXPIRED в RemnaWave)
+        from app.database.crud.subscription import reactivate_subscription
+
+        await reactivate_subscription(db, subscription)
+
         subscription_service = SubscriptionService()
         await subscription_service.update_remnawave_user(db, subscription)
+
+        # Явно включаем пользователя на панели (PATCH может не снять LIMITED-статус)
+        if db_user.remnawave_uuid and subscription.status == 'active':
+            await subscription_service.enable_remnawave_user(db_user.remnawave_uuid)
 
         # При уменьшении лимита - удалить лишние устройства (последние подключённые)
         devices_reset_count = 0
@@ -805,6 +898,7 @@ async def handle_devices_page(callback: types.CallbackQuery, db_user: User, db: 
 
 
 async def handle_single_device_reset(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    texts = get_texts(db_user.language)
     try:
         callback_parts = callback.data.split('_')
         if len(callback_parts) < 4:
@@ -827,8 +921,6 @@ async def handle_single_device_reset(callback: types.CallbackQuery, db_user: Use
             show_alert=True,
         )
         return
-
-    texts = get_texts(db_user.language)
 
     try:
         from app.services.remnawave_service import RemnaWaveService
@@ -1078,15 +1170,23 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
 
     new_total_devices = subscription.device_limit + devices_count
 
-    if settings.MAX_DEVICES_LIMIT > 0 and new_total_devices > settings.MAX_DEVICES_LIMIT:
+    # Используем max_device_limit из тарифа если есть, иначе глобальную настройку
+    tariff_max_devices = getattr(tariff, 'max_device_limit', None) if tariff else None
+    effective_max = tariff_max_devices or (settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else None)
+    if effective_max and new_total_devices > effective_max:
         await callback.answer(
-            f'⚠️ Превышен максимальный лимит устройств ({settings.MAX_DEVICES_LIMIT}). '
-            f'У вас: {subscription.device_limit}, добавляете: {devices_count}',
+            texts.t(
+                'DEVICES_LIMIT_EXCEEDED_DETAIL',
+                '⚠️ Превышен максимальный лимит устройств ({limit}). У вас: {current}, добавляете: {adding}',
+            ).format(limit=effective_max, current=subscription.device_limit, adding=devices_count),
             show_alert=True,
         )
         return
 
     devices_price_per_month = devices_count * price_per_device
+
+    # TOCTOU: lock user row before reading promo/discount state
+    db_user = await lock_user_for_pricing(db, db_user.id)
 
     # Проверяем является ли тариф суточным
     is_daily_tariff = tariff and getattr(tariff, 'is_daily', False)
@@ -1097,7 +1197,7 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
         days_left = max(1, (subscription.end_date - now).days)
         period_hint_days = days_left
 
-        devices_discount_percent = _get_addon_discount_percent_for_user(
+        devices_discount_percent = PricingEngine.get_addon_discount_percent(
             db_user,
             'devices',
             period_hint_days,
@@ -1112,11 +1212,12 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
         total_discount = int(discount_per_month * days_left / 30)
         period_label = f'{days_left} дн.' if days_left > 1 else '1 день'
     else:
-        # Для обычных тарифов - по месяцам
-        months_hint = get_remaining_months(subscription.end_date)
-        period_hint_days = months_hint * 30 if months_hint > 0 else None
+        # Для обычных тарифов - по дням (как в кабинете)
+        now = datetime.now(UTC)
+        days_left = max(1, (subscription.end_date - now).days)
+        period_hint_days = days_left
 
-        devices_discount_percent = _get_addon_discount_percent_for_user(
+        devices_discount_percent = PricingEngine.get_addon_discount_percent(
             db_user,
             'devices',
             period_hint_days,
@@ -1125,12 +1226,11 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
             devices_price_per_month,
             devices_discount_percent,
         )
-        price, charged_months = calculate_prorated_price(
-            discounted_per_month,
-            subscription.end_date,
-        )
-        total_discount = discount_per_month * charged_months
-        period_label = f'{charged_months} мес'
+        # Цена = месячная_цена * days_left / 30
+        price = int(discounted_per_month * days_left / 30)
+        price = max(100, price)  # Минимум 1 рубль
+        total_discount = int(discount_per_month * days_left / 30)
+        period_label = f'{days_left} дн.' if days_left > 1 else '1 день'
 
     logger.info(
         'Добавление устройств: ₽/мес × = ₽ (скидка ₽)',
@@ -1197,10 +1297,49 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
             await callback.answer('⚠️ Ошибка списания средств', show_alert=True)
             return
 
-        await add_subscription_devices(db, subscription, devices_count)
+        # Re-lock subscription after subtract_user_balance committed (released all locks)
+        relock_result = await db.execute(
+            select(Subscription)
+            .where(Subscription.id == subscription.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        subscription = relock_result.scalar_one()
+
+        # Re-validate max device limit after re-lock
+        actual_current = subscription.device_limit or 1
+        actual_new = actual_current + devices_count
+        tariff_max_recheck = getattr(tariff, 'max_device_limit', None) if tariff else None
+        max_devices = tariff_max_recheck or (settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else None)
+        if max_devices and actual_new > max_devices:
+            # Concurrent purchase exceeded limit — refund
+            user_refund = await db.execute(
+                select(User).where(User.id == db_user.id).with_for_update().execution_options(populate_existing=True)
+            )
+            refund_user = user_refund.scalar_one()
+            refund_user.balance_kopeks += price
+            await db.commit()
+            await callback.answer(
+                f'⚠️ Лимит устройств ({max_devices}) превышен. Баланс возвращён.',
+                show_alert=True,
+            )
+            return
+
+        subscription.device_limit = actual_new
+        subscription.updated_at = datetime.now(UTC)
+        await db.commit()
+
+        # Реактивируем подписку если она была DISABLED/EXPIRED (например, после LIMITED/EXPIRED в RemnaWave)
+        from app.database.crud.subscription import reactivate_subscription
+
+        await reactivate_subscription(db, subscription)
 
         subscription_service = SubscriptionService()
         await subscription_service.update_remnawave_user(db, subscription)
+
+        # Явно включаем пользователя на панели (PATCH может не снять LIMITED-статус)
+        if db_user.remnawave_uuid and subscription.status == 'active':
+            await subscription_service.enable_remnawave_user(db_user.remnawave_uuid)
 
         await create_transaction(
             db=db,
@@ -1271,7 +1410,8 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
         )
         return
 
-    apps = get_apps_for_device(device_type, db_user.language)
+    apps = await get_apps_for_platform_async(device_type, db_user.language)
+
     hide_subscription_link = settings.should_hide_subscription_link()
 
     if not apps:
@@ -1286,7 +1426,7 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
     other_apps = [app for app in apps if isinstance(app, dict) and app.get('id') and app.get('id') != featured_app_id]
 
     other_app_names = ', '.join(
-        str(app.get('name')).strip()
+        html_mod.escape(str(app.get('name')).strip())
         for app in other_apps
         if isinstance(app.get('name'), str) and app.get('name').strip()
     )
@@ -1304,34 +1444,20 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
     else:
         link_section = (
             texts.t('SUBSCRIPTION_DEVICE_LINK_TITLE', '🔗 <b>Ссылка подписки:</b>')
-            + f'\n<code>{subscription_link}</code>\n\n'
+            + f'\n<code>{html_mod.escape(subscription_link)}</code>\n\n'
         )
-
-    installation_description = get_step_description(featured_app, 'installationStep', db_user.language)
-    add_description = get_step_description(featured_app, 'addSubscriptionStep', db_user.language)
-    connect_description = get_step_description(featured_app, 'connectAndUseStep', db_user.language)
-    additional_before_text = format_additional_section(
-        featured_app.get('additionalBeforeAddSubscriptionStep'),
-        texts,
-        db_user.language,
-    )
-    additional_after_text = format_additional_section(
-        featured_app.get('additionalAfterAddSubscriptionStep'),
-        texts,
-        db_user.language,
-    )
 
     guide_text = (
         texts.t(
             'SUBSCRIPTION_DEVICE_GUIDE_TITLE',
             '📱 <b>Настройка для {device_name}</b>',
-        ).format(device_name=get_device_name(device_type, db_user.language))
+        ).format(device_name=html_mod.escape(get_device_name(device_type, db_user.language)))
         + '\n\n'
         + link_section
         + texts.t(
             'SUBSCRIPTION_DEVICE_FEATURED_APP',
             '📋 <b>Рекомендуемое приложение:</b> {app_name}',
-        ).format(app_name=featured_app.get('name', ''))
+        ).format(app_name=html_mod.escape(featured_app.get('name', '')))
     )
 
     if other_app_names:
@@ -1344,20 +1470,9 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
             'Нажмите кнопку "Другие приложения" ниже, чтобы выбрать приложение.',
         )
 
-    guide_text += '\n\n' + texts.t('SUBSCRIPTION_DEVICE_STEP_INSTALL_TITLE', '<b>Шаг 1 - Установка:</b>')
-    if installation_description:
-        guide_text += f'\n{installation_description}'
-
-    if additional_before_text:
-        guide_text += f'\n\n{additional_before_text}'
-
-    guide_text += '\n\n' + texts.t('SUBSCRIPTION_DEVICE_STEP_ADD_TITLE', '<b>Шаг 2 - Добавление подписки:</b>')
-    if add_description:
-        guide_text += f'\n{add_description}'
-
-    guide_text += '\n\n' + texts.t('SUBSCRIPTION_DEVICE_STEP_CONNECT_TITLE', '<b>Шаг 3 - Подключение:</b>')
-    if connect_description:
-        guide_text += f'\n{connect_description}'
+    blocks_text = render_guide_blocks(featured_app.get('blocks', []), db_user.language)
+    if blocks_text:
+        guide_text += '\n\n' + blocks_text
 
     guide_text += '\n\n' + texts.t('SUBSCRIPTION_DEVICE_HOW_TO_TITLE', '💡 <b>Как подключить:</b>')
     guide_text += '\n' + '\n'.join(
@@ -1381,9 +1496,6 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
         ]
     )
 
-    if additional_after_text:
-        guide_text += f'\n\n{additional_after_text}'
-
     await callback.message.edit_text(
         guide_text,
         reply_markup=get_connection_guide_keyboard(
@@ -1402,7 +1514,7 @@ async def handle_app_selection(callback: types.CallbackQuery, db_user: User, db:
     device_type = callback.data.split('_')[2]
     texts = get_texts(db_user.language)
 
-    apps = get_apps_for_device(device_type, db_user.language)
+    apps = await get_apps_for_platform_async(device_type, db_user.language)
 
     if not apps:
         await callback.answer(
@@ -1415,7 +1527,7 @@ async def handle_app_selection(callback: types.CallbackQuery, db_user: User, db:
         texts.t(
             'SUBSCRIPTION_APPS_TITLE',
             '📱 <b>Приложения для {device_name}</b>',
-        ).format(device_name=get_device_name(device_type, db_user.language))
+        ).format(device_name=html_mod.escape(get_device_name(device_type, db_user.language)))
         + '\n\n'
         + texts.t('SUBSCRIPTION_APPS_PROMPT', 'Выберите приложение для подключения:')
     )
@@ -1427,7 +1539,11 @@ async def handle_app_selection(callback: types.CallbackQuery, db_user: User, db:
 
 
 async def handle_specific_app_guide(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    _, device_type, app_id = callback.data.split('_')
+    parts = callback.data.split('_', 2)
+    if len(parts) < 3:
+        await callback.answer('Invalid callback data', show_alert=True)
+        return
+    _, device_type, app_id = parts
     texts = get_texts(db_user.language)
     subscription = db_user.subscription
 
@@ -1440,8 +1556,8 @@ async def handle_specific_app_guide(callback: types.CallbackQuery, db_user: User
         )
         return
 
-    apps = get_apps_for_device(device_type, db_user.language)
-    app = next((a for a in apps if a['id'] == app_id), None)
+    apps = await get_apps_for_platform_async(device_type, db_user.language)
+    app = next((a for a in apps if a.get('id') == app_id), None) if apps else None
 
     if not app:
         await callback.answer(
@@ -1465,53 +1581,33 @@ async def handle_specific_app_guide(callback: types.CallbackQuery, db_user: User
     else:
         link_section = (
             texts.t('SUBSCRIPTION_DEVICE_LINK_TITLE', '🔗 <b>Ссылка подписки:</b>')
-            + f'\n<code>{subscription_link}</code>\n\n'
+            + f'\n<code>{html_mod.escape(subscription_link)}</code>\n\n'
         )
-
-    installation_description = get_step_description(app, 'installationStep', db_user.language)
-    add_description = get_step_description(app, 'addSubscriptionStep', db_user.language)
-    connect_description = get_step_description(app, 'connectAndUseStep', db_user.language)
-    additional_before_text = format_additional_section(
-        app.get('additionalBeforeAddSubscriptionStep'),
-        texts,
-        db_user.language,
-    )
-    additional_after_text = format_additional_section(
-        app.get('additionalAfterAddSubscriptionStep'),
-        texts,
-        db_user.language,
-    )
 
     guide_text = (
         texts.t(
             'SUBSCRIPTION_SPECIFIC_APP_TITLE',
             '📱 <b>{app_name} - {device_name}</b>',
-        ).format(app_name=app.get('name', ''), device_name=get_device_name(device_type, db_user.language))
+        ).format(
+            app_name=html_mod.escape(app.get('name', '')),
+            device_name=html_mod.escape(get_device_name(device_type, db_user.language)),
+        )
         + '\n\n'
         + link_section
     )
 
-    guide_text += texts.t('SUBSCRIPTION_DEVICE_STEP_INSTALL_TITLE', '<b>Шаг 1 - Установка:</b>')
-    if installation_description:
-        guide_text += f'\n{installation_description}'
-
-    if additional_before_text:
-        guide_text += f'\n\n{additional_before_text}'
-
-    guide_text += '\n\n' + texts.t('SUBSCRIPTION_DEVICE_STEP_ADD_TITLE', '<b>Шаг 2 - Добавление подписки:</b>')
-    if add_description:
-        guide_text += f'\n{add_description}'
-
-    guide_text += '\n\n' + texts.t('SUBSCRIPTION_DEVICE_STEP_CONNECT_TITLE', '<b>Шаг 3 - Подключение:</b>')
-    if connect_description:
-        guide_text += f'\n{connect_description}'
-
-    if additional_after_text:
-        guide_text += f'\n\n{additional_after_text}'
+    blocks_text = render_guide_blocks(app.get('blocks', []), db_user.language)
+    if blocks_text:
+        guide_text += blocks_text + '\n\n'
 
     await callback.message.edit_text(
         guide_text,
-        reply_markup=get_specific_app_keyboard(subscription_link, app, device_type, db_user.language),
+        reply_markup=get_specific_app_keyboard(
+            subscription_link,
+            app,
+            device_type,
+            db_user.language,
+        ),
         parse_mode='HTML',
     )
     await callback.answer()
@@ -1543,7 +1639,7 @@ async def show_device_connection_help(callback: types.CallbackQuery, db_user: Us
 • Нажмите "Подключить"
 
 <b>🔗 Ваша ссылка подписки:</b>
-<code>{subscription_link}</code>
+<code>{html_mod.escape(subscription_link)}</code>
 
 💡 <b>Совет:</b> Сохраните эту ссылку - она понадобится для подключения новых устройств
 """

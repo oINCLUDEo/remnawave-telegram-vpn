@@ -15,12 +15,14 @@ from app.database.crud.transaction import get_transaction_by_id
 from app.database.crud.user import get_user_by_id
 from app.database.models import (
     AdvertisingCampaign,
+    GuestPurchase,
     PromoCodeType,
     PromoGroup,
     Subscription,
     Transaction,
     User,
 )
+from app.utils.message_patch import caption_exceeds_telegram_limit
 from app.utils.timezone import format_local_datetime
 
 
@@ -240,7 +242,7 @@ class AdminNotificationService:
 
         return mapping.get(promo_type, f'ℹ️ {promo_type}')
 
-    def _format_campaign_bonus(self, campaign: AdvertisingCampaign) -> list[str]:
+    def _format_campaign_bonus(self, campaign: AdvertisingCampaign, *, tariff_name: str | None = None) -> list[str]:
         if campaign.is_balance_bonus:
             return [
                 f'💰 Баланс: {settings.format_price(campaign.balance_bonus_kopeks or 0)}',
@@ -249,13 +251,23 @@ class AdminNotificationService:
         if campaign.is_subscription_bonus:
             default_devices = getattr(settings, 'DEFAULT_DEVICE_LIMIT', 1)
             details = [
-                f'📅 Дней подписки: {campaign.subscription_duration_days or 0}',
-                f'📊 Трафик: {campaign.subscription_traffic_gb or 0} ГБ',
-                f'📱 Устройства: {campaign.subscription_device_limit or default_devices}',
+                f'📅 {campaign.subscription_duration_days or 0} дн. '
+                f'• 📊 {campaign.subscription_traffic_gb or 0} ГБ '
+                f'• 📱 {campaign.subscription_device_limit or default_devices} устр.',
             ]
             if campaign.subscription_squads:
                 details.append(f'🌐 Сквады: {len(campaign.subscription_squads)} шт.')
             return details
+
+        if campaign.is_tariff_bonus:
+            name = tariff_name or f'ID {campaign.tariff_id}'
+            details = [f'📦 Тариф: <b>{name}</b>']
+            if campaign.tariff_duration_days:
+                details.append(f'📅 Период: {campaign.tariff_duration_days} дней')
+            return details
+
+        if campaign.is_none_bonus:
+            return ['🔗 Только отслеживание']
 
         return ['ℹ️ Бонусы не предусмотрены']
 
@@ -389,11 +401,11 @@ class AdminNotificationService:
         period_days: int,
         was_trial_conversion: bool = False,
         amount_kopeks: int | None = None,
-        purchase_type: str | None = None,  # 'tariff_switch', 'renewal', None (auto)
+        purchase_type: str | None = None,  # 'first_purchase', 'renewal', 'tariff_switch', None (auto-detect)
     ) -> bool:
         try:
             total_amount = (
-                amount_kopeks if amount_kopeks is not None else (transaction.amount_kopeks if transaction else 0)
+                amount_kopeks if amount_kopeks is not None else (abs(transaction.amount_kopeks) if transaction else 0)
             )
 
             await self._record_subscription_event(
@@ -424,7 +436,10 @@ class AdminNotificationService:
             elif was_trial_conversion:
                 event_title = '🔄 КОНВЕРСИЯ ИЗ ТРИАЛА'
                 user_status = 'Конверсия'
-            elif purchase_type == 'renewal' or user.has_had_paid_subscription:
+            elif purchase_type == 'first_purchase':
+                event_title = '💎 ПОКУПКА ПОДПИСКИ'
+                user_status = 'Первая покупка'
+            elif purchase_type == 'renewal' or (purchase_type is None and user.has_had_paid_subscription):
                 event_title = '💎 ПРОДЛЕНИЕ ПОДПИСКИ'
                 user_status = 'Продление'
             else:
@@ -836,7 +851,7 @@ class AdminNotificationService:
                 user=user,
                 subscription=subscription,
                 transaction=transaction,
-                amount_kopeks=transaction.amount_kopeks,
+                amount_kopeks=abs(transaction.amount_kopeks),
                 message='Subscription renewed',
                 occurred_at=transaction.completed_at or transaction.created_at,
                 extra={
@@ -1035,40 +1050,50 @@ class AdminNotificationService:
             return False
 
         try:
-            user_status = '🆕 Новый пользователь' if not user else '👥 Уже зарегистрирован'
-            promo_block = (
-                self._format_promo_group_block(await self._get_user_promo_group(db, user))
-                if user
-                else self._format_promo_group_block(None)
-            )
-
             full_name = telegram_user.full_name or telegram_user.username or str(telegram_user.id)
-            username = f'@{telegram_user.username}' if telegram_user.username else 'отсутствует'
+            user_status = '🆕 Новый' if not user else '👥 Существующий'
 
             message_lines = [
-                '📣 <b>ПЕРЕХОД ПО РЕКЛАМНОЙ КАМПАНИИ</b>',
+                '📣 <b>ПЕРЕХОД ПО РК</b>',
                 '',
-                f'🧾 <b>Кампания:</b> {campaign.name}',
-                f'🆔 ID кампании: {campaign.id}',
-                f'🔗 Start-параметр: <code>{campaign.start_parameter}</code>',
+                f'🧾 {campaign.name} (<code>{campaign.start_parameter}</code>)',
                 '',
-                f'👤 <b>Пользователь:</b> {full_name}',
-                f'🆔 <b>Telegram ID:</b> <code>{telegram_user.id}</code>',
-                f'📱 <b>Username:</b> {username}',
-                user_status,
-                '',
-                promo_block,
-                '',
-                '🎯 <b>Бонус кампании:</b>',
+                f'👤 {full_name} (<code>{telegram_user.id}</code>)',
             ]
 
-            bonus_lines = self._format_campaign_bonus(campaign)
+            if telegram_user.username:
+                message_lines.append(f'📱 @{telegram_user.username}')
+
+            message_lines.append(f'📋 {user_status}')
+
+            # Промогруппа — только если есть
+            if user:
+                promo_group = await self._get_user_promo_group(db, user)
+                if promo_group:
+                    message_lines.append(f'🏷️ Промогруппа: {promo_group.name}')
+
+            message_lines.append('')
+
+            # Загружаем название тарифа для tariff-бонуса
+            tariff_name = None
+            if campaign.is_tariff_bonus and campaign.tariff_id:
+                try:
+                    from app.database.crud.tariff import get_tariff_by_id
+
+                    tariff = await get_tariff_by_id(db, campaign.tariff_id)
+                    if tariff:
+                        tariff_name = tariff.name
+                except Exception:
+                    pass
+
+            # Бонус кампании
+            bonus_lines = self._format_campaign_bonus(campaign, tariff_name=tariff_name)
             message_lines.extend(bonus_lines)
 
             message_lines.extend(
                 [
                     '',
-                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
+                    f'<i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
                 ]
             )
 
@@ -1222,6 +1247,81 @@ class AdminNotificationService:
             return False
         return await self._send_message(text, reply_markup=reply_markup)
 
+    async def send_guest_purchase_notification(
+        self,
+        purchase: GuestPurchase,
+        tariff_name: str,
+        *,
+        is_pending_activation: bool = False,
+    ) -> bool:
+        """Send admin notification for a guest (landing page) purchase."""
+        if not self._is_enabled():
+            return False
+
+        try:
+            if is_pending_activation:
+                event_title = '⏳ ПОКУПКА С ЛЕНДИНГА (ожидает активации)'
+            elif purchase.is_gift:
+                event_title = '🎁 ПОКУПКА В ПОДАРОК С ЛЕНДИНГА'
+            else:
+                event_title = '🛒 ПОКУПКА С ЛЕНДИНГА'
+
+            # Landing page slug
+            landing_slug = '—'
+            try:
+                landing = purchase.landing
+                if landing:
+                    landing_slug = landing.slug
+                elif purchase.landing_id:
+                    landing_slug = f'ID:{purchase.landing_id}'
+            except Exception:
+                if purchase.landing_id:
+                    landing_slug = f'ID:{purchase.landing_id}'
+
+            # Contact info
+            contact_display = html.escape(purchase.contact_value or '—')
+            contact_icon = '📧' if purchase.contact_type == 'email' else '📱'
+
+            payment_method = self._get_payment_method_display(purchase.payment_method)
+
+            message_lines = [
+                f'<b>{event_title}</b>',
+                '',
+                f'🌐 Страница: <b>/buy/{html.escape(landing_slug)}</b>',
+                f'{contact_icon} Покупатель: <code>{contact_display}</code>',
+            ]
+
+            if purchase.is_gift:
+                recipient_value = html.escape(purchase.gift_recipient_value or '—')
+                recipient_icon = '📧' if purchase.gift_recipient_type == 'email' else '📱'
+                message_lines.append(f'{recipient_icon} Получатель: <code>{recipient_value}</code>')
+                if purchase.gift_message:
+                    raw_msg = purchase.gift_message[:100]
+                    suffix = '…' if len(purchase.gift_message) > 100 else ''
+                    message_lines.append(f'💬 <i>{html.escape(raw_msg)}{suffix}</i>')
+
+            # Payment details in blockquote
+            payment_lines = [
+                '<blockquote>',
+                f'🏷️ Тариф: <b>{html.escape(tariff_name)}</b>',
+                f'📅 Период: {purchase.period_days} дн.',
+                f'💵 <b>{settings.format_price(purchase.amount_kopeks)}</b> • {payment_method}',
+            ]
+
+            if purchase.payment_id:
+                payment_lines.append(f'🆔 {html.escape(str(purchase.payment_id))}')
+
+            payment_lines.append('</blockquote>')
+            message_lines.extend(payment_lines)
+
+            message_lines.append(f'<i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M")}</i>')
+
+            return await self._send_message('\n'.join(message_lines))
+
+        except Exception as e:
+            logger.error('Ошибка отправки уведомления о гостевой покупке', error=e)
+            return False
+
     async def send_webhook_notification(self, text: str) -> bool:
         """Send a generic webhook/infrastructure notification to admin chat.
 
@@ -1253,7 +1353,7 @@ class AdminNotificationService:
             'balance': '💰 С баланса',
         }
 
-        return method_names.get(payment_method, f'💳 {payment_method}')
+        return method_names.get(payment_method, f'💳 {html.escape(payment_method)}')
 
     def _format_traffic(self, traffic_gb: int) -> str:
         if traffic_gb == 0:
@@ -1668,6 +1768,8 @@ class AdminNotificationService:
                 message_lines.append(f'📝 {html.escape(desc)}')
             if application_data.get('expected_monthly_referrals'):
                 message_lines.append(f'👥 Ожидаемых рефералов: {application_data["expected_monthly_referrals"]}/мес')
+            if application_data.get('desired_commission_percent'):
+                message_lines.append(f'💰 Желаемая комиссия: {application_data["desired_commission_percent"]}%')
 
             message_lines.extend(
                 [
@@ -1778,10 +1880,16 @@ class AdminNotificationService:
             return False
 
     async def send_ticket_event_notification(
-        self, text: str, keyboard: types.InlineKeyboardMarkup | None = None
+        self,
+        text: str,
+        keyboard: types.InlineKeyboardMarkup | None = None,
+        *,
+        media_file_id: str | None = None,
+        media_type: str | None = None,
     ) -> bool:
         """Публичный метод для отправки уведомлений по тикетам в админ-топик.
         Учитывает настройки включенности в settings.
+        Если передан media_file_id, отправляет медиа в тот же топик вместе с текстом.
         """
         # Respect runtime toggle for admin ticket notifications
         try:
@@ -1797,7 +1905,58 @@ class AdminNotificationService:
                 runtime_enabled=runtime_enabled,
             )
             return False
+
+        # Если есть медиа, отправляем фото с текстом как caption (если влезает) или текст + фото
+        if media_file_id and media_type == 'photo':
+            return await self._send_ticket_photo_notification(text, media_file_id, keyboard)
+
         return await self._send_message(text, reply_markup=keyboard, ticket_event=True)
+
+    async def _send_ticket_photo_notification(
+        self,
+        text: str,
+        photo_file_id: str,
+        keyboard: types.InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        """Отправить фото с текстом в тикет-топик.
+        Если текст помещается в caption (≤1024 символов после парсинга HTML) — фото с caption.
+        Иначе — сначала текст, потом фото в тот же топик.
+        """
+        if not self.chat_id:
+            return False
+
+        thread_id = self.ticket_topic_id or self.topic_id
+
+        try:
+            if not caption_exceeds_telegram_limit(text):
+                # Фото с caption — всё в одном сообщении
+                photo_kwargs: dict = {
+                    'chat_id': self.chat_id,
+                    'photo': photo_file_id,
+                    'caption': text,
+                    'parse_mode': 'HTML',
+                }
+                if thread_id:
+                    photo_kwargs['message_thread_id'] = thread_id
+                if keyboard:
+                    photo_kwargs['reply_markup'] = keyboard
+                await self.bot.send_photo(**photo_kwargs)
+            else:
+                # Текст отдельно, фото следом в тот же топик
+                await self._send_message(text, reply_markup=keyboard, ticket_event=True)
+                photo_kwargs = {
+                    'chat_id': self.chat_id,
+                    'photo': photo_file_id,
+                }
+                if thread_id:
+                    photo_kwargs['message_thread_id'] = thread_id
+                await self.bot.send_photo(**photo_kwargs)
+
+            return True
+        except Exception as e:
+            logger.error('Ошибка отправки фото-уведомления тикета', error=e)
+            # Fallback: отправляем хотя бы текст
+            return await self._send_message(text, reply_markup=keyboard, ticket_event=True)
 
     async def send_suspicious_traffic_notification(self, message: str, bot: Bot, topic_id: int | None = None) -> bool:
         """

@@ -11,7 +11,6 @@ from app.config import PERIOD_PRICES, settings
 from app.database.crud.server_squad import (
     add_user_to_servers,
     get_available_server_squads,
-    get_server_ids_by_uuids,
     get_server_squad_by_uuid,
 )
 from app.database.crud.subscription import (
@@ -27,12 +26,11 @@ from app.database.models import ServerSquad, Subscription, SubscriptionStatus, T
 from app.localization.texts import get_texts
 from app.services.subscription_service import SubscriptionService
 from app.utils.pricing_utils import (
+    apply_percentage_discount,
     calculate_months_from_days,
     format_period_description,
     validate_pricing_calculation,
 )
-from app.utils.promo_offer import get_user_active_promo_discount_percent
-from app.utils.user_utils import mark_user_as_had_paid_subscription
 
 
 logger = structlog.get_logger(__name__)
@@ -267,21 +265,8 @@ class PurchaseBalanceError(Exception):
         super().__init__(message)
 
 
-def _apply_percentage_discount(amount: int, percent: int) -> tuple[int, int]:
-    if amount <= 0 or percent <= 0:
-        return amount, 0
-    clamped = max(0, min(100, percent))
-    discount_value = amount * clamped // 100
-    discounted = amount - discount_value
-    if discount_value >= 100 and discounted % 100:
-        discounted += 100 - (discounted % 100)
-        discounted = min(discounted, amount)
-        discount_value = amount - discounted
-    return discounted, discount_value
-
-
 def _apply_discount_to_monthly_component(amount_per_month: int, percent: int, months: int) -> dict[str, int]:
-    discounted_per_month, discount_per_month = _apply_percentage_discount(amount_per_month, percent)
+    discounted_per_month, discount_per_month = apply_percentage_discount(amount_per_month, percent)
     return {
         'original_per_month': amount_per_month,
         'discounted_per_month': discounted_per_month,
@@ -292,25 +277,13 @@ def _apply_discount_to_monthly_component(amount_per_month: int, percent: int, mo
     }
 
 
-def _get_promo_offer_discount_percent(user: User | None) -> int:
-    return get_user_active_promo_discount_percent(user)
-
-
-def _apply_promo_offer_discount(user: User | None, amount: int) -> tuple[int, int, int]:
-    percent = _get_promo_offer_discount_percent(user)
-    if amount <= 0 or percent <= 0:
-        return amount, 0, 0
-    discounted, discount_value = _apply_percentage_discount(amount, percent)
-    return discounted, discount_value, percent
-
-
 def _build_server_option(
     server: ServerSquad,
     discount_percent: int,
     texts,
 ) -> PurchaseServerOption:
     base_per_month = int(getattr(server, 'price_kopeks', 0) or 0)
-    discounted_per_month, _ = _apply_percentage_discount(base_per_month, discount_percent)
+    discounted_per_month, _ = apply_percentage_discount(base_per_month, discount_percent)
     return PurchaseServerOption(
         uuid=server.squad_uuid,
         name=getattr(server, 'display_name', server.squad_uuid) or server.squad_uuid,
@@ -334,11 +307,9 @@ class MiniAppSubscriptionPurchaseService:
         currency = (getattr(user, 'balance_currency', None) or 'RUB').upper()
         texts = get_texts(getattr(user, 'language', None))
 
-        # Exclude trial-only servers from purchase options
         available_servers = await get_available_server_squads(
             db,
             promo_group_id=getattr(user, 'promo_group_id', None),
-            exclude_trial_only=True,
         )
         server_catalog: dict[str, ServerSquad] = {server.squad_uuid: server for server in available_servers}
 
@@ -394,7 +365,7 @@ class MiniAppSubscriptionPurchaseService:
 
             base_price_original = PERIOD_PRICES.get(period_days, 0)
             period_discount_percent = user.get_promo_discount('period', period_days)
-            base_price, base_discount_total = _apply_percentage_discount(base_price_original, period_discount_percent)
+            base_price, base_discount_total = apply_percentage_discount(base_price_original, period_discount_percent)
             base_price_label = texts.format_price(base_price)
             base_price_original_label = (
                 texts.format_price(base_price_original)
@@ -527,8 +498,8 @@ class MiniAppSubscriptionPurchaseService:
         for package in packages:
             value = int(package.get('gb') or 0)
             price_per_month = int(package.get('price') or 0)
-            discounted_per_month, discount_value = _apply_percentage_discount(price_per_month, discount_percent)
-            label = texts.format_traffic(value if value else 0)
+            discounted_per_month, discount_value = apply_percentage_discount(price_per_month, discount_percent)
+            label = texts.format_traffic(value or 0)
             options.append(
                 PurchaseTrafficOption(
                     value=value,
@@ -588,7 +559,7 @@ class MiniAppSubscriptionPurchaseService:
             options=options,
             min_selectable=1 if options else 0,
             max_selectable=len(options),
-            default_selection=default_selection if default_selection else [opt.uuid for opt in options[:1]],
+            default_selection=default_selection or [opt.uuid for opt in options[:1]],
             hint=None,
         )
 
@@ -601,7 +572,7 @@ class MiniAppSubscriptionPurchaseService:
     ) -> PurchaseDevicesConfig:
         discount_percent = user.get_promo_discount('devices', period_days)
         unit_price = settings.PRICE_PER_DEVICE
-        discounted_unit_price, unit_discount_value = _apply_percentage_discount(unit_price, discount_percent)
+        discounted_unit_price, unit_discount_value = apply_percentage_discount(unit_price, discount_percent)
         price_label = texts.format_price(discounted_unit_price)
         original_label = (
             texts.format_price(unit_price) if unit_discount_value and unit_price != discounted_unit_price else None
@@ -724,29 +695,30 @@ class MiniAppSubscriptionPurchaseService:
         get_texts(getattr(context.user, 'language', None))
         months = selection.period.months
 
-        server_ids = await get_server_ids_by_uuids(db, selection.servers)
+        # PricingEngine — single source of truth (includes promo-offer internally).
+        # Server validation is done via breakdown (avoids a duplicate DB query).
+        from app.services.pricing_engine import PricingEngine, pricing_engine
+
+        pricing = await pricing_engine.calculate_classic_new_subscription_price(
+            db,
+            selection.period.days,
+            list(selection.servers),
+            selection.traffic_value,
+            selection.devices,
+            user=context.user,
+        )
+
+        # Validate all requested servers were found
+        server_ids = pricing.breakdown.get('server_ids', [])
         if len(server_ids) != len(selection.servers):
             raise PurchaseValidationError('Some selected servers are not available', code='invalid_servers')
 
-        total_without_promo, details = await self._calculate_base_total(
-            db,
-            context.user,
-            selection,
-            server_ids,
-        )
+        details = PricingEngine.classic_pricing_to_purchase_details(pricing)
 
-        base_original_total = (
-            details['base_price_original']
-            + details['traffic_price_per_month'] * months
-            + details['servers_price_per_month'] * months
-            + details['devices_price_per_month'] * months
-        )
-
-        final_total, promo_discount_value, promo_percent = _apply_promo_offer_discount(
-            context.user, total_without_promo
-        )
-
-        discounted_total = total_without_promo
+        base_original_total = pricing.original_total
+        discounted_total = pricing.final_total + pricing.promo_offer_discount  # subtotal before offer
+        promo_discount_value = pricing.promo_offer_discount
+        promo_percent = pricing.breakdown.get('offer_discount_pct', 0)
 
         is_valid = validate_pricing_calculation(
             details.get('base_price', 0),
@@ -768,29 +740,10 @@ class MiniAppSubscriptionPurchaseService:
             discounted_total=discounted_total,
             promo_discount_value=promo_discount_value,
             promo_discount_percent=promo_percent,
-            final_total=final_total,
+            final_total=pricing.final_total,
             months=months,
             details=details,
         )
-
-    async def _calculate_base_total(
-        self,
-        db: AsyncSession,
-        user: User,
-        selection: PurchaseSelection,
-        server_ids: list[int],
-    ) -> tuple[int, dict[str, Any]]:
-        from app.database.crud.subscription import calculate_subscription_total_cost
-
-        total_cost, details = await calculate_subscription_total_cost(
-            db,
-            selection.period.days,
-            selection.traffic_value,
-            server_ids,
-            selection.devices,
-            user=user,
-        )
-        return total_cost, details
 
     def build_preview_payload(
         self,
@@ -1036,6 +989,7 @@ class MiniAppSubscriptionPurchaseService:
             pricing.final_total,
             description,
             consume_promo_offer=pricing.promo_discount_value > 0,
+            mark_as_paid_subscription=True,
         )
         if not success:
             raise PurchaseBalanceError(
@@ -1116,8 +1070,6 @@ class MiniAppSubscriptionPurchaseService:
                 update_server_counters=False,
             )
 
-        await mark_user_as_had_paid_subscription(db, user)
-
         if pricing.server_ids:
             try:
                 await add_subscription_servers(
@@ -1139,6 +1091,7 @@ class MiniAppSubscriptionPurchaseService:
                     subscription,
                     reset_traffic=True,
                     reset_reason='miniapp purchase',
+                    sync_squads=True,
                 )
             else:
                 await subscription_service.create_remnawave_user(

@@ -5,6 +5,7 @@ import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
+import structlog
 from aiogram import Dispatcher, F, types
 from aiogram.filters import BaseFilter, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -31,6 +32,8 @@ from app.states import BotConfigStates
 from app.utils.currency_converter import currency_converter
 from app.utils.decorators import admin_required, error_handler
 
+
+logger = structlog.get_logger(__name__)
 
 CATEGORY_PAGE_SIZE = 10
 SETTINGS_PAGE_SIZE = 8
@@ -60,7 +63,7 @@ CATEGORY_GROUP_METADATA: dict[str, dict[str, object]] = {
     },
     'payments': {
         'title': '💳 Платежные системы',
-        'description': 'YooKassa, CryptoBot, Heleket, CloudPayments, Freekassa, MulenPay, PAL24, Wata, Platega, Tribute, Kassa AI и Telegram Stars.',
+        'description': 'YooKassa, CryptoBot, Heleket, CloudPayments, Freekassa, MulenPay, PAL24, Wata, Platega, Tribute, Kassa AI, RioPay, SeverPay и Telegram Stars.',
         'icon': '💳',
         'categories': (
             'PAYMENT',
@@ -71,6 +74,8 @@ CATEGORY_GROUP_METADATA: dict[str, dict[str, object]] = {
             'CLOUDPAYMENTS',
             'FREEKASSA',
             'KASSA_AI',
+            'RIOPAY',
+            'SEVERPAY',
             'MULENPAY',
             'PAL24',
             'WATA',
@@ -260,6 +265,7 @@ def _get_group_status(group_key: str) -> tuple[str, str]:
             'CloudPayments': settings.is_cloudpayments_enabled(),
             'Freekassa': settings.is_freekassa_enabled(),
             'Kassa AI': settings.is_kassa_ai_enabled(),
+            'RioPay': settings.is_riopay_enabled(),
             'MulenPay': settings.is_mulenpay_enabled(),
             'PAL24': settings.is_pal24_enabled(),
             'Tribute': settings.TRIBUTE_ENABLED,
@@ -318,10 +324,11 @@ def _get_group_status(group_key: str) -> tuple[str, str]:
 
     if key == 'core':
         token_ok = bool(getattr(settings, 'BOT_TOKEN', ''))
-        channel_ok = bool(settings.CHANNEL_LINK or not settings.CHANNEL_IS_REQUIRED_SUB)
-        if token_ok and channel_ok:
+        # Channel subscription channels are now managed via DB (admin panel),
+        # not a single CHANNEL_LINK setting. Dashboard cannot async-query DB here.
+        if token_ok:
             return '🟢', 'Бот готов к работе'
-        return '🟡', 'Проверьте токен и обязательную подписку'
+        return '🟡', 'Проверьте токен бота'
 
     if key == 'subscriptions':
         price_ready = settings.PRICE_30_DAYS > 0 and settings.AVAILABLE_SUBSCRIPTION_PERIODS
@@ -807,7 +814,7 @@ async def handle_import_message(
     content = ''
     if message.document:
         buffer = io.BytesIO()
-        await message.document.download(destination=buffer)
+        await message.bot.download(message.document, destination=buffer)
         buffer.seek(0)
         content = buffer.read().decode('utf-8', errors='ignore')
     else:
@@ -1247,6 +1254,12 @@ def _build_settings_keyboard(
     elif category_key == 'KASSA_AI':
         label = texts.t('PAYMENT_KASSA_AI', f'💳 {settings.get_kassa_ai_display_name()}')
         test_payment_buttons.append([_test_button(f'{label} · тест', 'kassa_ai')])
+    elif category_key == 'RIOPAY':
+        label = texts.t('PAYMENT_RIOPAY', f'💳 {settings.get_riopay_display_name()}')
+        test_payment_buttons.append([_test_button(f'{label} · тест', 'riopay')])
+    elif category_key == 'SEVERPAY':
+        label = texts.t('PAYMENT_SEVERPAY', f'💳 {settings.get_severpay_display_name()}')
+        test_payment_buttons.append([_test_button(f'{label} · тест', 'severpay')])
 
     if test_payment_buttons:
         rows.extend(test_payment_buttons)
@@ -2321,6 +2334,48 @@ async def test_payment_provider(
         await _refresh_markup()
         return
 
+    if method == 'riopay':
+        if not settings.is_riopay_enabled():
+            await callback.answer('❌ RioPay отключена', show_alert=True)
+            return
+
+        amount_kopeks = settings.RIOPAY_MIN_AMOUNT_KOPEKS
+        payment_result = await payment_service.create_riopay_payment(
+            db=db,
+            user_id=db_user.id,
+            amount_kopeks=amount_kopeks,
+            description='Тестовый платеж RioPay (админ)',
+            email=getattr(db_user, 'email', None),
+            language=db_user.language or settings.DEFAULT_LANGUAGE,
+        )
+
+        if not payment_result or not payment_result.get('payment_url'):
+            await callback.answer('❌ Не удалось создать тестовый платеж RioPay', show_alert=True)
+            await _refresh_markup()
+            return
+
+        payment_url = payment_result['payment_url']
+        display_name = settings.get_riopay_display_name()
+        message_text = (
+            f'🧪 <b>Тестовый платеж {display_name}</b>\n\n'
+            f'💰 Сумма: {texts.format_price(amount_kopeks)}\n'
+            f'🆔 Order ID: {payment_result["order_id"]}'
+        )
+        reply_markup = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text='💳 Перейти к оплате',
+                        url=payment_url,
+                    )
+                ]
+            ]
+        )
+        await callback.message.answer(message_text, reply_markup=reply_markup, parse_mode='HTML')
+        await callback.answer(f'✅ Ссылка на платеж {display_name} отправлена', show_alert=True)
+        await _refresh_markup()
+        return
+
     await callback.answer('❌ Неизвестный способ тестирования платежа', show_alert=True)
     await _refresh_markup()
 
@@ -2689,6 +2744,128 @@ async def apply_setting_choice(
     await callback.answer('Значение обновлено')
 
 
+# ── Remnawave App Config Selector ──
+
+
+@admin_required
+@error_handler
+async def show_remna_config_menu(callback: types.CallbackQuery, db_user: User, db: AsyncSession, **kwargs):
+    """Show available Remnawave subscription page configs for selection."""
+    current_uuid = bot_configuration_service.get_current_value('CABINET_REMNA_SUB_CONFIG')
+
+    try:
+        service = RemnaWaveService()
+        async with service.get_api_client() as api:
+            configs = await api.get_subscription_page_configs()
+    except Exception as e:
+        logger.error('Failed to load Remnawave configs', error=e)
+        await callback.answer('Ошибка загрузки конфигов', show_alert=True)
+        return
+
+    keyboard: list[list[types.InlineKeyboardButton]] = []
+
+    if not configs:
+        text = (
+            '📱 <b>Конфиг приложений (Remnawave)</b>\n\n'
+            'В Remnawave не найдено конфигураций страниц подписки.\n\n'
+            'Создайте конфигурацию в панели Remnawave, затем вернитесь сюда для выбора.'
+        )
+    else:
+        text = '📱 <b>Конфиг приложений (Remnawave)</b>\n\n'
+        if current_uuid:
+            current_name = next((c.name for c in configs if c.uuid == current_uuid), None)
+            if current_name:
+                text += f'✅ Текущий: <b>{html.escape(current_name)}</b>\n\n'
+            else:
+                text += f'⚠️ Текущий UUID не найден: <code>{html.escape(str(current_uuid))}</code>\n\n'
+        else:
+            text += 'ℹ️ Конфиг не выбран (гайд-режим отключён)\n\n'
+
+        text += 'Выберите конфигурацию для гайд-режима:'
+
+        for config in configs:
+            prefix = '✅ ' if config.uuid == current_uuid else ''
+            keyboard.append(
+                [
+                    types.InlineKeyboardButton(
+                        text=f'{prefix}{config.name}',
+                        callback_data=f'admin_remna_select_{config.uuid}',
+                    )
+                ]
+            )
+
+    if current_uuid:
+        keyboard.append(
+            [
+                types.InlineKeyboardButton(
+                    text='🗑 Сбросить (отключить гайд-режим)',
+                    callback_data='admin_remna_clear',
+                )
+            ]
+        )
+
+    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_submenu_settings')])
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode='HTML',
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def select_remna_config(callback: types.CallbackQuery, db_user: User, db: AsyncSession, **kwargs):
+    """Select a Remnawave subscription page config."""
+    uuid = callback.data.replace('admin_remna_select_', '')
+
+    # Validate UUID format
+    import re as _re
+
+    if not _re.match(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$', uuid):
+        await callback.answer('Некорректный UUID конфигурации', show_alert=True)
+        return
+
+    try:
+        await bot_configuration_service.set_value(db, 'CABINET_REMNA_SUB_CONFIG', uuid)
+        await db.commit()
+    except Exception as e:
+        logger.error('Failed to save Remnawave config UUID', error=e)
+        await callback.answer('Ошибка сохранения', show_alert=True)
+        return
+
+    # Invalidate app config cache
+    from app.handlers.subscription.common import invalidate_app_config_cache
+
+    invalidate_app_config_cache()
+
+    await callback.answer('✅ Конфиг выбран', show_alert=True)
+
+    # Re-render the menu
+    await show_remna_config_menu(callback, db_user=db_user, db=db)
+
+
+@admin_required
+@error_handler
+async def clear_remna_config(callback: types.CallbackQuery, db_user: User, db: AsyncSession, **kwargs):
+    """Clear the Remnawave config, disabling guide mode until new config is selected."""
+    try:
+        await bot_configuration_service.set_value(db, 'CABINET_REMNA_SUB_CONFIG', '')
+        await db.commit()
+    except Exception as e:
+        logger.error('Failed to clear Remnawave config', error=e)
+        await callback.answer('Ошибка сброса', show_alert=True)
+        return
+
+    from app.handlers.subscription.common import invalidate_app_config_cache
+
+    invalidate_app_config_cache()
+
+    await callback.answer('✅ Конфиг сброшен', show_alert=True)
+    await show_remna_config_menu(callback, db_user=db_user, db=db)
+
+
 def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(
         show_bot_config_menu,
@@ -2787,4 +2964,17 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(
         handle_import_message,
         BotConfigStates.waiting_for_import_file,
+    )
+    # Remnawave app config selector
+    dp.callback_query.register(
+        show_remna_config_menu,
+        F.data == 'admin_remna_config',
+    )
+    dp.callback_query.register(
+        select_remna_config,
+        F.data.startswith('admin_remna_select_'),
+    )
+    dp.callback_query.register(
+        clear_remna_config,
+        F.data == 'admin_remna_clear',
     )

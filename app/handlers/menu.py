@@ -1089,6 +1089,9 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
     if actual_status == 'disabled':
         return texts.t('SUB_STATUS_DISABLED', '⚫ Отключена')
 
+    if actual_status == 'limited':
+        return texts.t('SUB_STATUS_LIMITED', '⚠️ Трафик исчерпан')
+
     if actual_status == 'expired':
         return texts.t(
             'SUB_STATUS_EXPIRED',
@@ -1246,7 +1249,7 @@ async def handle_activate_button(callback: types.CallbackQuery, db_user: User, d
     """
     texts = get_texts(db_user.language)
 
-    from app.database.crud.server_squad import get_available_server_squads, get_server_ids_by_uuids
+    from app.database.crud.server_squad import get_available_server_squads
     from app.database.crud.subscription import create_paid_subscription, get_subscription_by_user_id
     from app.database.crud.transaction import create_transaction
     from app.database.crud.user import subtract_user_balance
@@ -1284,7 +1287,9 @@ async def handle_activate_button(callback: types.CallbackQuery, db_user: User, d
         if not connected_squads and available_servers:
             connected_squads = [available_servers[0].squad_uuid]
 
-    server_ids = await get_server_ids_by_uuids(db, connected_squads) if connected_squads else []
+    from app.database.crud.user import lock_user_for_pricing
+
+    db_user = await lock_user_for_pricing(db, db_user.id)
 
     balance = db_user.balance_kopeks
     available_periods = sorted(settings.get_available_subscription_periods(), reverse=True)
@@ -1294,34 +1299,67 @@ async def handle_activate_button(callback: types.CallbackQuery, db_user: User, d
     # Найти максимальный период <= баланса
     best_period = None
     best_price = 0
+    best_pricing = None  # Cache pricing result for reuse in finalize()
 
-    for period in available_periods:
-        price, _ = await subscription_service.calculate_subscription_price_with_months(
-            period, traffic_limit_gb, server_ids, device_limit, db, user=db_user
-        )
-        if price <= balance:
-            best_period = period
-            best_price = price
-            break
+    # PricingEngine — единый расчёт для всех поверхностей (и продление, и новая подписка).
+    from app.services.pricing_engine import pricing_engine
 
-    if not best_period:
-        # Показать сколько не хватает для минимального периода
-        min_period = min(available_periods) if available_periods else 30
-        min_price, _ = await subscription_service.calculate_subscription_price_with_months(
-            min_period, traffic_limit_gb, server_ids, device_limit, db, user=db_user
-        )
-        missing = min_price - balance
-        await callback.answer(
-            texts.t('INSUFFICIENT_FUNDS_DETAILED', f'❌ Недостаточно средств. Не хватает {missing // 100} ₽'),
-            show_alert=True,
-        )
+    renewal_service = SubscriptionRenewalService() if subscription else None
+
+    try:
+        for period in available_periods:
+            if subscription:
+                pricing_result = await pricing_engine.calculate_renewal_price(db, subscription, period, user=db_user)
+                price = pricing_result.final_total
+            else:
+                new_pricing = await pricing_engine.calculate_classic_new_subscription_price(
+                    db,
+                    period,
+                    connected_squads,
+                    traffic_limit_gb,
+                    device_limit,
+                    user=db_user,
+                )
+                price = new_pricing.final_total
+            if price <= balance:
+                best_period = period
+                best_price = price
+                best_pricing = pricing_result if subscription else None
+                break
+
+        if not best_period:
+            # Показать сколько не хватает для минимального периода
+            min_period = min(available_periods) if available_periods else 30
+            if subscription:
+                min_pricing = await pricing_engine.calculate_renewal_price(db, subscription, min_period, user=db_user)
+                min_price = min_pricing.final_total
+            else:
+                min_new_pricing = await pricing_engine.calculate_classic_new_subscription_price(
+                    db,
+                    min_period,
+                    connected_squads,
+                    traffic_limit_gb,
+                    device_limit,
+                    user=db_user,
+                )
+                min_price = min_new_pricing.final_total
+            missing = min_price - balance
+            await callback.answer(
+                texts.t('INSUFFICIENT_FUNDS_DETAILED', f'❌ Недостаточно средств. Не хватает {missing // 100} ₽'),
+                show_alert=True,
+            )
+            return
+    except Exception as e:
+        logger.error('Ошибка расчёта стоимости при активации', error=e)
+        await callback.answer('❌ Ошибка расчёта стоимости', show_alert=True)
         return
 
     try:
         if subscription:
-            # Продление существующей подписки
-            renewal_service = SubscriptionRenewalService()
-            pricing = await renewal_service.calculate_pricing(db, db_user, subscription, best_period)
+            # Продление существующей подписки (reuse cached pricing from loop above)
+            if best_pricing is None:
+                raise ValueError('best_pricing is None despite best_period being set')
+            pricing = best_pricing
 
             await renewal_service.finalize(
                 db,
@@ -1333,10 +1371,27 @@ async def handle_activate_button(callback: types.CallbackQuery, db_user: User, d
             )
 
             await callback.answer(
-                texts.t('ACTIVATION_SUCCESS', f'✅ Подписка продлена на {best_period} дней за {best_price // 100} ₽!'),
+                texts.t(
+                    'ACTIVATION_SUCCESS',
+                    f'✅ Подписка продлена на {best_period} дней за {pricing.final_total // 100} ₽!',
+                ),
                 show_alert=True,
             )
         else:
+            # Списать баланс ДО создания подписки (чтобы не было orphaned subscription при неудаче)
+            consume_promo = get_user_active_promo_discount_percent(db_user) > 0
+            success = await subtract_user_balance(
+                db,
+                db_user,
+                best_price,
+                f'Активация подписки на {best_period} дней',
+                mark_as_paid_subscription=True,
+                consume_promo_offer=consume_promo,
+            )
+            if not success:
+                await callback.answer('❌ Недостаточно средств', show_alert=True)
+                return
+
             # Создание новой подписки
             new_subscription = await create_paid_subscription(
                 db,
@@ -1347,9 +1402,6 @@ async def handle_activate_button(callback: types.CallbackQuery, db_user: User, d
                 connected_squads=connected_squads,
                 update_server_counters=True,
             )
-
-            # Списать баланс правильно
-            await subtract_user_balance(db, db_user, best_price, f'Активация подписки на {best_period} дней')
 
             # Создать пользователя в RemnaWave
             await subscription_service.create_remnawave_user(db, new_subscription)

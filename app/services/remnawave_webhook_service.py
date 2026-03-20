@@ -467,6 +467,25 @@ class RemnaWaveWebhookService:
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
     ) -> None:
         if subscription:
+            # Суточные подписки управляются DailySubscriptionService.
+            # Remnawave может прислать user.expired если sync не дошёл (старый end_date),
+            # но локально подписка ещё жива — не экспайрим её.
+            tariff = getattr(subscription, 'tariff', None)
+            is_active_daily = (
+                tariff is not None
+                and getattr(tariff, 'is_daily', False)
+                and not getattr(subscription, 'is_daily_paused', False)
+            )
+            if is_active_daily:
+                logger.info(
+                    'Webhook: пропуск expire для суточной подписки (управляет DailySubscriptionService)',
+                    subscription_id=subscription.id,
+                    user_id=user.id,
+                )
+                self._stamp_webhook_update(subscription)
+                await db.commit()
+                return
+
             self._stamp_webhook_update(subscription)
             if subscription.status != SubscriptionStatus.EXPIRED.value:
                 await expire_subscription(db, subscription)
@@ -480,6 +499,23 @@ class RemnaWaveWebhookService:
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
     ) -> None:
         if subscription:
+            # Суточные подписки управляются DailySubscriptionService — не деактивируем
+            tariff = getattr(subscription, 'tariff', None)
+            is_active_daily = (
+                tariff is not None
+                and getattr(tariff, 'is_daily', False)
+                and not getattr(subscription, 'is_daily_paused', False)
+            )
+            if is_active_daily:
+                logger.info(
+                    'Webhook: пропуск disabled для суточной подписки',
+                    subscription_id=subscription.id,
+                    user_id=user.id,
+                )
+                self._stamp_webhook_update(subscription)
+                await db.commit()
+                return
+
             self._stamp_webhook_update(subscription)
             if subscription.status != SubscriptionStatus.DISABLED.value:
                 await deactivate_subscription(db, subscription)
@@ -494,7 +530,7 @@ class RemnaWaveWebhookService:
     ) -> None:
         if subscription:
             self._stamp_webhook_update(subscription)
-            if subscription.status == SubscriptionStatus.DISABLED.value:
+            if subscription.status in (SubscriptionStatus.DISABLED.value, SubscriptionStatus.LIMITED.value):
                 await reactivate_subscription(db, subscription)
                 logger.info(
                     'Webhook: subscription re-enabled for user', subscription_id=subscription.id, user_id=user.id
@@ -509,8 +545,11 @@ class RemnaWaveWebhookService:
     ) -> None:
         if subscription:
             self._stamp_webhook_update(subscription)
-            if subscription.status == SubscriptionStatus.ACTIVE.value:
-                await deactivate_subscription(db, subscription)
+            if subscription.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value):
+                subscription.status = SubscriptionStatus.LIMITED.value
+                subscription.updated_at = datetime.now(UTC)
+                await db.commit()
+                await db.refresh(subscription)
                 logger.info(
                     'Webhook: subscription limited (traffic) for user', subscription_id=subscription.id, user_id=user.id
                 )
@@ -525,8 +564,8 @@ class RemnaWaveWebhookService:
         if subscription:
             self._stamp_webhook_update(subscription)
             await update_subscription_usage(db, subscription, 0.0)
-            # Re-enable if was disabled due to traffic limit
-            if subscription.status == SubscriptionStatus.DISABLED.value:
+            # Re-enable if was disabled/limited due to traffic limit
+            if subscription.status in (SubscriptionStatus.DISABLED.value, SubscriptionStatus.LIMITED.value):
                 await reactivate_subscription(db, subscription)
             logger.info(
                 'Webhook: traffic reset for subscription , user', subscription_id=subscription.id, user_id=user.id
@@ -564,15 +603,23 @@ class RemnaWaveWebhookService:
             except (ValueError, TypeError):
                 pass
 
-        # Sync expire date
+        # Sync expire date — panel is the source of truth for user.modified events
         expire_at = data.get('expireAt')
         if expire_at:
             try:
                 parsed_dt = datetime.fromisoformat(expire_at.replace('Z', '+00:00'))
                 new_end_date = parsed_dt.astimezone(UTC)
                 if subscription.end_date != new_end_date:
+                    old_end_date = subscription.end_date
                     subscription.end_date = new_end_date
                     changed = True
+                    if old_end_date and new_end_date < old_end_date:
+                        logger.info(
+                            'Webhook: end_date обновлена назад (панель авторитетна): → ',
+                            subscription_id=subscription.id,
+                            old_end_date=old_end_date,
+                            new_end_date=new_end_date,
+                        )
             except (ValueError, TypeError):
                 pass
 
@@ -604,6 +651,17 @@ class RemnaWaveWebhookService:
             and subscription.subscription_url != subscription_url
         ):
             subscription.subscription_url = subscription_url
+            changed = True
+
+        # Sync subscription crypto link (for HAPP_CRYPT4_LINK)
+        subscription_crypto_link = data.get('subscriptionCryptoLink') or (data.get('happ') or {}).get('cryptoLink', '')
+        if subscription_crypto_link and self._is_valid_link(subscription_crypto_link):
+            if subscription.subscription_crypto_link != subscription_crypto_link:
+                subscription.subscription_crypto_link = subscription_crypto_link
+                changed = True
+        elif subscription_url and subscription.subscription_crypto_link:
+            # URL обновился, а крипто-ссылка не пришла — сбрасываем старую
+            subscription.subscription_crypto_link = None
             changed = True
 
         # Always stamp to protect from sync overwrite, even if no fields changed
@@ -667,7 +725,7 @@ class RemnaWaveWebhookService:
             subscription.subscription_url = None
             subscription.subscription_crypto_link = None
             subscription.remnawave_short_uuid = None
-            subscription.connected_squads = None
+            subscription.connected_squads = []
             subscription.updated_at = datetime.now(UTC)
 
             # Remove SubscriptionServer link rows
@@ -686,18 +744,18 @@ class RemnaWaveWebhookService:
     ) -> None:
         if subscription:
             new_url = data.get('subscriptionUrl')
-            new_crypto_link = data.get('subscriptionCryptoLink')
+            new_crypto_link = data.get('subscriptionCryptoLink') or (data.get('happ') or {}).get('cryptoLink', '')
             changed = False
 
             if new_url and self._is_valid_url(new_url) and subscription.subscription_url != new_url:
                 subscription.subscription_url = new_url
                 changed = True
-            if (
-                new_crypto_link
-                and self._is_valid_link(new_crypto_link)
-                and subscription.subscription_crypto_link != new_crypto_link
-            ):
-                subscription.subscription_crypto_link = new_crypto_link
+            if new_crypto_link and self._is_valid_link(new_crypto_link):
+                if subscription.subscription_crypto_link != new_crypto_link:
+                    subscription.subscription_crypto_link = new_crypto_link
+                    changed = True
+            elif new_url and subscription.subscription_crypto_link:
+                subscription.subscription_crypto_link = None
                 changed = True
 
             # Always stamp to protect from sync overwrite

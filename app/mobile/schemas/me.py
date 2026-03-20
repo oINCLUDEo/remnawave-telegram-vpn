@@ -29,3 +29,6 @@ class MeMobileResponse(BaseModel):
         None,
         description='Subscription details (null when has_subscription is False)',
     )
+    balance_kopeks: int = Field(0, description='Account balance in kopeks')
+    balance_rub: float = Field(0.0, description='Account balance in rubles')
+    balance_currency: str = Field('RUB', description='Balance currency code')

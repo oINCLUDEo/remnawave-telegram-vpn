@@ -276,6 +276,10 @@ class FortuneWheelService:
         rubles = Decimal(config.spin_cost_stars) * stars_rate
         kopeks = int(rubles * 100)
 
+        from app.database.crud.user import lock_user_for_update
+
+        user = await lock_user_for_update(db, user)
+
         if user.balance_kopeks < kopeks:
             raise ValueError('Недостаточно средств на балансе')
 
@@ -320,10 +324,13 @@ class FortuneWheelService:
         # Синхронизируем с RemnaWave
         try:
             subscription_service = SubscriptionService()
-            await subscription_service.update_remnawave_user(db, subscription)
-            logger.info('✅ Списание дней синхронизировано с RemnaWave для user_id', user_id=user.id)
+            result = await subscription_service.update_remnawave_user(db, subscription)
+            if result is not None:
+                logger.info('✅ Списание дней синхронизировано с RemnaWave для user_id', user_id=user.id)
+            else:
+                logger.error('⚠️ Не удалось синхронизировать списание дней с RemnaWave', user_id=user.id)
         except Exception as e:
-            logger.error('⚠️ Ошибка синхронизации списания дней с RemnaWave', error=e)
+            logger.error('⚠️ Ошибка синхронизации списания дней с RemnaWave', error=e, user_id=user.id)
 
         return kopeks
 
@@ -550,7 +557,11 @@ class FortuneWheelService:
             promocode_id = None
             if generated_promocode:
                 # Получаем ID промокода
-                result = await db.execute(f"SELECT id FROM promocodes WHERE code = '{generated_promocode}'")
+                from sqlalchemy import text
+
+                result = await db.execute(
+                    text('SELECT id FROM promocodes WHERE code = :code'), {'code': generated_promocode}
+                )
                 row = result.fetchone()
                 if row:
                     promocode_id = row[0]

@@ -141,8 +141,12 @@ async def get_available_server_squads(
         .order_by(ServerSquad.sort_order, ServerSquad.display_name)
     )
 
-    if exclude_trial_only:
-        query = query.where(ServerSquad.is_trial_eligible.is_(False))
+    # НЕ фильтруем по is_trial_eligible — это поле означает "доступен для триала",
+    # а НЕ "только для триала". Сквад может быть одновременно триальным и платным.
+    # Фильтр exclude_trial_only убирал единственный доступный сквад, из-за чего
+    # пользователи без триала получали пустой connected_squads при покупке.
+    # Параметр exclude_trial_only сохранён для обратной совместимости, но не используется.
+    # TODO: если нужна логика "только для триала", добавить отдельное поле is_trial_only
 
     if promo_group_id is not None:
         query = query.join(ServerSquad.allowed_promo_groups).where(PromoGroup.id == promo_group_id)
@@ -306,15 +310,24 @@ async def sync_with_remnawave(db: AsyncSession, remnawave_squads: list[dict]) ->
             await create_server_squad(
                 db=db,
                 squad_uuid=squad_uuid,
-                display_name=_generate_display_name(original_name),
+                display_name=original_name,
                 original_name=original_name,
-                country_code=_extract_country_code(original_name),
                 price_kopeks=1000,
                 is_available=False,
             )
             created += 1
 
-    removed_servers = [server for uuid, server in existing_servers.items() if uuid not in remnawave_uuids]
+    # Protect external squads referenced by tariffs from being removed during sync
+    tariff_ext_uuids_result = await db.execute(
+        select(Tariff.external_squad_uuid).where(Tariff.external_squad_uuid.isnot(None))
+    )
+    protected_uuids = {row[0] for row in tariff_ext_uuids_result.fetchall()}
+
+    removed_servers = [
+        server
+        for uuid, server in existing_servers.items()
+        if uuid not in remnawave_uuids and uuid not in protected_uuids
+    ]
 
     if removed_servers:
         removed_ids = [server.id for server in removed_servers]
@@ -478,219 +491,6 @@ async def get_random_trial_squad_uuid(
 
     if squad:
         return squad.squad_uuid
-
-    return None
-
-
-def _generate_display_name(original_name: str) -> str:
-    """Генерирует отображаемое название сервера на основе оригинального имени."""
-
-    country_names = {
-        # Европа
-        'NL': '🇳🇱 Нидерланды',
-        'DE': '🇩🇪 Германия',
-        'FR': '🇫🇷 Франция',
-        'GB': '🇬🇧 Великобритания',
-        'UK': '🇬🇧 Великобритания',
-        'IT': '🇮🇹 Италия',
-        'ES': '🇪🇸 Испания',
-        'PT': '🇵🇹 Португалия',
-        'PL': '🇵🇱 Польша',
-        'CZ': '🇨🇿 Чехия',
-        'AT': '🇦🇹 Австрия',
-        'CH': '🇨🇭 Швейцария',
-        'SE': '🇸🇪 Швеция',
-        'NO': '🇳🇴 Норвегия',
-        'FI': '🇫🇮 Финляндия',
-        'DK': '🇩🇰 Дания',
-        'BE': '🇧🇪 Бельгия',
-        'IE': '🇮🇪 Ирландия',
-        'RO': '🇷🇴 Румыния',
-        'BG': '🇧🇬 Болгария',
-        'HU': '🇭🇺 Венгрия',
-        'GR': '🇬🇷 Греция',
-        'LV': '🇱🇻 Латвия',
-        'LT': '🇱🇹 Литва',
-        'EE': '🇪🇪 Эстония',
-        'SK': '🇸🇰 Словакия',
-        'SI': '🇸🇮 Словения',
-        'HR': '🇭🇷 Хорватия',
-        'RS': '🇷🇸 Сербия',
-        'UA': '🇺🇦 Украина',
-        'MD': '🇲🇩 Молдова',
-        'BY': '🇧🇾 Беларусь',
-        'LU': '🇱🇺 Люксембург',
-        # СНГ и Азия
-        'RU': '🇷🇺 Россия',
-        'KZ': '🇰🇿 Казахстан',
-        'UZ': '🇺🇿 Узбекистан',
-        'GE': '🇬🇪 Грузия',
-        'AM': '🇦🇲 Армения',
-        'AZ': '🇦🇿 Азербайджан',
-        # Америка
-        'US': '🇺🇸 США',
-        'CA': '🇨🇦 Канада',
-        'MX': '🇲🇽 Мексика',
-        'BR': '🇧🇷 Бразилия',
-        'AR': '🇦🇷 Аргентина',
-        'CL': '🇨🇱 Чили',
-        'CO': '🇨🇴 Колумбия',
-        # Азия
-        'JP': '🇯🇵 Япония',
-        'KR': '🇰🇷 Южная Корея',
-        'CN': '🇨🇳 Китай',
-        'HK': '🇭🇰 Гонконг',
-        'TW': '🇹🇼 Тайвань',
-        'SG': '🇸🇬 Сингапур',
-        'TH': '🇹🇭 Таиланд',
-        'VN': '🇻🇳 Вьетнам',
-        'MY': '🇲🇾 Малайзия',
-        'ID': '🇮🇩 Индонезия',
-        'PH': '🇵🇭 Филиппины',
-        'IN': '🇮🇳 Индия',
-        'PK': '🇵🇰 Пакистан',
-        # Ближний Восток
-        'IL': '🇮🇱 Израиль',
-        'TR': '🇹🇷 Турция',
-        'AE': '🇦🇪 ОАЭ',
-        'SA': '🇸🇦 Саудовская Аравия',
-        'QA': '🇶🇦 Катар',
-        'BH': '🇧🇭 Бахрейн',
-        'KW': '🇰🇼 Кувейт',
-        # Океания
-        'AU': '🇦🇺 Австралия',
-        'NZ': '🇳🇿 Новая Зеландия',
-        # Африка
-        'ZA': '🇿🇦 ЮАР',
-        'EG': '🇪🇬 Египет',
-        'NG': '🇳🇬 Нигерия',
-        'KE': '🇰🇪 Кения',
-    }
-
-    name_upper = original_name.upper()
-
-    # Сначала ищем код как отдельный элемент (через - или _)
-    for code, display_name in country_names.items():
-        if f'-{code}' in name_upper or f'_{code}' in name_upper:
-            return display_name
-        if name_upper.startswith(code + '-') or name_upper.startswith(code + '_'):
-            return display_name
-        if name_upper.endswith('-' + code) or name_upper.endswith('_' + code):
-            return display_name
-        if name_upper == code:
-            return display_name
-
-    # Потом ищем просто вхождение кода
-    for code, display_name in country_names.items():
-        if code in name_upper:
-            return display_name
-
-    return f'🌍 {original_name}'
-
-
-def _extract_country_code(original_name: str) -> str | None:
-    """Извлекает код страны из оригинального названия."""
-
-    # Полный список кодов стран
-    codes = [
-        # Европа
-        'NL',
-        'DE',
-        'FR',
-        'GB',
-        'UK',
-        'IT',
-        'ES',
-        'PT',
-        'PL',
-        'CZ',
-        'AT',
-        'CH',
-        'SE',
-        'NO',
-        'FI',
-        'DK',
-        'BE',
-        'IE',
-        'RO',
-        'BG',
-        'HU',
-        'GR',
-        'LV',
-        'LT',
-        'EE',
-        'SK',
-        'SI',
-        'HR',
-        'RS',
-        'UA',
-        'MD',
-        'BY',
-        'LU',
-        # СНГ
-        'RU',
-        'KZ',
-        'UZ',
-        'GE',
-        'AM',
-        'AZ',
-        # Америка
-        'US',
-        'CA',
-        'MX',
-        'BR',
-        'AR',
-        'CL',
-        'CO',
-        # Азия
-        'JP',
-        'KR',
-        'CN',
-        'HK',
-        'TW',
-        'SG',
-        'TH',
-        'VN',
-        'MY',
-        'ID',
-        'PH',
-        'IN',
-        'PK',
-        # Ближний Восток
-        'IL',
-        'TR',
-        'AE',
-        'SA',
-        'QA',
-        'BH',
-        'KW',
-        # Океания
-        'AU',
-        'NZ',
-        # Африка
-        'ZA',
-        'EG',
-        'NG',
-        'KE',
-    ]
-
-    name_upper = original_name.upper()
-
-    # Сначала ищем код как отдельный элемент
-    for code in codes:
-        if f'-{code}' in name_upper or f'_{code}' in name_upper:
-            return code
-        if name_upper.startswith(code + '-') or name_upper.startswith(code + '_'):
-            return code
-        if name_upper.endswith('-' + code) or name_upper.endswith('_' + code):
-            return code
-        if name_upper == code:
-            return code
-
-    # Потом просто ищем вхождение
-    for code in codes:
-        if code in name_upper:
-            return code
 
     return None
 

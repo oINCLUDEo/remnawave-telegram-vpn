@@ -38,6 +38,7 @@ from app.services.payment_verification_service import (
 from app.services.referral_contest_service import referral_contest_service
 from app.services.remnawave_sync_service import remnawave_sync_service
 from app.services.reporting_service import reporting_service
+from app.services.riopay_service import riopay_service
 from app.services.system_settings_service import bot_configuration_service
 from app.services.traffic_monitoring_service import traffic_monitoring_scheduler
 from app.services.version_service import version_service
@@ -218,6 +219,21 @@ async def main():
                 stage.warning('Не удалось создать/проверить дефолтный веб-API токен')
 
         async with timeline.stage(
+            'RBAC bootstrap',
+            '🔐',
+            success_message='RBAC roles and superadmins ready',
+        ) as stage:
+            try:
+                from app.database.database import AsyncSessionLocal
+                from app.services.rbac_bootstrap_service import bootstrap_superadmins
+
+                async with AsyncSessionLocal() as db:
+                    await bootstrap_superadmins(db)
+            except Exception as error:
+                stage.warning(f'RBAC bootstrap warning: {error}')
+                logger.error('RBAC bootstrap failed', error=error)
+
+        async with timeline.stage(
             'Синхронизация тарифов из конфига',
             '💰',
             success_message='Тарифы синхронизированы',
@@ -288,6 +304,11 @@ async def main():
             )
 
         if bot:
+            bot_user = await bot.get_me()
+            if bot_user.username and not settings.BOT_USERNAME:
+                settings.BOT_USERNAME = bot_user.username
+                logger.info('BOT_USERNAME auto-detected', bot_username=bot_user.username)
+
             monitoring_service.bot = bot
             maintenance_service.set_bot(bot)
             broadcast_service.set_bot(bot)
@@ -295,6 +316,10 @@ async def main():
             traffic_monitoring_scheduler.set_bot(bot)
             daily_subscription_service.set_bot(bot)
             telegram_notifier.set_bot(bot)
+
+        from app.services.channel_subscription_service import channel_subscription_service
+
+        channel_subscription_service.bot = bot
 
         # Initialize email broadcast service
         from app.cabinet.services.email_service import email_service
@@ -531,7 +556,6 @@ async def main():
                 success_message='Токен внешней админки готов',
             ) as stage:
                 try:
-                    bot_user = await bot.get_me()
                     token = await ensure_external_admin_token(
                         bot_user.username,
                         bot_user.id,
@@ -738,12 +762,14 @@ async def main():
             webhook_lines.append(f'Freekassa: {_fmt(settings.FREEKASSA_WEBHOOK_PATH)}')
         if settings.is_kassa_ai_enabled():
             webhook_lines.append(f'Kassa.ai: {_fmt(settings.KASSA_AI_WEBHOOK_PATH)}')
+        if settings.is_riopay_enabled():
+            webhook_lines.append(f'RioPay: {_fmt(settings.RIOPAY_WEBHOOK_PATH)}')
         if settings.is_remnawave_webhook_enabled():
             webhook_lines.append(f'RemnaWave: {_fmt(settings.REMNAWAVE_WEBHOOK_PATH)}')
 
         timeline.log_section(
             'Активные webhook endpoints',
-            webhook_lines if webhook_lines else ['Нет активных endpoints'],
+            webhook_lines or ['Нет активных endpoints'],
             icon='🎯',
         )
 
@@ -955,6 +981,11 @@ async def main():
                 logger.info('✅ Административное веб-API остановлено')
             except Exception as error:
                 logger.error('Ошибка остановки веб-API', error=error)
+
+        try:
+            await riopay_service.close()
+        except Exception as e:
+            logger.error('Ошибка закрытия сессии RioPay', error=e)
 
         if 'bot' in locals():
             try:
