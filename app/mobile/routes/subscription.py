@@ -99,63 +99,125 @@ def _serialize_subscription(sub: Any) -> dict[str, Any] | None:
 
 
 async def _build_topup_info(db: AsyncSession, subscription: Any, user: Any) -> dict[str, Any]:
-    """Mirror cabinet/miniapp top-up logic for current tariff."""
-    if not subscription or not getattr(subscription, 'tariff_id', None):
+    """Mirror cabinet/miniapp top-up logic for both tariff and classic sales modes."""
+    if not subscription:
         return {}
 
-    tariff = await get_tariff_by_id(db, subscription.tariff_id)
-    if not tariff:
-        return {}
+    info: dict[str, Any] = {
+        'traffic_topup_enabled': False,
+        'traffic_topup_packages': [],
+        'max_topup_traffic_gb': None,
+        'available_topup_gb': None,
+    }
 
-    max_topup_traffic_gb = getattr(tariff, 'max_topup_traffic_gb', 0) or 0
-    current_subscription_traffic = subscription.traffic_limit_gb or 0
-    available_topup_gb = None
-    if max_topup_traffic_gb > 0:
-        available_topup_gb = max(0, max_topup_traffic_gb - current_subscription_traffic)
+    is_tariff_mode = settings.is_tariffs_mode() and getattr(subscription, 'tariff_id', None)
+    tariff = None
 
-    traffic_topup_enabled = getattr(tariff, 'traffic_topup_enabled', False) and tariff.traffic_limit_gb > 0
+    if getattr(subscription, 'tariff_id', None):
+        tariff = await get_tariff_by_id(db, subscription.tariff_id)
+
+    if is_tariff_mode and tariff:
+        max_topup_traffic_gb = getattr(tariff, 'max_topup_traffic_gb', 0) or 0
+        current_subscription_traffic = subscription.traffic_limit_gb or 0
+        available_topup_gb = None
+        if max_topup_traffic_gb > 0:
+            available_topup_gb = max(0, max_topup_traffic_gb - current_subscription_traffic)
+
+        traffic_topup_enabled = getattr(tariff, 'traffic_topup_enabled', False) and tariff.traffic_limit_gb > 0
+        traffic_topup_packages: list[dict[str, Any]] = []
+
+        if traffic_topup_enabled and hasattr(tariff, 'get_traffic_topup_packages'):
+            packages = tariff.get_traffic_topup_packages()
+            for gb in sorted(packages.keys()):
+                if available_topup_gb is not None and gb > available_topup_gb:
+                    continue
+
+                base_price = packages[gb]
+                discounted_price, _discount_val, traffic_discount_pct = pricing_engine.calculate_traffic_discount(
+                    base_price,
+                    user,
+                )
+                if traffic_discount_pct > 0:
+                    traffic_topup_packages.append(
+                        {
+                            'gb': gb,
+                            'price_kopeks': discounted_price,
+                            'price_label': settings.format_price(discounted_price),
+                            'original_price_kopeks': base_price,
+                            'original_price_label': settings.format_price(base_price),
+                            'discount_percent': traffic_discount_pct,
+                        }
+                    )
+                else:
+                    traffic_topup_packages.append(
+                        {
+                            'gb': gb,
+                            'price_kopeks': base_price,
+                            'price_label': settings.format_price(base_price),
+                        }
+                    )
+
+        if traffic_topup_enabled and not traffic_topup_packages and available_topup_gb == 0:
+            traffic_topup_enabled = False
+
+        info.update(
+            {
+                'traffic_topup_enabled': traffic_topup_enabled,
+                'traffic_topup_packages': traffic_topup_packages,
+                'max_topup_traffic_gb': max_topup_traffic_gb,
+                'available_topup_gb': available_topup_gb,
+            }
+        )
+        return info
+
+    # Classic mode: use global settings (with optional tariff-level allow flag)
+    if not settings.is_traffic_topup_enabled():
+        return info
+
+    if tariff and getattr(tariff, 'allow_traffic_topup', True) is False:
+        return info
+
+    packages = settings.get_traffic_topup_packages()
     traffic_topup_packages: list[dict[str, Any]] = []
 
-    if traffic_topup_enabled and hasattr(tariff, 'get_traffic_topup_packages'):
-        packages = tariff.get_traffic_topup_packages()
-        for gb in sorted(packages.keys()):
-            if available_topup_gb is not None and gb > available_topup_gb:
-                continue
+    for pkg in packages:
+        if not pkg.get('enabled', True):
+            continue
+        base_price = int(pkg.get('price', 0) or 0)
+        if base_price <= 0:
+            continue
 
-            base_price = packages[gb]
-            discounted_price, _discount_val, traffic_discount_pct = pricing_engine.calculate_traffic_discount(
-                base_price,
-                user,
+        gb_value = int(pkg.get('gb', 0) or 0)
+        discounted_price, _discount_val, traffic_discount_pct = pricing_engine.calculate_traffic_discount(
+            base_price,
+            user,
+        )
+
+        package_payload: dict[str, Any] = {
+            'gb': gb_value,
+            'price_kopeks': discounted_price if traffic_discount_pct > 0 else base_price,
+            'price_label': settings.format_price(discounted_price if traffic_discount_pct > 0 else base_price),
+        }
+        if traffic_discount_pct > 0:
+            package_payload.update(
+                {
+                    'original_price_kopeks': base_price,
+                    'original_price_label': settings.format_price(base_price),
+                    'discount_percent': traffic_discount_pct,
+                }
             )
-            if traffic_discount_pct > 0:
-                traffic_topup_packages.append(
-                    {
-                        'gb': gb,
-                        'price_kopeks': discounted_price,
-                        'price_label': settings.format_price(discounted_price),
-                        'original_price_kopeks': base_price,
-                        'original_price_label': settings.format_price(base_price),
-                        'discount_percent': traffic_discount_pct,
-                    }
-                )
-            else:
-                traffic_topup_packages.append(
-                    {
-                        'gb': gb,
-                        'price_kopeks': base_price,
-                        'price_label': settings.format_price(base_price),
-                    }
-                )
 
-    if traffic_topup_enabled and not traffic_topup_packages and available_topup_gb == 0:
-        traffic_topup_enabled = False
+        traffic_topup_packages.append(package_payload)
 
-    return {
-        'traffic_topup_enabled': traffic_topup_enabled,
-        'traffic_topup_packages': traffic_topup_packages,
-        'max_topup_traffic_gb': max_topup_traffic_gb,
-        'available_topup_gb': available_topup_gb,
-    }
+    if traffic_topup_packages:
+        info.update(
+            {
+                'traffic_topup_enabled': True,
+                'traffic_topup_packages': traffic_topup_packages,
+            }
+        )
+
+    return info
 
 
 # ---------------------------------------------------------------------------
