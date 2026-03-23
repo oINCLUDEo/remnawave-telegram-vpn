@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../config/app_config.dart';
 
 /// Редактор JSON-конфига с возможностью подключиться напрямую.
 /// flutter_v2ray_plus не имеет checkConfigJson, поэтому валидация
@@ -115,15 +118,56 @@ class _ConfigEditorPageState extends State<ConfigEditorPage> {
     try {
       await FlutterV2ray().startVless(
         remark: widget.configName,
-        config: compact,
+        config: _injectBackendProxyRule(compact),
         notificationDisconnectButtonName: 'Отключить',
         proxyOnly: false,
       );
+      // Persist connected state for Quick Settings tile.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('vpn_connected', true);
+      await prefs.setString('vpn_server_name', widget.configName);
       if (mounted) Navigator.pop(context);
     } catch (e) {
       _snack('Ошибка: $e');
     } finally {
       if (mounted) setState(() => _isConnecting = false);
+    }
+  }
+
+  /// Injects a routing rule to ensure the backend API host always goes through
+  /// the proxy outbound and is never sent via a direct path that bypasses VPN.
+  String _injectBackendProxyRule(String configJson) {
+    try {
+      final map = jsonDecode(configJson) as Map<String, dynamic>;
+      final outbounds = (map['outbounds'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      String? proxyTag;
+      for (final ob in outbounds) {
+        final tag = ob['tag'] as String? ?? '';
+        final protocol = ob['protocol'] as String? ?? '';
+        if (protocol != 'freedom' && protocol != 'blackhole' &&
+            tag != 'direct' && tag != 'block') {
+          proxyTag = tag.isEmpty ? null : tag;
+          break;
+        }
+      }
+      if (proxyTag == null) return configJson;
+      final backendHost = Uri.tryParse(AppConfig.backendBaseUrl)?.host ?? '';
+      if (backendHost.isEmpty) return configJson;
+      final routing = (map['routing'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+      final rules = (routing['rules'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>()
+          .toList();
+      rules.insert(0, {
+        'type': 'field',
+        'domain': ['full:$backendHost'],
+        'outboundTag': proxyTag,
+      });
+      routing['rules'] = rules;
+      map['routing'] = routing;
+      return jsonEncode(map);
+    } catch (_) {
+      return configJson;
     }
   }
 

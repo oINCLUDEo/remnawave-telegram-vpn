@@ -67,6 +67,8 @@ class MeService {
         appLogger.info('MeService', '/me refreshed — subscription: ${me.hasSubscription}');
         // Fetch and post backend-driven in-app notifications
         unawaited(_fetchAndPostNotifications(auth.telegramId!));
+        // Check subscription expiry and post a local warning if needed.
+        _checkExpiryWarning(me);
         return me;
       }
 
@@ -187,4 +189,55 @@ class MeService {
       debugPrint('MeService: _fetchAndPostNotifications error: $e');
     }
   }
+
+  // ── Expiry warnings ────────────────────────────────────────────────────────
+
+  /// Number of days remaining before subscription expiry that triggers a warning.
+  static const int _expiryWarnDays = 3;
+
+  /// Posts an in-app warning banner when the subscription is about to expire or
+  /// has already expired.  Uses persistent notification IDs so the banner is
+  /// not re-shown within the same session once dismissed.
+  static void _checkExpiryWarning(MeResponse me) {
+    final sub = me.subscription;
+    if (sub == null) return;
+
+    final expireDate = sub.expireDate;
+
+    // Expired subscription warning.
+    if (sub.isExpired) {
+      notificationService.post(const InAppNotification(
+        id: 'sub_expired',
+        title: 'Подписка истекла',
+        body: 'Обновите подписку, чтобы продолжить использование VPN',
+        type: InAppNotifType.persistent,
+        severity: InAppNotifSeverity.error,
+      ));
+      // Clear any "expiring soon" banner when subscription is already expired.
+      notificationService.dismiss('sub_expiring_soon');
+      return;
+    }
+
+    // Clear expired banner if subscription is now active.
+    notificationService.dismiss('sub_expired');
+
+    if (!sub.isActive || expireDate == null) return;
+
+    final now = DateTime.now();
+    final daysLeft = expireDate.difference(now).inDays;
+    if (daysLeft <= _expiryWarnDays) {
+      final dayWord = daysLeft == 1 ? 'день' : (daysLeft < 5 ? 'дня' : 'дней');
+      notificationService.post(InAppNotification(
+        id: 'sub_expiring_soon',
+        title: 'Подписка заканчивается',
+        body: 'До конца подписки осталось $daysLeft $dayWord',
+        type: InAppNotifType.persistent,
+        severity: InAppNotifSeverity.warning,
+      ));
+    } else {
+      // If subscription was renewed and now has more days, clear the warning.
+      notificationService.dismiss('sub_expiring_soon');
+    }
+  }
 }
+

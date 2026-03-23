@@ -117,3 +117,24 @@ class UpgradeCalcResponse(BaseModel):
 
     amount_kopeks: int
     amount_rub: float
+
+
+class TrialInfoResponse(BaseModel):
+    """Response from GET /mobile/v1/subscription/trial."""
+
+    is_available: bool
+    duration_days: int
+    traffic_limit_gb: int
+    device_limit: int
+    requires_payment: bool
+    price_kopeks: int
+    price_rubles: float
+    reason_unavailable: str | None = None
+
+
+class TrialActivateResponse(BaseModel):
+    """Response from POST /mobile/v1/subscription/trial."""
+
+    status: str = Field(..., description='"success" | "error"')
+    message: str | None = None
+    subscription: dict | None = None

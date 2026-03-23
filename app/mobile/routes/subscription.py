@@ -24,6 +24,8 @@ from app.mobile.schemas.subscription import (
     SubscriptionOptionsResponse,
     SubscriptionSelectionRequest,
     SubscriptionUpgradeRequest,
+    TrialActivateResponse,
+    TrialInfoResponse,
     UpgradeCalcResponse,
     UpgradeResponse,
 )
@@ -971,3 +973,255 @@ async def set_autopay(
         await engine.dispose()
 
     return AutopayResponse(autopay_enabled=enabled, message=message)
+
+
+# ---------------------------------------------------------------------------
+# GET /mobile/v1/subscription/trial
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    '/subscription/trial',
+    response_model=TrialInfoResponse,
+    summary='Информация о пробной подписке',
+    tags=['mobile'],
+)
+async def get_trial_info(
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> TrialInfoResponse:
+    """Return trial subscription availability and parameters for the mobile user."""
+    from datetime import UTC, datetime
+
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        await db.refresh(user, ['subscription'])
+
+        if settings.is_trial_disabled_for_user(getattr(user, 'auth_type', 'telegram')):
+            return TrialInfoResponse(
+                is_available=False,
+                duration_days=settings.TRIAL_DURATION_DAYS,
+                traffic_limit_gb=settings.TRIAL_TRAFFIC_LIMIT_GB,
+                device_limit=settings.TRIAL_DEVICE_LIMIT,
+                requires_payment=bool(settings.TRIAL_PAYMENT_ENABLED),
+                price_kopeks=0,
+                price_rubles=0.0,
+                reason_unavailable='Trial is not available for your account type',
+            )
+
+        duration_days = settings.TRIAL_DURATION_DAYS
+        traffic_limit_gb = settings.TRIAL_TRAFFIC_LIMIT_GB
+        device_limit = settings.TRIAL_DEVICE_LIMIT
+        requires_payment = bool(settings.TRIAL_PAYMENT_ENABLED)
+        price_kopeks = settings.TRIAL_ACTIVATION_PRICE if requires_payment else 0
+
+        try:
+            from app.database.crud.tariff import get_tariff_by_id as _get_tariff, get_trial_tariff
+
+            trial_tariff = await get_trial_tariff(db)
+            if not trial_tariff:
+                trial_tariff_id = settings.get_trial_tariff_id()
+                if trial_tariff_id > 0:
+                    trial_tariff = await _get_tariff(db, trial_tariff_id)
+                    if trial_tariff and not trial_tariff.is_active:
+                        trial_tariff = None
+            if trial_tariff:
+                traffic_limit_gb = trial_tariff.traffic_limit_gb
+                device_limit = trial_tariff.device_limit
+                tariff_days = getattr(trial_tariff, 'trial_duration_days', None)
+                if tariff_days:
+                    duration_days = tariff_days
+        except Exception as exc:
+            logger.error('Error getting trial tariff info (mobile)', error=exc)
+
+        subscription = getattr(user, 'subscription', None)
+        if subscription is not None:
+            now = datetime.now(UTC)
+            end_date = getattr(subscription, 'end_date', None)
+            if end_date is not None and getattr(subscription, 'status', '') == 'active':
+                if end_date.tzinfo is None:
+                    end_date = end_date.replace(tzinfo=UTC)
+                if end_date > now:
+                    return TrialInfoResponse(
+                        is_available=False,
+                        duration_days=duration_days,
+                        traffic_limit_gb=traffic_limit_gb,
+                        device_limit=device_limit,
+                        requires_payment=requires_payment,
+                        price_kopeks=price_kopeks,
+                        price_rubles=price_kopeks / 100,
+                        reason_unavailable='You already have an active subscription',
+                    )
+            if getattr(subscription, 'is_trial', False) or getattr(user, 'has_had_paid_subscription', False):
+                return TrialInfoResponse(
+                    is_available=False,
+                    duration_days=duration_days,
+                    traffic_limit_gb=traffic_limit_gb,
+                    device_limit=device_limit,
+                    requires_payment=requires_payment,
+                    price_kopeks=price_kopeks,
+                    price_rubles=price_kopeks / 100,
+                    reason_unavailable='Trial already used',
+                )
+
+        return TrialInfoResponse(
+            is_available=True,
+            duration_days=duration_days,
+            traffic_limit_gb=traffic_limit_gb,
+            device_limit=device_limit,
+            requires_payment=requires_payment,
+            price_kopeks=price_kopeks,
+            price_rubles=price_kopeks / 100,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error getting trial info (mobile)', telegram_id=x_telegram_id, error=exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при получении информации о пробной подписке',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/trial
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    '/subscription/trial',
+    response_model=TrialActivateResponse,
+    summary='Активировать пробную подписку',
+    tags=['mobile'],
+)
+async def activate_trial(
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> TrialActivateResponse:
+    """Activate a trial subscription for the mobile user."""
+    from datetime import UTC, datetime
+
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        await db.refresh(user, ['subscription'])
+
+        if settings.is_trial_disabled_for_user(getattr(user, 'auth_type', 'telegram')):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Trial is not available for your account type',
+            )
+
+        subscription = getattr(user, 'subscription', None)
+        if subscription is not None:
+            now = datetime.now(UTC)
+            end_date = getattr(subscription, 'end_date', None)
+            if end_date is not None and getattr(subscription, 'status', '') == 'active':
+                if end_date.tzinfo is None:
+                    end_date = end_date.replace(tzinfo=UTC)
+                if end_date > now:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail='You already have an active subscription',
+                    )
+            if getattr(subscription, 'is_trial', False) or getattr(user, 'has_had_paid_subscription', False):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='Trial already used',
+                )
+
+        # Charge if required.
+        requires_payment = bool(settings.TRIAL_PAYMENT_ENABLED)
+        if requires_payment:
+            from app.database.crud.user import subtract_user_balance
+
+            price_kopeks = settings.TRIAL_ACTIVATION_PRICE
+            if user.balance_kopeks < price_kopeks:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f'Insufficient balance. Need {price_kopeks / 100:.2f} RUB',
+                )
+            success = await subtract_user_balance(
+                db, user, price_kopeks,
+                'Активация триальной подписки', mark_as_paid_subscription=True,
+            )
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail='Failed to charge trial activation fee',
+                )
+            logger.info('User paid for trial (mobile)', telegram_id=x_telegram_id, kopeks=price_kopeks)
+
+        # Resolve trial parameters.
+        trial_duration = settings.TRIAL_DURATION_DAYS
+        trial_traffic_limit = settings.TRIAL_TRAFFIC_LIMIT_GB
+        trial_device_limit = settings.TRIAL_DEVICE_LIMIT
+        trial_squads: list = []
+        tariff_id_for_trial = None
+
+        try:
+            from app.database.crud.tariff import get_tariff_by_id as _get_tariff, get_trial_tariff
+
+            trial_tariff = await get_trial_tariff(db)
+            if not trial_tariff:
+                trial_tariff_id = settings.get_trial_tariff_id()
+                if trial_tariff_id > 0:
+                    trial_tariff = await _get_tariff(db, trial_tariff_id)
+                    if trial_tariff and not trial_tariff.is_active:
+                        trial_tariff = None
+            if trial_tariff:
+                trial_traffic_limit = trial_tariff.traffic_limit_gb
+                trial_device_limit = trial_tariff.device_limit
+                trial_squads = trial_tariff.allowed_squads or []
+                tariff_id_for_trial = trial_tariff.id
+                tariff_days = getattr(trial_tariff, 'trial_duration_days', None)
+                if tariff_days:
+                    trial_duration = tariff_days
+        except Exception as exc:
+            logger.error('Error getting trial tariff (mobile activate)', error=exc)
+
+        from app.database.crud.subscription import create_trial_subscription
+
+        new_sub = await create_trial_subscription(
+            db=db,
+            user_id=user.id,
+            duration_days=trial_duration,
+            traffic_limit_gb=trial_traffic_limit,
+            device_limit=trial_device_limit,
+            connected_squads=trial_squads or None,
+            tariff_id=tariff_id_for_trial,
+        )
+
+        logger.info('Trial subscription activated (mobile)', telegram_id=x_telegram_id)
+
+        try:
+            from app.services.subscription_service import SubscriptionService
+
+            sub_service = SubscriptionService()
+            if sub_service.is_configured:
+                await sub_service.create_remnawave_user(db, new_sub)
+                await db.refresh(new_sub)
+        except Exception as exc:
+            logger.error('Failed to create RemnaWave user for trial (mobile)', error=exc)
+
+        return TrialActivateResponse(
+            status='success',
+            message='Пробная подписка активирована',
+            subscription=_serialize_subscription(new_sub),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error activating trial (mobile)', telegram_id=x_telegram_id, error=exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при активации пробной подписки',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+

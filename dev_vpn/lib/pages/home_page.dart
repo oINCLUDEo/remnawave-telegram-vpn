@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:country_flags/country_flags.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/app_config.dart';
 import '../models/me_response.dart';
 import '../models/server_node.dart';
 import '../models/subscription_info.dart';
@@ -153,6 +155,12 @@ class _HomePageState extends State<HomePage>
         _speedCalc.update(totalUploadBytes: s.upload, totalDownloadBytes: s.download);
       } else {
         _speedCalc.reset();
+        // Persist disconnected state for Quick Settings tile whenever VPN stops
+        // (e.g. user taps "Disconnect" in system notification).
+        SharedPreferences.getInstance().then((p) {
+          p.setBool('vpn_connected', false);
+          p.remove('vpn_server_name');
+        });
       }
       setState(() => _status = s);
     });
@@ -205,11 +213,61 @@ class _HomePageState extends State<HomePage>
   // ── Connection ─────────────────────────────────────────────────────────────
   Future<void> _performLogout() async => AuthService.logout();
 
+  /// Injects a routing rule into the xray JSON config to ensure the app's own
+  /// API traffic always goes through the proxy outbound and is never sent
+  /// via a "direct" path that would bypass the VPN on restricted networks.
+  String _injectBackendProxyRule(String configJson) {
+    try {
+      final map = jsonDecode(configJson) as Map<String, dynamic>;
+
+      // Find the first outbound that is not a freedom/blackhole (i.e. the proxy).
+      final outbounds = (map['outbounds'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      String? proxyTag;
+      for (final ob in outbounds) {
+        final tag = ob['tag'] as String? ?? '';
+        final protocol = ob['protocol'] as String? ?? '';
+        if (protocol != 'freedom' && protocol != 'blackhole' &&
+            tag != 'direct' && tag != 'block') {
+          proxyTag = tag.isEmpty ? null : tag;
+          break;
+        }
+      }
+      if (proxyTag == null) return configJson;
+
+      // Extract the hostname from the configured backend base URL.
+      final backendHost = Uri.tryParse(AppConfig.backendBaseUrl)?.host ?? '';
+      if (backendHost.isEmpty) return configJson;
+
+      // Prepend a routing rule that routes backend traffic via the proxy outbound.
+      final routing = (map['routing'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+      final rules = (routing['rules'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>()
+          .toList();
+      rules.insert(0, {
+        'type': 'field',
+        'domain': ['full:$backendHost'],
+        'outboundTag': proxyTag,
+      });
+      routing['rules'] = rules;
+      map['routing'] = routing;
+
+      return jsonEncode(map);
+    } catch (_) {
+      // If config parsing fails for any reason, fall back to the original.
+      return configJson;
+    }
+  }
+
   Future<void> _toggleConnection() async {
     if (_isTransitioning) return;
     if (_isConnected) {
       appLogger.info('HomePage', 'disconnecting from ${_selectedNode?.name ?? "unknown"}');
       await _v2ray.stopVless();
+      // Persist disconnected state for Quick Settings tile.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('vpn_connected', false);
+      await prefs.remove('vpn_server_name');
       return;
     }
     final node = _selectedNode;
@@ -228,12 +286,17 @@ class _HomePageState extends State<HomePage>
     appLogger.info('HomePage', 'connecting to ${node.name} (${node.countryCode})');
     try {
       final parser = FlutterV2ray.parseFromURL(node.link!);
+      final config = _injectBackendProxyRule(parser.getFullConfiguration());
       await _v2ray.startVless(
         remark: node.name,
-        config: parser.getFullConfiguration(),
+        config: config,
         notificationDisconnectButtonName: 'Отключить',
         proxyOnly: false,
       );
+      // Persist connected state for Quick Settings tile.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('vpn_connected', true);
+      await prefs.setString('vpn_server_name', node.name);
     } catch (e) {
       appLogger.error('HomePage', 'connection error: $e');
       _snack('Ошибка подключения: $e');

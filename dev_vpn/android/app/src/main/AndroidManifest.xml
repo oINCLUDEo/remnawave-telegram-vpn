@@ -64,6 +64,21 @@
                     android:value="proxy"/>
         </service>
 
+        <!-- Quick Settings tile for toggling VPN from the system panel -->
+        <service
+                android:name=".VpnTileService"
+                android:exported="true"
+                android:label="Ulya VPN"
+                android:icon="@mipmap/ic_launcher"
+                android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE"/>
+            </intent-filter>
+            <meta-data
+                    android:name="android.service.quicksettings.ACTIVE_TILE"
+                    android:value="true"/>
+        </service>
+
         <meta-data
                 android:name="flutterEmbedding"
                 android:value="2"/>

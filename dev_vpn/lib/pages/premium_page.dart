@@ -69,6 +69,11 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
   int?    _selectedTraffic;
   int?    _selectedDevices;
 
+  // Trial state
+  TrialInfo? _trialInfo;
+  bool _loadingTrial = false;
+  bool _activatingTrial = false;
+
   @override
   void initState() {
     super.initState();
@@ -133,7 +138,7 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
 
   Future<void> _loadOptions() async {
     if (!authStateNotifier.value.isLoggedIn) {
-      if (mounted) setState(() => _options = null);
+      if (mounted) setState(() { _options = null; _trialInfo = null; });
       return;
     }
     if (mounted) setState(() => _loadingOptions = true);
@@ -161,6 +166,42 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
       }
     } catch (e) { debugPrint('PremiumPage._loadOptions: $e'); }
     if (mounted) setState(() => _loadingOptions = false);
+    // Load trial info in parallel with subscription options.
+    unawaited(_loadTrial());
+  }
+
+  Future<void> _loadTrial() async {
+    if (!authStateNotifier.value.isLoggedIn) return;
+    // Only fetch trial info if user doesn't have an active non-trial subscription.
+    final sub = meNotifier.value?.subscription;
+    if (sub != null && sub.isActive && !sub.isTrial) return;
+    if (mounted) setState(() => _loadingTrial = true);
+    try {
+      final info = await SubscriptionApiService.getTrialInfo();
+      if (mounted) setState(() => _trialInfo = info);
+    } catch (e) { debugPrint('PremiumPage._loadTrial: $e'); }
+    if (mounted) setState(() => _loadingTrial = false);
+  }
+
+  Future<void> _onActivateTrial() async {
+    if (_activatingTrial) return;
+    setState(() => _activatingTrial = true);
+    try {
+      final r = await SubscriptionApiService.activateTrial();
+      if (!mounted) return;
+      if (r == null) {
+        _snack('Ошибка соединения с сервером', error: true);
+      } else if (r.isSuccess) {
+        _snack('Пробная подписка активирована!', error: false);
+        await MeService.refresh();
+        await _loadOptions();
+      } else {
+        _snack(r.message ?? 'Ошибка при активации', error: true);
+      }
+    } catch (e) {
+      if (mounted) _snack('Ошибка: $e', error: true);
+    }
+    if (mounted) setState(() => _activatingTrial = false);
   }
 
   Future<void> _recalcPrice() async {
@@ -293,6 +334,20 @@ class _PremiumPageState extends State<PremiumPage> with WidgetsBindingObserver {
                       _BenefitsGrid(),
                       const SizedBox(height: 20),
                     ],
+
+                    // Trial card — shown when user is eligible or trial is active/expired
+                    if (sub?.isTrial == true) ...[
+                      _TrialStatusCard(isTrial: true, isExpired: sub!.isExpired),
+                      const SizedBox(height: 16),
+                    ] else if (_trialInfo != null && !hasActivePaidSub) ...[
+                      _TrialCard(
+                        trialInfo: _trialInfo!,
+                        loading: _activatingTrial || _loadingTrial,
+                        onActivate: _trialInfo!.isAvailable ? _onActivateTrial : null,
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
                     _SectionLabel(sub?.isTrial == true ? 'Переход на платную подписку' : 'Настройте тариф'),
                     const SizedBox(height: 12),
                     _SubscriptionBuilderCard(
@@ -1458,3 +1513,183 @@ class _Card extends StatelessWidget {
     child: child,
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trial card — shown when user is eligible to activate trial
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TrialCard extends StatelessWidget {
+  final TrialInfo trialInfo;
+  final bool loading;
+  final VoidCallback? onActivate;
+
+  const _TrialCard({
+    required this.trialInfo,
+    required this.loading,
+    this.onActivate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final available = trialInfo.isAvailable;
+    final accent = available ? _DS.emerald : _DS.textMuted;
+    final trafficLabel = trialInfo.trafficLimitGb == 0
+        ? '∞ ГБ'
+        : '${trialInfo.trafficLimitGb} ГБ';
+
+    return _Card(
+      accentColor: available ? _DS.emerald : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: accent.withValues(alpha: 0.35)),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.star_rounded, color: accent, size: 13),
+                const SizedBox(width: 4),
+                Text(
+                  'Бесплатный период',
+                  style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700),
+                ),
+              ]),
+            ),
+            const Spacer(),
+            if (!available && trialInfo.reasonUnavailable != null)
+              Icon(Icons.lock_outline_rounded, color: _DS.textMuted, size: 16),
+          ]),
+          const SizedBox(height: 12),
+          Text(
+            available
+                ? 'Попробуйте VPN бесплатно'
+                : _reasonText(trialInfo.reasonUnavailable),
+            style: const TextStyle(
+              color: _DS.textPrimary,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          // Details row
+          Wrap(
+            spacing: 12,
+            runSpacing: 6,
+            children: [
+              _TrialChip(Icons.calendar_today_rounded, '${trialInfo.durationDays} дней'),
+              _TrialChip(Icons.data_usage_rounded, trafficLabel),
+              _TrialChip(Icons.devices_rounded, '${trialInfo.deviceLimit} устр.'),
+            ],
+          ),
+          if (trialInfo.requiresPayment && trialInfo.priceKopeks > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Стоимость активации: ${trialInfo.priceRubles.toStringAsFixed(2)} ₽',
+              style: const TextStyle(color: _DS.textSecondary, fontSize: 12),
+            ),
+          ],
+          if (available) ...[
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: loading ? null : onActivate,
+                icon: loading
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.rocket_launch_rounded, size: 18),
+                label: Text(loading ? 'Активация…' : 'Активировать бесплатно'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: _DS.emerald,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(_DS.radiusSm)),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _reasonText(String? reason) {
+    if (reason == null) return 'Пробный период недоступен';
+    if (reason.contains('already used') || reason.contains('Trial already')) {
+      return 'Пробный период уже был использован';
+    }
+    if (reason.contains('active subscription')) {
+      return 'У вас уже есть активная подписка';
+    }
+    return 'Пробный период недоступен';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trial status card — shown while trial is active or expired
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TrialStatusCard extends StatelessWidget {
+  final bool isTrial;
+  final bool isExpired;
+
+  const _TrialStatusCard({required this.isTrial, required this.isExpired});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isExpired ? _DS.rose : _DS.amber;
+    final label = isExpired ? 'Пробный период истёк' : 'Пробный период активен';
+    final subtitle = isExpired
+        ? 'Оформите подписку для продолжения использования VPN'
+        : 'Выберите план ниже для перехода на платную подписку';
+
+    return _Card(
+      accentColor: color,
+      child: Row(children: [
+        Container(
+          width: 38, height: 38,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.14),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            isExpired ? Icons.timer_off_rounded : Icons.timer_rounded,
+            color: color, size: 18,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label,
+              style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 2),
+          Text(subtitle,
+              style: const TextStyle(color: _DS.textSecondary, fontSize: 12)),
+        ])),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Small chip used inside the trial card
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TrialChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _TrialChip(this.icon, this.label);
+
+  @override
+  Widget build(BuildContext context) => Row(mainAxisSize: MainAxisSize.min, children: [
+    Icon(icon, size: 13, color: _DS.textSecondary),
+    const SizedBox(width: 4),
+    Text(label, style: const TextStyle(color: _DS.textSecondary, fontSize: 12)),
+  ]);
+}
+

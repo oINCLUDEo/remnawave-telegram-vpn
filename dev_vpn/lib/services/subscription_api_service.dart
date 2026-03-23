@@ -559,4 +559,115 @@ class SubscriptionApiService {
       return null;
     }
   }
+
+  /// GET /mobile/v1/subscription/trial
+  static Future<TrialInfo?> getTrialInfo() async {
+    try {
+      final resp = await http
+          .get(
+        Uri.parse('$_base/mobile/v1/subscription/trial'),
+        headers: _headers(),
+      )
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        return TrialInfo.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      }
+      debugPrint('SubscriptionApiService.getTrialInfo: ${resp.statusCode}');
+      return null;
+    } on Exception catch (e) {
+      debugPrint('SubscriptionApiService.getTrialInfo error: $e');
+      return null;
+    }
+  }
+
+  /// POST /mobile/v1/subscription/trial
+  static Future<TrialActivateResult?> activateTrial() async {
+    try {
+      final resp = await http
+          .post(
+        Uri.parse('$_base/mobile/v1/subscription/trial'),
+        headers: _headers(),
+      )
+          .timeout(const Duration(seconds: 20));
+      if (resp.statusCode == 200) {
+        return TrialActivateResult.fromJson(
+            jsonDecode(resp.body) as Map<String, dynamic>);
+      }
+      debugPrint('SubscriptionApiService.activateTrial: ${resp.statusCode} ${resp.body}');
+      try {
+        final errBody = jsonDecode(resp.body) as Map<String, dynamic>;
+        final detail = errBody['detail'];
+        final msg = detail is String ? detail : detail?.toString();
+        if (msg != null) {
+          return TrialActivateResult(status: 'error', message: msg);
+        }
+      } catch (_) {}
+      return const TrialActivateResult(status: 'error', message: 'Ошибка активации пробной подписки');
+    } on Exception catch (e) {
+      debugPrint('SubscriptionApiService.activateTrial error: $e');
+      return TrialActivateResult(status: 'error', message: e.toString());
+    }
+  }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trial models
+// ─────────────────────────────────────────────────────────────────────────────
+
+class TrialInfo {
+  final bool isAvailable;
+  final int durationDays;
+  final int trafficLimitGb;
+  final int deviceLimit;
+  final bool requiresPayment;
+  final int priceKopeks;
+  final double priceRubles;
+  final String? reasonUnavailable;
+
+  const TrialInfo({
+    required this.isAvailable,
+    required this.durationDays,
+    required this.trafficLimitGb,
+    required this.deviceLimit,
+    required this.requiresPayment,
+    required this.priceKopeks,
+    required this.priceRubles,
+    this.reasonUnavailable,
+  });
+
+  factory TrialInfo.fromJson(Map<String, dynamic> json) {
+    return TrialInfo(
+      isAvailable: json['is_available'] as bool? ?? false,
+      durationDays: (json['duration_days'] as num?)?.toInt() ?? 0,
+      trafficLimitGb: (json['traffic_limit_gb'] as num?)?.toInt() ?? 0,
+      deviceLimit: (json['device_limit'] as num?)?.toInt() ?? 1,
+      requiresPayment: json['requires_payment'] as bool? ?? false,
+      priceKopeks: (json['price_kopeks'] as num?)?.toInt() ?? 0,
+      priceRubles: (json['price_rubles'] as num?)?.toDouble() ?? 0.0,
+      reasonUnavailable: json['reason_unavailable'] as String?,
+    );
+  }
+}
+
+class TrialActivateResult {
+  final String status;
+  final String? message;
+  final Map<String, dynamic>? subscription;
+
+  const TrialActivateResult({
+    required this.status,
+    this.message,
+    this.subscription,
+  });
+
+  bool get isSuccess => status == 'success';
+
+  factory TrialActivateResult.fromJson(Map<String, dynamic> json) {
+    return TrialActivateResult(
+      status: json['status'] as String? ?? 'error',
+      message: json['message'] as String?,
+      subscription: json['subscription'] as Map<String, dynamic>?,
+    );
+  }
+}
+
