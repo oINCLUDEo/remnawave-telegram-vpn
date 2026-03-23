@@ -7,6 +7,7 @@ import '../models/subscription_info.dart';
 import '../services/auth_service.dart';
 import '../services/auth_state.dart';
 import '../services/me_service.dart';
+import '../services/referral_api_service.dart';
 import '../services/remnawave_service.dart';
 import '../services/subscription_api_service.dart';
 import '../widgets/telegram_login_button.dart';
@@ -58,6 +59,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> with WidgetsBinding
   bool _loading = false;
   SubscriptionInfo? _trafficInfo;
   DateTime? _lastRefresh;
+  ReferralInfo? _referralInfo;
 
   @override
   void initState() {
@@ -126,6 +128,13 @@ class _SubscriptionPageState extends State<SubscriptionPage> with WidgetsBinding
     }
 
     if (mounted) setState(() => _loading = false);
+
+    // Fetch referral info lazily (non-blocking) after main refresh
+    if (authStateNotifier.value.isLoggedIn) {
+      ReferralApiService.getReferralInfo().then((info) {
+        if (mounted && info != null) setState(() => _referralInfo = info);
+      });
+    }
   }
 
   // ─── Build ─────────────────────────────────────────────────────────────────
@@ -176,6 +185,12 @@ class _SubscriptionPageState extends State<SubscriptionPage> with WidgetsBinding
                         _SubscriptionUrlCard(url: me.subscription!.subscriptionUrl!),
                         const SizedBox(height: 12),
                       ],
+                    ],
+                    _PromoCodeCard(onPromoActivated: () => _refresh(force: true)),
+                    const SizedBox(height: 12),
+                    if (_referralInfo != null) ...[
+                      _ReferralCard(info: _referralInfo!),
+                      const SizedBox(height: 12),
                     ],
                     _QuickActionsCard(onLogout: _onLogout, onPremiumTap: _onPremiumTap),
                   ],
@@ -1367,4 +1382,185 @@ class _Card extends StatelessWidget {
     ),
     child: child,
   );
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// Promo code card
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _PromoCodeCard extends StatefulWidget {
+  final VoidCallback? onPromoActivated;
+  const _PromoCodeCard({this.onPromoActivated});
+
+  @override
+  State<_PromoCodeCard> createState() => _PromoCodeCardState();
+}
+
+class _PromoCodeCardState extends State<_PromoCodeCard> {
+  final _ctrl = TextEditingController();
+  bool _loading = false;
+  String? _resultMsg;
+  bool _resultSuccess = false;
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  Future<void> _activate() async {
+    final code = _ctrl.text.trim();
+    if (code.isEmpty) return;
+    setState(() { _loading = true; _resultMsg = null; });
+    final result = await ReferralApiService.activatePromoCode(code);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _resultSuccess = result?.success ?? false;
+      _resultMsg = result?.message ?? 'Ошибка соединения';
+    });
+    if (_resultSuccess) {
+      _ctrl.clear();
+      widget.onPromoActivated?.call();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _Card(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Row(children: [
+        Icon(Icons.local_offer_outlined, color: _DS.violet, size: 18),
+        SizedBox(width: 8),
+        Text('Промокод', style: TextStyle(color: _DS.textPrimary, fontSize: 15, fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(
+          child: TextField(
+            controller: _ctrl,
+            enabled: !_loading,
+            style: const TextStyle(color: _DS.textPrimary, fontSize: 14),
+            decoration: InputDecoration(
+              hintText: 'Введите промокод',
+              hintStyle: const TextStyle(color: _DS.textMuted),
+              filled: true,
+              fillColor: _DS.surface2,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(_DS.radiusXs), borderSide: const BorderSide(color: _DS.border)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(_DS.radiusXs), borderSide: const BorderSide(color: _DS.border)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(_DS.radiusXs), borderSide: const BorderSide(color: _DS.violet, width: 1.5)),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          height: 44,
+          child: ElevatedButton(
+            onPressed: _loading ? null : _activate,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _DS.violet,
+              foregroundColor: Colors.white,
+              disabledBackgroundColor: _DS.violet.withValues(alpha: 0.4),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_DS.radiusXs)),
+              elevation: 0,
+            ),
+            child: _loading
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Text('Применить', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          ),
+        ),
+      ]),
+      if (_resultMsg != null) ...[
+        const SizedBox(height: 10),
+        Row(children: [
+          Icon(_resultSuccess ? Icons.check_circle_outline : Icons.error_outline,
+              color: _resultSuccess ? _DS.emerald : _DS.rose, size: 16),
+          const SizedBox(width: 6),
+          Flexible(child: Text(_resultMsg!, style: TextStyle(color: _resultSuccess ? _DS.emerald : _DS.rose, fontSize: 13))),
+        ]),
+      ],
+    ]));
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Referral card
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _ReferralCard extends StatelessWidget {
+  final ReferralInfo info;
+  const _ReferralCard({required this.info});
+
+  @override
+  Widget build(BuildContext context) {
+    return _Card(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Row(children: [
+        Icon(Icons.people_outline, color: _DS.violet, size: 18),
+        SizedBox(width: 8),
+        Text('Реферальная программа', style: TextStyle(color: _DS.textPrimary, fontSize: 15, fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 4),
+      const Text('Приглашайте друзей и получайте бонусы', style: TextStyle(color: _DS.textSecondary, fontSize: 12)),
+      const SizedBox(height: 14),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(color: _DS.surface2, borderRadius: BorderRadius.circular(_DS.radiusXs), border: Border.all(color: _DS.border)),
+        child: Row(children: [
+          Expanded(child: Text(info.referralCode, style: const TextStyle(color: _DS.textPrimary, fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 1.2))),
+          IconButton(
+            icon: const Icon(Icons.copy_outlined, color: _DS.textSecondary, size: 18),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: info.referralCode));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Реферальный код скопирован'), duration: Duration(seconds: 2)));
+            },
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ]),
+      ),
+      if (info.referralLink.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity, height: 40,
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.share_outlined, size: 16),
+            label: const Text('Поделиться ссылкой', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            onPressed: () => Share.share(context, info.referralLink),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: _DS.violet,
+              side: const BorderSide(color: _DS.violet),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_DS.radiusXs)),
+            ),
+          ),
+        ),
+      ],
+      const SizedBox(height: 14),
+      Row(children: [
+        _ReferralStat(label: 'Приглашено', value: '${info.totalReferrals}'),
+        const SizedBox(width: 12),
+        _ReferralStat(label: 'Заработано', value: '${info.totalEarningsRubles.toStringAsFixed(2)} ₽'),
+      ]),
+    ]));
+  }
+}
+
+// ignore: avoid_implementing_value_types
+class Share {
+  static void share(BuildContext context, String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Реферальная ссылка скопирована'), duration: Duration(seconds: 2)));
+  }
+}
+
+class _ReferralStat extends StatelessWidget {
+  final String label;
+  final String value;
+  const _ReferralStat({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) => Expanded(child: Container(
+    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+    decoration: BoxDecoration(color: _DS.surface2, borderRadius: BorderRadius.circular(_DS.radiusXs), border: Border.all(color: _DS.border)),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(color: _DS.textSecondary, fontSize: 11)),
+      const SizedBox(height: 2),
+      Text(value, style: const TextStyle(color: _DS.textPrimary, fontSize: 14, fontWeight: FontWeight.w700)),
+    ]),
+  ));
 }

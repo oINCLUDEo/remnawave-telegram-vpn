@@ -10,6 +10,8 @@ from app.mobile.routes import (
     auth as mobile_auth,
     me as mobile_me,
     notifications as mobile_notifications,
+    promocode as mobile_promocode,
+    referral as mobile_referral,
     servers as mobile_servers,
     subscription as mobile_subscription,
     support as mobile_support,
@@ -308,6 +310,8 @@ def create_web_api_app() -> FastAPI:
     app.include_router(mobile_subscription.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_notifications.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_support.router, prefix='/mobile/v1/support', tags=['mobile'])
+    app.include_router(mobile_referral.router, prefix='/mobile/v1', tags=['mobile'])
+    app.include_router(mobile_promocode.router, prefix='/mobile/v1', tags=['mobile'])
 
     # Cabinet (Personal Account) routes
     if settings.is_cabinet_enabled():
