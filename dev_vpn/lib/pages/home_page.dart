@@ -103,7 +103,21 @@ class _HomePageState extends State<HomePage>
         _speedCalc.reset();
       }
       setState(() => _status = s);
+      _persistTileState(s.state.toUpperCase() == 'CONNECTED');
     });
+  }
+
+  /// Persist VPN connected state + server name so that the Quick Settings
+  /// tile (VpnTileService) can display the correct state without launching Flutter.
+  Future<void> _persistTileState(bool connected) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('vpn_tile_connected', connected);
+      final serverName = _selectedNode?.name;
+      if (serverName != null) {
+        await prefs.setString('vpn_tile_server_name', serverName);
+      }
+    } catch (_) {}
   }
 
   @override

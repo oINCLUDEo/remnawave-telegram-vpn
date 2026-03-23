@@ -64,6 +64,17 @@
                     android:value="proxy"/>
         </service>
 
+        <service
+                android:name=".VpnTileService"
+                android:exported="true"
+                android:icon="@mipmap/ic_launcher"
+                android:label="@string/vpn_tile_label"
+                android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE"/>
+            </intent-filter>
+        </service>
+
         <meta-data
                 android:name="flutterEmbedding"
                 android:value="2"/>
