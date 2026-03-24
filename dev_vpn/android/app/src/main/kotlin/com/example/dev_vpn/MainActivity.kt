@@ -121,10 +121,16 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isActive = true
         registerTileReceiver()
-        // Note: tile-toggle on cold-start is handled by Flutter's _init() via
-        // the checkPendingTileAction MethodChannel call — not here — to avoid
-        // timing issues with the Flutter engine not being ready yet.
+        // If launched by the tile (cold-start path), move the task to the back
+        // immediately so the app initializes in the background without showing
+        // any UI.  Flutter still starts and _checkPendingTileAction() fires.
+        // On first run (VPN permission not yet granted), requestPermission()
+        // will bring its own system dialog to the front — that is fine.
+        if (intent?.getBooleanExtra(VpnTileService.EXTRA_TILE_ACTION, false) == true) {
+            moveTaskToBack(true)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -144,6 +150,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        isActive = false
         super.onDestroy()
         try { unregisterReceiver(tileToggleReceiver) } catch (_: Exception) {}
         tileChannel = null
@@ -165,6 +172,14 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        /**
+         * True while the activity is between onCreate and onDestroy.
+         * Read by VpnTileService to decide whether to start the activity
+         * (it isn't needed when the app is already alive — the broadcast
+         * from onClick() is sufficient and avoids bringing the UI to front).
+         */
+        @Volatile var isActive = false
+
         /** Called by [TileToggleReceiver] when the app process is alive. */
         private var instance: MainActivity? = null
 

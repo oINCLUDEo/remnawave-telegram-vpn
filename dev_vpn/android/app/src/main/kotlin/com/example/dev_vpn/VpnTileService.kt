@@ -91,12 +91,19 @@ class VpnTileService : TileService() {
         // it has acted on it (via checkPendingTileAction MethodChannel call).
         prefs.edit().putBoolean(KEY_PENDING_ACTION, true).apply()
 
-        // If the app is alive the broadcast reaches MainActivity's receiver.
+        // If the app activity is alive the broadcast alone is enough: the
+        // tileToggleReceiver in MainActivity handles it without showing any UI.
         sendBroadcast(Intent(ACTION_TILE_TOGGLE).setPackage(packageName))
 
-        // Bring the app to the foreground.  startActivityAndCollapse is the
-        // correct TileService API; the PendingIntent variant is required on
-        // Android 12+ (API 31).
+        if (MainActivity.isActive) {
+            // App is running — broadcast already handled; no activity launch needed.
+            return
+        }
+
+        // Cold start: launch the app.  MainActivity.onCreate will call
+        // moveTaskToBack(true) immediately so the user never sees the UI.
+        // Flutter initializes in the background and _checkPendingTileAction
+        // fires the toggle once the engine is ready.
         val launchIntent = packageManager
             .getLaunchIntentForPackage(packageName)
             ?.apply {

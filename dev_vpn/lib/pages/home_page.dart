@@ -461,6 +461,7 @@ class _HomePageState extends State<HomePage>
   }
 
   String _fmtBytes(int b) {
+    if (b < 0) b = 0;
     if (b < 1024) return '${b}B';
     if (b < 1024 * 1024) return '${(b / 1024).toStringAsFixed(1)}KB';
     if (b < 1024 * 1024 * 1024) return '${(b / (1024 * 1024)).toStringAsFixed(1)}MB';
