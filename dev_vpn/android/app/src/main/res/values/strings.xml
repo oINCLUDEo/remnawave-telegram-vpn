@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="vpn_tile_label">Ulya VPN</string>
+    <string name="vpn_tile_connected">Подключено</string>
+    <string name="vpn_tile_disconnected">Отключено</string>
 </resources>

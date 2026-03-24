@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:country_flags/country_flags.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_plus/flutter_v2ray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -31,6 +32,9 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage>
     with TickerProviderStateMixin, WidgetsBindingObserver {
+  // ── Quick Settings tile MethodChannel ──────────────────────────────────────
+  static const _tileChannel = MethodChannel('com.example.dev_vpn/tile');
+
   // ── V2ray ──────────────────────────────────────────────────────────────────
   late final FlutterV2ray _v2ray;
   VlessStatus _status = VlessStatus();
@@ -75,6 +79,8 @@ class _HomePageState extends State<HomePage>
     globalRefreshNotifier.addListener(_onGlobalRefresh);
     _speedCalc = SpeedCalculator(smoothing: 0.25);
     _v2ray = FlutterV2ray();
+    // Listen for Quick Settings tile toggle requests from native side
+    _tileChannel.setMethodCallHandler(_onTileMethod);
     _init();
   }
 
@@ -109,6 +115,7 @@ class _HomePageState extends State<HomePage>
 
   /// Persist VPN connected state + server name so that the Quick Settings
   /// tile (VpnTileService) can display the correct state without launching Flutter.
+  /// Also notifies the tile to refresh via a native broadcast.
   Future<void> _persistTileState(bool connected) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -117,6 +124,8 @@ class _HomePageState extends State<HomePage>
       if (serverName != null) {
         await prefs.setString('vpn_tile_server_name', serverName);
       }
+      // Tell the tile to re-read state and update its UI
+      await _tileChannel.invokeMethod<void>('notifyTileState');
     } catch (_) {}
   }
 
@@ -128,7 +137,16 @@ class _HomePageState extends State<HomePage>
     meNotifier.removeListener(_onMeChanged);
     globalRefreshNotifier.removeListener(_onGlobalRefresh);
     _statusSub?.cancel();
+    _tileChannel.setMethodCallHandler(null);
     super.dispose();
+  }
+
+  /// Called by the native Quick Settings tile (via MainActivity MethodChannel)
+  /// to toggle the VPN connection, exactly as if the user tapped the button.
+  Future<dynamic> _onTileMethod(MethodCall call) async {
+    if (call.method == 'tileToggleVpn') {
+      await _toggleConnection();
+    }
   }
 
   void _onSelectedServerChanged() {
