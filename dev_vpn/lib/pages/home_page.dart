@@ -120,8 +120,11 @@ class _HomePageState extends State<HomePage>
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('vpn_tile_connected', connected);
+      // Always persist the server name so the tile can show it even after
+      // the app is closed (the tile reads the actual VPN state from the
+      // system, but uses this for the subtitle).
       final serverName = _selectedNode?.name;
-      if (serverName != null) {
+      if (serverName != null && serverName.isNotEmpty) {
         await prefs.setString('vpn_tile_server_name', serverName);
       }
       // Tell the tile to re-read state and update its UI
@@ -179,17 +182,26 @@ class _HomePageState extends State<HomePage>
       notificationIconResourceType: 'mipmap',
       notificationIconResourceName: 'ic_launcher',
     );
-    _statusSub = _v2ray.onStatusChanged.listen((s) {
-      if (!mounted) return;
-      if (s.state.toUpperCase() == 'CONNECTED') {
-        _speedCalc.update(totalUploadBytes: s.upload, totalDownloadBytes: s.download);
-      } else {
-        _speedCalc.reset();
-      }
-      setState(() => _status = s);
-    });
+    // Use the same subscription setup as _resubscribeVpnStatus so that
+    // _persistTileState is always called on state changes.
+    _resubscribeVpnStatus();
     if (mounted) setState(() => _initialized = true);
-    _loadNodes();
+    await _loadNodes();
+    // Check if the Quick Settings tile requested a toggle while the app was
+    // closed.  The flag was set by VpnTileService.onClick() and is cleared
+    // here after acting on it, preventing double-toggles.
+    _checkPendingTileAction();
+  }
+
+  /// Asks the native side whether the Quick Settings tile set a pending toggle
+  /// request.  If so, performs the toggle exactly once.
+  Future<void> _checkPendingTileAction() async {
+    try {
+      final pending = await _tileChannel.invokeMethod<bool>('checkPendingTileAction');
+      if (pending == true && mounted) {
+        await _toggleConnection();
+      }
+    } catch (_) {}
   }
 
   // ── Data ───────────────────────────────────────────────────────────────────

@@ -20,17 +20,21 @@ class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "apps.channel"
 
-    /** MethodChannel for Quick Settings tile → Flutter communication. */
+    /** MethodChannel for Quick Settings tile ↔ Flutter communication. */
     private val TILE_CHANNEL = "com.example.dev_vpn/tile"
     private var tileChannel: MethodChannel? = null
 
     /**
-     * BroadcastReceiver that picks up [VpnTileService.ACTION_TILE_TOGGLE]
-     * while the app is alive and running in the background.
+     * Picks up [VpnTileService.ACTION_TILE_TOGGLE] while the app is alive.
+     * Clears the pending-action flag so that the Flutter cold-start path
+     * does not double-toggle, then calls fireTileToggle().
      */
     private val tileToggleReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == VpnTileService.ACTION_TILE_TOGGLE) {
+                // Clear the flag so Flutter's checkPendingTileAction returns false
+                getSharedPreferences(VpnTileService.PREFS_NAME, MODE_PRIVATE)
+                    .edit().putBoolean(VpnTileService.KEY_PENDING_ACTION, false).apply()
                 fireTileToggle()
             }
         }
@@ -43,9 +47,21 @@ class MainActivity : FlutterActivity() {
         tileChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, TILE_CHANNEL)
         tileChannel!!.setMethodCallHandler { call, result ->
             when (call.method) {
+                // Flutter calls this during _init() to detect a pending tile toggle.
+                // Returns true once (clears the flag) so Flutter can call _toggleConnection().
+                "checkPendingTileAction" -> {
+                    val prefs = getSharedPreferences(VpnTileService.PREFS_NAME, MODE_PRIVATE)
+                    val pending = prefs.getBoolean(VpnTileService.KEY_PENDING_ACTION, false)
+                    if (pending) {
+                        prefs.edit().putBoolean(VpnTileService.KEY_PENDING_ACTION, false).apply()
+                    }
+                    result.success(pending)
+                }
+                // Flutter calls this after every VPN state change so the tile refreshes.
                 "notifyTileState" -> {
-                    // Broadcast so VpnTileService (if listening) refreshes
-                    sendBroadcast(Intent("com.example.dev_vpn.VPN_STATE_CHANGED").setPackage(packageName))
+                    sendBroadcast(
+                        Intent("com.example.dev_vpn.VPN_STATE_CHANGED").setPackage(packageName)
+                    )
                     result.success(null)
                 }
                 else -> result.notImplemented()
@@ -106,18 +122,24 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         registerTileReceiver()
-        // Cold-start via tile: toggle when the activity is first created
-        if (intent?.getBooleanExtra(VpnTileService.EXTRA_TILE_ACTION, false) == true) {
-            // Delay slightly so the Flutter engine is ready
-            window.decorView.post { fireTileToggle() }
-        }
+        // Note: tile-toggle on cold-start is handled by Flutter's _init() via
+        // the checkPendingTileAction MethodChannel call — not here — to avoid
+        // timing issues with the Flutter engine not being ready yet.
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // If the app was backgrounded (not killed) when the tile was tapped,
+        // the broadcast receiver already handled it and cleared KEY_PENDING_ACTION.
+        // If for some reason it didn't (e.g. receiver was not registered yet),
+        // handle it here.
         if (intent.getBooleanExtra(VpnTileService.EXTRA_TILE_ACTION, false)) {
-            fireTileToggle()
+            val prefs = getSharedPreferences(VpnTileService.PREFS_NAME, MODE_PRIVATE)
+            if (prefs.getBoolean(VpnTileService.KEY_PENDING_ACTION, false)) {
+                prefs.edit().putBoolean(VpnTileService.KEY_PENDING_ACTION, false).apply()
+                fireTileToggle()
+            }
         }
     }
 
@@ -155,4 +177,5 @@ class MainActivity : FlutterActivity() {
         instance = this
     }
 }
+
 
