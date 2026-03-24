@@ -1,5 +1,6 @@
 package com.example.dev_vpn
 
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -17,20 +18,21 @@ import androidx.annotation.RequiresApi
  * Quick Settings tile for toggling the VPN connection.
  *
  * ## State
- * The tile reads **real** VPN state from [ConnectivityManager] (TRANSPORT_VPN),
- * not from SharedPreferences, so it is always accurate even when the Flutter
- * app process is not running.
+ * The tile reads VPN state from SharedPreferences written by Flutter
+ * (key: vpn_tile_connected).  Flutter updates this key on every VPN state
+ * change via _persistTileState → notifyTileState MethodChannel call.
+ *
+ * A sanity check in [onStartListening] resets the pref to false if the
+ * system has no active VPN transport (catches the case where the app was
+ * killed while connected and the pref was left as true).
  *
  * ## Toggle
  * On click the tile sets KEY_PENDING_ACTION in SharedPreferences and then:
  *  1. Sends ACTION_TILE_TOGGLE broadcast – MainActivity picks this up when the
  *     app is alive in the background.
- *  2. Launches the app – on a cold start Flutter reads KEY_PENDING_ACTION via
- *     the "checkPendingTileAction" MethodChannel call in _init() and calls
- *     _toggleConnection().
- *
- * There is NO optimistic flip.  The tile state is always derived from the
- * system network stack, so it cannot get out of sync.
+ *  2. Calls startActivityAndCollapse() to bring the app to the foreground.
+ *     Flutter reads KEY_PENDING_ACTION in _init() via checkPendingTileAction
+ *     MethodChannel and calls _toggleConnection().
  */
 @RequiresApi(Build.VERSION_CODES.N)
 class VpnTileService : TileService() {
@@ -61,6 +63,13 @@ class VpnTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
+
+        // Sanity check: if Flutter left the pref as "connected" but no VPN
+        // transport is active (app was killed while VPN was on), reset the flag.
+        if (prefs.getBoolean(KEY_CONNECTED, false) && !isVpnActive()) {
+            prefs.edit().putBoolean(KEY_CONNECTED, false).apply()
+        }
+
         val filter = IntentFilter("com.example.dev_vpn.VPN_STATE_CHANGED")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(stateReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -85,64 +94,82 @@ class VpnTileService : TileService() {
         // If the app is alive the broadcast reaches MainActivity's receiver.
         sendBroadcast(Intent(ACTION_TILE_TOGGLE).setPackage(packageName))
 
-        // Also launch / bring app to front so Flutter can handle the toggle
-        // (required for both cold-start and backgrounded cases).
+        // Bring the app to the foreground.  startActivityAndCollapse is the
+        // correct TileService API; the PendingIntent variant is required on
+        // Android 12+ (API 31).
         val launchIntent = packageManager
             .getLaunchIntentForPackage(packageName)
             ?.apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 putExtra(EXTRA_TILE_ACTION, true)
-            }
-        if (launchIntent != null) {
-            if (isLocked) {
-                unlockAndRun { startActivity(launchIntent) }
+            } ?: return
+
+        val startAction = Runnable {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val pi = PendingIntent.getActivity(
+                    this, 0, launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                startActivityAndCollapse(pi)
             } else {
-                startActivity(launchIntent)
+                @Suppress("DEPRECATION")
+                startActivityAndCollapse(launchIntent)
             }
+        }
+
+        if (isLocked) {
+            unlockAndRun(startAction)
+        } else {
+            startAction.run()
         }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /**
-     * Returns true when there is an active VPN transport on the device,
-     * regardless of whether the Flutter app is running.
+     * Returns true when any network on the device has a VPN transport active.
+     * Uses allNetworks (not just activeNetwork) so split-tunnel configurations
+     * are detected correctly.
      */
     private fun isVpnActive(): Boolean {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val network = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(network) ?: return false
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            cm.allNetworks.any { network ->
+                cm.getNetworkCapabilities(network)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
         } else {
             @Suppress("DEPRECATION")
             cm.activeNetworkInfo?.type == ConnectivityManager.TYPE_VPN
         }
     }
 
+    /**
+     * Reads tile state from SharedPreferences that Flutter keeps up-to-date.
+     * This is more reliable than querying ConnectivityManager directly because
+     * the VPN transport reported by the system may differ from what the
+     * flutter_v2ray plugin actually established.
+     */
     private fun updateTile() {
         val tile = qsTile ?: return
-        val vpnActive = isVpnActive()
+        val connected = prefs.getBoolean(KEY_CONNECTED, false)
         val serverName = prefs.getString(KEY_SERVER, null)
-
-        // Keep SharedPreferences in sync so Flutter sees the correct state on
-        // next startup (e.g. if the VPN was stopped via the system notification).
-        prefs.edit().putBoolean(KEY_CONNECTED, vpnActive).apply()
 
         tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_tile)
         tile.label = getString(R.string.vpn_tile_label)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             tile.subtitle = when {
-                vpnActive && !serverName.isNullOrBlank() -> serverName
-                vpnActive -> null
+                connected && !serverName.isNullOrBlank() -> serverName
+                connected -> null
                 else -> getString(R.string.vpn_tile_disconnected)
             }
         }
 
-        tile.state = if (vpnActive) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.state = if (connected) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.updateTile()
     }
 }
+
 
 
