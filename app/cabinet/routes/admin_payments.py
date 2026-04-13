@@ -4,14 +4,11 @@ import math
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from aiogram import Bot
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.bot_factory import create_bot
 from app.database.models import PaymentMethod, User
 from app.services.payment_search_service import (
     MAX_ALL_TIME_DAYS,
@@ -62,6 +59,7 @@ class PendingPaymentResponse(BaseModel):
     user_id: int | None = None
     user_telegram_id: int | None = None
     user_username: str | None = None
+    user_email: str | None = None
 
     class Config:
         from_attributes = True
@@ -285,6 +283,7 @@ def _record_to_response(record: PendingPayment) -> PendingPaymentResponse:
         user_id=record.user.id if record.user else None,
         user_telegram_id=record.user.telegram_id if record.user else None,
         user_username=record.user.username if record.user else None,
+        user_email=record.user.email if record.user else None,
     )
 
 
@@ -548,7 +547,7 @@ async def check_payment_status(
     old_is_paid = record.is_paid
 
     # Run manual check
-    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = create_bot()
     try:
         payment_service = PaymentService(bot=bot)
         updated = await run_manual_check(db, payment_method, payment_id, payment_service)

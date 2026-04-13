@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud.transaction import REAL_PAYMENT_METHODS
 from app.database.models import (
+    PaymentMethod,
     Subscription,
     SubscriptionConversion,
     SubscriptionStatus,
@@ -87,6 +88,7 @@ class SalesSummary(BaseModel):
     """Summary stats for the top cards."""
 
     total_revenue_kopeks: int
+    manual_topup_kopeks: int
     active_subscriptions: int
     active_trials: int
     new_trials: int
@@ -110,11 +112,11 @@ async def get_sales_summary(
     try:
         period_start, period_end = _parse_period(days, start_date, end_date)
 
-        # Total revenue (deposits with real payment methods)
+        # Total revenue (deposits + direct subscription payments with real payment methods)
         revenue_result = await db.execute(
-            select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
+            select(func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0)).where(
                 and_(
-                    Transaction.type == TransactionType.DEPOSIT.value,
+                    Transaction.type.in_([TransactionType.DEPOSIT.value, TransactionType.SUBSCRIPTION_PAYMENT.value]),
                     Transaction.is_completed == True,
                     Transaction.payment_method.in_(REAL_PAYMENT_METHODS),
                     Transaction.created_at >= period_start,
@@ -123,6 +125,20 @@ async def get_sales_summary(
             )
         )
         total_revenue = revenue_result.scalar() or 0
+
+        # Manual top-ups by admins
+        manual_topup_result = await db.execute(
+            select(func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0)).where(
+                and_(
+                    Transaction.type == TransactionType.DEPOSIT.value,
+                    Transaction.is_completed == True,
+                    Transaction.payment_method == PaymentMethod.MANUAL.value,
+                    Transaction.created_at >= period_start,
+                    Transaction.created_at <= period_end,
+                )
+            )
+        )
+        manual_topup = manual_topup_result.scalar() or 0
 
         # Consolidated subscription counts: active paid, active trial, new trials in period
         sub_counts_result = await db.execute(
@@ -230,7 +246,7 @@ async def get_sales_summary(
 
         # Add-on revenue
         addon_revenue_result = await db.execute(
-            select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
+            select(func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0)).where(
                 and_(
                     Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
                     Transaction.is_completed == True,
@@ -240,10 +256,11 @@ async def get_sales_summary(
                 )
             )
         )
-        addon_revenue = abs(addon_revenue_result.scalar() or 0)
+        addon_revenue = addon_revenue_result.scalar() or 0
 
         return SalesSummary(
-            total_revenue_kopeks=total_revenue,
+            total_revenue_kopeks=total_revenue + manual_topup,
+            manual_topup_kopeks=manual_topup,
             active_subscriptions=active_subs,
             active_trials=active_trials,
             new_trials=new_trials,
@@ -1060,10 +1077,11 @@ async def get_deposits_stats(
     try:
         period_start, period_end = _parse_period(days, start_date, end_date)
 
+        methods_with_manual = [*REAL_PAYMENT_METHODS, PaymentMethod.MANUAL.value]
         base_filter = and_(
-            Transaction.type == TransactionType.DEPOSIT.value,
+            Transaction.type.in_([TransactionType.DEPOSIT.value, TransactionType.SUBSCRIPTION_PAYMENT.value]),
             Transaction.is_completed == True,
-            Transaction.payment_method.in_(REAL_PAYMENT_METHODS),
+            Transaction.payment_method.in_(methods_with_manual),
             Transaction.created_at >= period_start,
             Transaction.created_at <= period_end,
         )
@@ -1071,7 +1089,7 @@ async def get_deposits_stats(
         totals_result = await db.execute(
             select(
                 func.count(Transaction.id).label('count'),
-                func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('amount'),
+                func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0).label('amount'),
             ).where(base_filter)
         )
         totals = totals_result.one()
@@ -1083,11 +1101,11 @@ async def get_deposits_stats(
             select(
                 Transaction.payment_method.label('method'),
                 func.count(Transaction.id).label('count'),
-                func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('amount'),
+                func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0).label('amount'),
             )
             .where(base_filter)
             .group_by(Transaction.payment_method)
-            .order_by(func.sum(Transaction.amount_kopeks).desc())
+            .order_by(func.sum(func.abs(Transaction.amount_kopeks)).desc())
         )
         by_method = [
             DepositByMethodItem(method=row.method or 'unknown', count=row.count, amount_kopeks=row.amount)
@@ -1098,7 +1116,7 @@ async def get_deposits_stats(
             select(
                 func.date(Transaction.created_at).label('date'),
                 func.count(Transaction.id).label('count'),
-                func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('amount'),
+                func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0).label('amount'),
             )
             .where(base_filter)
             .group_by(func.date(Transaction.created_at))
@@ -1114,12 +1132,12 @@ async def get_deposits_stats(
         ]
 
         # Daily deposits grouped by payment method
-        # base_filter already excludes NULLs via .in_(REAL_PAYMENT_METHODS), no coalesce needed
+        # base_filter already excludes NULLs via .in_(methods_with_manual), no coalesce needed
         daily_by_method_query = await db.execute(
             select(
                 func.date(Transaction.created_at).label('date'),
                 Transaction.payment_method.label('method'),
-                func.coalesce(func.sum(Transaction.amount_kopeks), 0).label('amount'),
+                func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0).label('amount'),
             )
             .where(base_filter)
             .group_by(func.date(Transaction.created_at), Transaction.payment_method)

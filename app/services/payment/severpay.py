@@ -73,6 +73,7 @@ class SeverPayPaymentMixin:
             user = await payment_module.get_user_by_id(db, user_id)
             tg_id = user.telegram_id if user else user_id
         else:
+            user = None
             tg_id = 'guest'
 
         # Генерируем уникальный order_id с telegram_id для удобного поиска
@@ -94,12 +95,17 @@ class SeverPayPaymentMixin:
         }
 
         try:
+            # SeverPay требует обязательный client_email
+            target_email = email or (
+                f'{user.telegram_id}@telegram.org' if user and user.telegram_id else f'{tg_id}@telegram.org'
+            )
+
             # Используем API для создания платежа
             result = await severpay_service.create_payment(
                 order_id=order_id,
                 amount=amount_rubles,
                 currency=currency,
-                client_email=email or '',
+                client_email=target_email,
                 client_id=str(tg_id),
                 url_return=return_url or settings.SEVERPAY_RETURN_URL,
                 lifetime=lifetime,
@@ -217,7 +223,14 @@ class SeverPayPaymentMixin:
                 )
                 return False
 
-            # Проверка дублирования
+            # Lock payment row immediately to prevent concurrent webhook processing (TOCTOU race)
+            locked = await severpay_crud.get_severpay_payment_by_id_for_update(db, payment.id)
+            if not locked:
+                logger.error('SeverPay: не удалось заблокировать платёж', payment_id=payment.id)
+                return False
+            payment = locked
+
+            # Проверка дублирования (re-check from locked row)
             if payment.is_paid:
                 logger.info('SeverPay webhook: платеж уже обработан', order_id=payment.order_id)
                 return True
@@ -259,9 +272,11 @@ class SeverPayPaymentMixin:
                 # Inline field assignments to keep FOR UPDATE lock intact
                 payment.status = internal_status
                 payment.is_paid = True
+                payment.paid_at = datetime.now(UTC)
                 payment.severpay_id = severpay_id or payment.severpay_id
                 payment.callback_payload = callback_payload
                 payment.updated_at = datetime.now(UTC)
+                await db.flush()
                 return await self._finalize_severpay_payment(db, payment, severpay_id=severpay_id, trigger='webhook')
 
             # Для не-success статусов можно безопасно коммитить
@@ -290,18 +305,12 @@ class SeverPayPaymentMixin:
     ) -> bool:
         """Создаёт транзакцию, начисляет баланс и отправляет уведомления.
 
-        Использует FOR UPDATE lock для защиты от race condition.
+        FOR UPDATE lock must be acquired by the caller before invoking this method.
         """
         payment_module = import_module('app.services.payment_service')
         severpay_crud = import_module('app.database.crud.severpay')
 
-        # Lock FIRST, then read fresh state
-        locked = await severpay_crud.get_severpay_payment_by_id_for_update(db, payment.id)
-        if not locked:
-            logger.error('SeverPay: не удалось заблокировать платёж', payment_id=payment.id)
-            return False
-        payment = locked
-
+        # FOR UPDATE lock already acquired by caller — just check idempotency
         if payment.transaction_id:
             logger.info(
                 'SeverPay платеж уже связан с транзакцией',
@@ -327,11 +336,12 @@ class SeverPayPaymentMixin:
         if guest_result is not None:
             return True
 
-        # Inline field assignments to keep FOR UPDATE lock
-        payment.status = 'success'
-        payment.is_paid = True
-        payment.paid_at = datetime.now(UTC)
-        payment.updated_at = datetime.now(UTC)
+        # Ensure paid fields are set (idempotent — caller may have already set them)
+        if not payment.is_paid:
+            payment.status = 'success'
+            payment.is_paid = True
+            payment.paid_at = datetime.now(UTC)
+            payment.updated_at = datetime.now(UTC)
 
         balance_already_credited = bool(metadata.get('balance_credited'))
 
@@ -559,21 +569,33 @@ class SeverPayPaymentMixin:
                                         'is_paid': False,
                                     }
 
+                            # Acquire FOR UPDATE lock before finalization
+                            locked = await severpay_crud.get_severpay_payment_by_id_for_update(db, payment.id)
+                            if not locked:
+                                logger.error('SeverPay: не удалось заблокировать платёж', payment_id=payment.id)
+                                return None
+                            payment = locked
+
+                            if payment.is_paid:
+                                logger.info('SeverPay платеж уже обработан (api_check)', order_id=payment.order_id)
+                                return {
+                                    'payment': payment,
+                                    'status': 'success',
+                                    'is_paid': True,
+                                }
+
                             logger.info('SeverPay payment confirmed via API', order_id=payment.order_id)
 
-                            callback_payload = {
+                            # Inline field updates — NO intermediate commit that would release FOR UPDATE lock
+                            payment.status = 'success'
+                            payment.is_paid = True
+                            payment.paid_at = datetime.now(UTC)
+                            payment.callback_payload = {
                                 'check_source': 'api',
                                 'severpay_order_data': order_data,
                             }
-
-                            payment = await severpay_crud.update_severpay_payment_status(
-                                db=db,
-                                payment=payment,
-                                status='success',
-                                is_paid=True,
-                                severpay_id=payment.severpay_id,
-                                callback_payload=callback_payload,
-                            )
+                            payment.updated_at = datetime.now(UTC)
+                            await db.flush()
 
                             await self._finalize_severpay_payment(
                                 db,
