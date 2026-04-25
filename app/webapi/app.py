@@ -13,6 +13,7 @@ from app.mobile.routes import (
     servers as mobile_servers,
     subscription as mobile_subscription,
     support as mobile_support,
+    tariffs as mobile_tariffs,
 )
 from app.webapi.docs import add_redoc_endpoint
 
@@ -309,6 +310,7 @@ def create_web_api_app() -> FastAPI:
     app.include_router(mobile_subscription.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_notifications.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_support.router, prefix='/mobile/v1/support', tags=['mobile'])
+    app.include_router(mobile_tariffs.router, prefix='/mobile/v1', tags=['mobile'])
 
     # Cabinet (Personal Account) routes
     if settings.is_cabinet_enabled():

@@ -25,6 +25,13 @@ class SubscriptionBuyRequest(SubscriptionSelectionRequest):
     """Request body for POST /mobile/v1/subscription/buy."""
 
 
+class TariffBuyRequest(BaseModel):
+    """Request body for POST /mobile/v1/subscription/buy-tariff."""
+
+    tariff_id: int = Field(..., description='Tariff ID to purchase')
+    period_days: int = Field(..., gt=0, description='Subscription duration in days')
+
+
 
 class SubscriptionUpgradeRequest(BaseModel):
     """Request body for POST /mobile/v1/subscription/upgrade."""

@@ -24,6 +24,7 @@ from app.mobile.schemas.subscription import (
     SubscriptionOptionsResponse,
     SubscriptionSelectionRequest,
     SubscriptionUpgradeRequest,
+    TariffBuyRequest,
     UpgradeCalcResponse,
     UpgradeResponse,
 )
@@ -822,6 +823,247 @@ async def calc_upgrade_price(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/buy-tariff
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    '/subscription/buy-tariff',
+    response_model=BuyResponse,
+    summary='Купить конкретный тариф',
+    tags=['mobile'],
+)
+async def buy_tariff(
+    payload: TariffBuyRequest,
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> BuyResponse:
+    """
+    Purchase a specific tariff for the given number of days.
+
+    Works in tariffs mode.  Uses the same pricing engine as the cabinet
+    ``/subscription/purchase-tariff`` endpoint.
+    """
+    if not settings.is_tariffs_mode():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Tariffs mode is not enabled. Use /subscription/buy instead.',
+        )
+
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        from app.database.crud.tariff import get_tariff_by_id
+        from app.database.crud.user import lock_user_for_pricing
+        from app.services.pricing_engine import pricing_engine
+
+        tariff = await get_tariff_by_id(db, payload.tariff_id)
+        if not tariff or not tariff.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Тариф не найден или неактивен',
+            )
+
+        # Lock user row to prevent TOCTOU races on promo-offer consumption
+        user = await lock_user_for_pricing(db, user.id)
+
+        # Promo-group availability check
+        promo_group = (
+            user.get_primary_promo_group()
+            if hasattr(user, 'get_primary_promo_group')
+            else None
+        )
+        if promo_group is None:
+            promo_group = getattr(user, 'promo_group', None)
+        promo_group_id = promo_group.id if promo_group else None
+        if not tariff.is_available_for_promo_group(promo_group_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Этот тариф недоступен для вашей группы',
+            )
+
+        period_days = payload.period_days
+
+        # Validate period exists in tariff
+        available_periods = [int(p) for p in (tariff.period_prices or {}).keys()]
+        if period_days not in available_periods:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Период не доступен для этого тарифа',
+            )
+
+        # Find existing subscription for this tariff (renewal pricing)
+        await db.refresh(user, ['subscriptions'])
+        if settings.is_multi_tariff_enabled():
+            from app.database.crud.subscription import get_subscription_by_user_and_tariff
+            existing_sub = await get_subscription_by_user_and_tariff(db, user.id, tariff.id)
+        else:
+            existing_sub = getattr(user, 'subscription', None)
+
+        effective_device_limit = tariff.device_limit
+        device_limit_for_pricing = None
+        if existing_sub and existing_sub.tariff_id == tariff.id:
+            device_limit_for_pricing = existing_sub.device_limit
+            if (existing_sub.device_limit or 0) > (tariff.device_limit or 0):
+                effective_device_limit = existing_sub.device_limit
+
+        # Calculate price with tariff-specific engine
+        result = await pricing_engine.calculate_tariff_purchase_price(
+            tariff,
+            period_days,
+            device_limit=device_limit_for_pricing,
+            user=user,
+        )
+        price_kopeks = result.final_total
+
+        if price_kopeks <= 0 and result.original_total <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Некорректная конфигурация цены тарифа',
+            )
+
+        balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
+
+        # ── Sufficient balance — activate immediately ─────────────────────────
+        if balance_kopeks >= price_kopeks:
+            from app.database.crud.subscription import (
+                create_paid_subscription,
+                extend_subscription,
+            )
+            from app.database.crud.transaction import create_transaction
+            from app.database.crud.user import subtract_user_balance
+            from app.database.models import PaymentMethod, TransactionType
+            from app.services.subscription_service import SubscriptionService
+
+            description = f"Покупка тарифа '{tariff.name}' на {period_days} дней"
+            bd = result.breakdown
+            group_pcts = bd.get('group_discount_pct', {})
+            discount_pct = group_pcts.get('period', 0)
+            if discount_pct > 0:
+                description += f' (скидка {discount_pct}%)'
+
+            ok = await subtract_user_balance(db, user, price_kopeks, description)
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail='Недостаточно средств на балансе',
+                )
+
+            # Resolve server squads from tariff
+            squads = tariff.allowed_squads or []
+            if not squads:
+                from app.database.crud.server_squad import get_all_server_squads
+                all_servers, _ = await get_all_server_squads(db, available_only=True)
+                squads = [s.squad_uuid for s in all_servers if s.squad_uuid]
+
+            traffic_limit_gb = tariff.traffic_limit_gb
+
+            if existing_sub and existing_sub.tariff_id == tariff.id:
+                subscription = await extend_subscription(
+                    db=db,
+                    subscription=existing_sub,
+                    days=period_days,
+                    tariff_id=tariff.id,
+                    traffic_limit_gb=traffic_limit_gb,
+                    device_limit=effective_device_limit,
+                    connected_squads=squads,
+                )
+            else:
+                subscription = await create_paid_subscription(
+                    db=db,
+                    user=user,
+                    days=period_days,
+                    traffic_limit_gb=traffic_limit_gb,
+                    device_limit=effective_device_limit,
+                    connected_squads=squads,
+                    tariff_id=tariff.id,
+                    payment_method=PaymentMethod.BALANCE,
+                )
+
+            if price_kopeks > 0:
+                await create_transaction(
+                    db=db,
+                    user_id=user.id,
+                    type=TransactionType.SUBSCRIPTION_PAYMENT,
+                    amount_kopeks=price_kopeks,
+                    description=description,
+                )
+
+            try:
+                await SubscriptionService().update_remnawave_user(db, subscription)
+            except Exception as sync_err:
+                logger.warning('mobile buy-tariff: remnawave sync failed', error=sync_err)
+
+            return BuyResponse(
+                status='success',
+                message=f"Тариф '{tariff.name}' активирован",
+                subscription=_serialize_subscription(subscription),
+            )
+
+        # ── Insufficient balance — create YooKassa payment ────────────────────
+        if not settings.is_yookassa_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail='Недостаточно средств. Пополните баланс в боте.',
+            )
+
+        from app.services.payment_service import PaymentService
+        from app.services.user_cart_service import user_cart_service
+
+        cart_data = {
+            'cart_mode': 'tariff_purchase',
+            'tariff_id': tariff.id,
+            'period_days': period_days,
+            'total_price': price_kopeks,
+            'user_id': user.id,
+            'traffic_limit_gb': tariff.traffic_limit_gb,
+            'device_limit': effective_device_limit,
+            'allowed_squads': tariff.allowed_squads or [],
+            'source': 'mobile',
+        }
+        try:
+            await user_cart_service.save_user_cart(user.id, cart_data)
+        except Exception as cart_err:
+            logger.warning('mobile buy-tariff: failed to save cart', error=cart_err)
+
+        payment_result = await PaymentService().create_yookassa_payment(
+            db=db,
+            user_id=user.id,
+            amount_kopeks=price_kopeks,
+            description=f"Тариф '{tariff.name}' на {period_days} дней",
+            metadata={
+                'type': 'mobile_tariff_purchase',
+                'tariff_id': tariff.id,
+                'period_days': period_days,
+            },
+        )
+
+        if not payment_result or not payment_result.get('confirmation_url'):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail='Не удалось создать платёж',
+            )
+
+        return BuyResponse(
+            status='payment_required',
+            message='Пополните баланс для активации тарифа',
+            payment_url=payment_result['confirmation_url'],
+            amount_kopeks=price_kopeks,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error in buy-tariff', telegram_id=x_telegram_id, error=exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при покупке тарифа',
         ) from exc
     finally:
         await db.close()
