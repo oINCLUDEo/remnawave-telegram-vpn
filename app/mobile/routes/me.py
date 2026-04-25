@@ -58,8 +58,12 @@ async def get_me(
                     detail='Учётная запись заблокирована',
                 )
 
-            await db.refresh(user, ['subscription'])
+            await db.refresh(user, ['subscriptions'])
             subscription = getattr(user, 'subscription', None)
+            # Load tariff relationship while the session is still open so we can
+            # include the plan name in the response without lazy-load errors.
+            if subscription is not None and getattr(subscription, 'tariff_id', None):
+                await db.refresh(subscription, ['tariff'])
 
         await engine.dispose()
 
@@ -90,6 +94,9 @@ async def get_me(
         purchased_traffic_gb = getattr(subscription, 'purchased_traffic_gb', 0) or 0
         total_gb = traffic_limit_gb + purchased_traffic_gb
 
+        tariff = getattr(subscription, 'tariff', None)
+        plan_name: str | None = getattr(tariff, 'name', None) or None
+
         sub_data = {
             'status': getattr(subscription, 'status', 'unknown'),
             'is_trial': bool(getattr(subscription, 'is_trial', False)),
@@ -99,6 +106,7 @@ async def get_me(
             'subscription_url': getattr(subscription, 'subscription_url', None),
             'device_limit': getattr(subscription, 'device_limit', 1),
             'autopay_enabled': bool(getattr(subscription, 'autopay_enabled', False)),
+            'plan_name': plan_name,
         }
 
     balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)

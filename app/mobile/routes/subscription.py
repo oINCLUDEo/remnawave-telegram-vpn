@@ -85,6 +85,10 @@ def _serialize_subscription(sub: Any) -> dict[str, Any] | None:
     traffic_limit_gb = getattr(sub, 'traffic_limit_gb', 0) or 0
     purchased_traffic_gb = getattr(sub, 'purchased_traffic_gb', 0) or 0
 
+    # Include plan name if the tariff relationship was already loaded (no lazy load).
+    tariff = getattr(sub, 'tariff', None)
+    plan_name: str | None = getattr(tariff, 'name', None) or None
+
     return {
         'status': getattr(sub, 'status', 'unknown'),
         'is_trial': bool(getattr(sub, 'is_trial', False)),
@@ -95,6 +99,7 @@ def _serialize_subscription(sub: Any) -> dict[str, Any] | None:
         'device_limit': getattr(sub, 'device_limit', 1),
         'autopay_enabled': bool(getattr(sub, 'autopay_enabled', False)),
         'connected_squads': list(getattr(sub, 'connected_squads', []) or []),
+        'plan_name': plan_name,
     }
 
 
@@ -238,7 +243,7 @@ async def get_subscription_options(
     user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
 
         from app.services.subscription_purchase_service import MiniAppSubscriptionPurchaseService
 
@@ -246,6 +251,9 @@ async def get_subscription_options(
         context = await service.build_options(db, user)
 
         subscription = getattr(user, 'subscription', None)
+        # Load tariff relationship so plan_name is available in _serialize_subscription.
+        if subscription is not None and getattr(subscription, 'tariff_id', None):
+            await db.refresh(subscription, ['tariff'])
 
         # Build a serialisable representation of the context
         context_payload: dict[str, Any] = {
@@ -299,7 +307,7 @@ async def calc_subscription_price(
     user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
 
         from app.services.subscription_purchase_service import MiniAppSubscriptionPurchaseService
 
@@ -363,7 +371,7 @@ async def buy_subscription(
     user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
 
         from app.services.subscription_purchase_service import (
             MiniAppSubscriptionPurchaseService,
@@ -495,7 +503,7 @@ async def upgrade_subscription(
     user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
         subscription = getattr(user, 'subscription', None)
 
         if subscription is None:
@@ -750,7 +758,7 @@ async def calc_upgrade_price(
     user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
         subscription = getattr(user, 'subscription', None)
 
         if subscription is None:
@@ -943,7 +951,7 @@ async def set_autopay(
     user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
-        await db.refresh(user, ['subscription'])
+        await db.refresh(user, ['subscriptions'])
         subscription = getattr(user, 'subscription', None)
 
         if subscription is None:

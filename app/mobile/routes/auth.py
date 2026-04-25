@@ -79,7 +79,7 @@ async def _resolve_user_data(
                     detail='Учётная запись заблокирована',
                 )
 
-            await db.refresh(user, ['subscription'])
+            await db.refresh(user, ['subscriptions'])
             subscription = getattr(user, 'subscription', None)
             subscription_url: str | None = None
             if subscription and getattr(subscription, 'subscription_url', None):
