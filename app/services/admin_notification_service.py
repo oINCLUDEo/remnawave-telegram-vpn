@@ -434,6 +434,7 @@ class AdminNotificationService:
         was_trial_conversion: bool = False,
         amount_kopeks: int | None = None,
         purchase_type: str | None = None,  # 'first_purchase', 'renewal', 'tariff_switch', None (auto-detect)
+        source: str | None = None,  # e.g. '📱 Мобильное приложение'
     ) -> bool:
         try:
             total_amount = (
@@ -499,6 +500,10 @@ class AdminNotificationService:
                 message_lines.append(f'📱 @{html.escape(username)}')
 
             message_lines.append(f'📋 {user_status}')
+
+            # Источник (мобильное приложение, бот и т.д.)
+            if source:
+                message_lines.append(f'📲 {html.escape(source)}')
 
             # Тариф (если есть)
             if tariff_name:
@@ -1700,6 +1705,7 @@ class AdminNotificationService:
         old_value: Any,
         new_value: Any,
         price_paid: int = 0,
+        source: str | None = None,
     ) -> bool:
         if not self._is_enabled():
             return False
@@ -1730,6 +1736,10 @@ class AdminNotificationService:
             username = getattr(user, 'username', None)
             if username:
                 message_lines.append(f'📱 @{html.escape(username)}')
+
+            # Источник (мобильное приложение, бот и т.д.)
+            if source:
+                message_lines.append(f'📲 {html.escape(source)}')
 
             # Тариф (если есть)
             if tariff_name:

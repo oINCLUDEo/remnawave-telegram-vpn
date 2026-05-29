@@ -124,3 +124,55 @@ class UpgradeCalcResponse(BaseModel):
 
     amount_kopeks: int
     amount_rub: float
+
+
+# ---------------------------------------------------------------------------
+# Tariff switch
+# ---------------------------------------------------------------------------
+
+
+class TariffSwitchRequest(BaseModel):
+    """Request body for POST /mobile/v1/subscription/tariff/switch and /preview."""
+
+    tariff_id: int = Field(..., description='ID of the target tariff')
+
+
+class TariffSwitchPreviewResponse(BaseModel):
+    """Response from POST /mobile/v1/subscription/tariff/switch/preview."""
+
+    can_switch: bool
+    current_tariff_id: int | None = None
+    current_tariff_name: str | None = None
+    new_tariff_id: int
+    new_tariff_name: str
+    remaining_days: int
+    upgrade_cost_kopeks: int
+    upgrade_cost_label: str
+    balance_kopeks: int
+    balance_label: str
+    has_enough_balance: bool
+    missing_amount_kopeks: int
+    missing_amount_label: str
+    is_upgrade: bool
+    # Optional discount info
+    discount_percent: int | None = None
+    discount_kopeks: int | None = None
+    base_upgrade_cost_kopeks: int | None = None
+
+
+class TariffSwitchResponse(BaseModel):
+    """Response from POST /mobile/v1/subscription/tariff/switch."""
+
+    success: bool
+    message: str | None = None
+    old_tariff_name: str | None = None
+    new_tariff_id: int
+    new_tariff_name: str
+    charged_kopeks: int
+    balance_kopeks: int
+    balance_label: str
+    subscription: dict[str, Any] | None = None
+    # Optional discount info
+    discount_percent: int | None = None
+    discount_kopeks: int | None = None
+    base_charged_kopeks: int | None = None

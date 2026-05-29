@@ -25,6 +25,9 @@ from app.mobile.schemas.subscription import (
     SubscriptionSelectionRequest,
     SubscriptionUpgradeRequest,
     TariffBuyRequest,
+    TariffSwitchPreviewResponse,
+    TariffSwitchRequest,
+    TariffSwitchResponse,
     UpgradeCalcResponse,
     UpgradeResponse,
 )
@@ -34,6 +37,88 @@ from app.services.pricing_engine import pricing_engine
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+_MOBILE_SOURCE = 'Мобильное приложение'
+
+
+# ---------------------------------------------------------------------------
+# Admin notification helper
+# ---------------------------------------------------------------------------
+
+
+async def _notify_mobile_purchase(
+    db: Any,
+    user: Any,
+    subscription: Any,
+    *,
+    period_days: int,
+    amount_kopeks: int,
+    purchase_type: str,
+) -> None:
+    """Send admin Telegram notification for a successful mobile purchase/renewal."""
+    try:
+        from aiogram import Bot
+
+        from app.config import settings
+        from app.services.admin_notification_service import AdminNotificationService
+
+        if not (getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN):
+            return
+        bot = Bot(token=settings.BOT_TOKEN)
+        try:
+            ns = AdminNotificationService(bot)
+            await ns.send_subscription_purchase_notification(
+                db=db,
+                user=user,
+                subscription=subscription,
+                transaction=None,
+                period_days=period_days,
+                amount_kopeks=amount_kopeks,
+                purchase_type=purchase_type,
+                source=_MOBILE_SOURCE,
+            )
+        finally:
+            await bot.session.close()
+    except Exception as e:
+        logger.error('mobile: failed to send admin purchase notification', error=e)
+
+
+async def _notify_mobile_upgrade(
+    db: Any,
+    user: Any,
+    subscription: Any,
+    *,
+    update_type: str,
+    old_value: Any,
+    new_value: Any,
+    price_kopeks: int,
+) -> None:
+    """Send admin Telegram notification for a successful mobile subscription upgrade."""
+    try:
+        from aiogram import Bot
+
+        from app.config import settings
+        from app.services.admin_notification_service import AdminNotificationService
+
+        if not (getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN):
+            return
+        bot = Bot(token=settings.BOT_TOKEN)
+        try:
+            ns = AdminNotificationService(bot)
+            await ns.send_subscription_update_notification(
+                db=db,
+                user=user,
+                subscription=subscription,
+                update_type=update_type,
+                old_value=old_value,
+                new_value=new_value,
+                price_paid=price_kopeks,
+                source=_MOBILE_SOURCE,
+            )
+        finally:
+            await bot.session.close()
+    except Exception as e:
+        logger.error('mobile: failed to send admin upgrade notification', error=e)
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +359,7 @@ async def get_subscription_options(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error building subscription options', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error building subscription options', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при получении параметров подписки',
@@ -330,7 +415,7 @@ async def calc_subscription_price(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error calculating subscription price', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error calculating subscription price', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -400,6 +485,15 @@ async def buy_subscription(
             # Sufficient balance – purchase immediately
             result = await service.submit_purchase(db, context, pricing)
             subscription = result.get('subscription')
+
+            # Admin notification
+            await _notify_mobile_purchase(
+                db, user, subscription,
+                period_days=selection.period.days,
+                amount_kopeks=pricing.final_total,
+                purchase_type='renewal' if user.has_had_paid_subscription else 'first_purchase',
+            )
+
             return BuyResponse(
                 status='success',
                 message='Подписка активирована',
@@ -468,7 +562,7 @@ async def buy_subscription(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error buying subscription', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error buying subscription', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при покупке подписки',
@@ -664,6 +758,29 @@ async def upgrade_subscription(
                 )
 
             await db.refresh(user)
+
+            # Admin notification
+            if payload.devices_add and payload.devices_add > 0:
+                _old_dev = current_devices
+                _new_dev = current_devices + payload.devices_add
+                await _notify_mobile_upgrade(
+                    db, user, subscription,
+                    update_type='devices',
+                    old_value=_old_dev,
+                    new_value=_new_dev,
+                    price_kopeks=price,
+                )
+            elif payload.traffic_add and payload.traffic_add > 0:
+                _old_tr = getattr(subscription, 'traffic_limit_gb', 0)
+                _new_tr = _old_tr + payload.traffic_add
+                await _notify_mobile_upgrade(
+                    db, user, subscription,
+                    update_type='traffic',
+                    old_value=_old_tr,
+                    new_value=_new_tr,
+                    price_kopeks=price,
+                )
+
             return UpgradeResponse(
                 status='success',
                 message='Подписка улучшена',
@@ -726,7 +843,7 @@ async def upgrade_subscription(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error upgrading subscription', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error upgrading subscription', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при улучшении подписки',
@@ -819,7 +936,7 @@ async def calc_upgrade_price(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error calculating upgrade price', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error calculating upgrade price', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -1000,6 +1117,15 @@ async def buy_tariff(
             except Exception as sync_err:
                 logger.warning('mobile buy-tariff: remnawave sync failed', error=sync_err)
 
+            # Admin notification
+            _purchase_type = 'renewal' if (existing_sub and existing_sub.tariff_id == tariff.id) else 'first_purchase'
+            await _notify_mobile_purchase(
+                db, user, subscription,
+                period_days=period_days,
+                amount_kopeks=price_kopeks,
+                purchase_type=_purchase_type,
+            )
+
             return BuyResponse(
                 status='success',
                 message=f"Тариф '{tariff.name}' активирован",
@@ -1060,7 +1186,7 @@ async def buy_tariff(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error in buy-tariff', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error in buy-tariff', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при покупке тарифа',
@@ -1164,7 +1290,7 @@ async def topup_balance(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error creating balance topup payment', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error creating balance topup payment', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при создании платежа',
@@ -1211,7 +1337,7 @@ async def set_autopay(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error updating autopay', telegram_id=x_telegram_id, error=exc)
+        logger.error('Error updating autopay', telegram_id=x_telegram_id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при обновлении настроек автопродления',
@@ -1221,3 +1347,469 @@ async def set_autopay(
         await engine.dispose()
 
     return AutopayResponse(autopay_enabled=enabled, message=message)
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/tariff/switch/preview
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    '/subscription/tariff/switch/preview',
+    response_model=TariffSwitchPreviewResponse,
+    summary='Предпросмотр стоимости смены тарифа',
+    tags=['mobile'],
+)
+async def preview_tariff_switch_mobile(
+    payload: TariffSwitchRequest,
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> TariffSwitchPreviewResponse:
+    """Calculate the cost of switching to a different tariff without committing."""
+    from datetime import UTC, datetime
+
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        if not settings.is_tariffs_mode():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Tariffs mode is not enabled',
+            )
+
+        await db.refresh(user, ['subscriptions'])
+        subscription = getattr(user, 'subscription', None)
+
+        if not subscription or not subscription.tariff_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Нет активной подписки с тарифом',
+            )
+
+        actual_status = subscription.actual_status
+        if actual_status == 'expired':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'code': 'subscription_expired',
+                    'message': 'Подписка истекла. Оформите новый тариф.',
+                    'use_purchase_flow': True,
+                },
+            )
+        if actual_status not in ('active', 'trial'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'code': 'subscription_not_active',
+                    'message': f'Подписка неактивна (статус: {actual_status}). Смена тарифа невозможна.',
+                },
+            )
+
+        if subscription.tariff_id == payload.tariff_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Вы уже на этом тарифе',
+            )
+
+        current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
+        new_tariff = await get_tariff_by_id(db, payload.tariff_id)
+
+        if not new_tariff or not new_tariff.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Тариф не найден или неактивен',
+            )
+
+        # Check tariff availability for user's promo group
+        promo_group = user.get_primary_promo_group() if hasattr(user, 'get_primary_promo_group') else None
+        if promo_group is None:
+            promo_group = getattr(user, 'promo_group', None)
+        promo_group_id = promo_group.id if promo_group else None
+        if not new_tariff.is_available_for_promo_group(promo_group_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Тариф недоступен для вашей группы',
+            )
+
+        # Calculate remaining days
+        remaining_days = 0
+        if subscription.end_date and subscription.end_date > datetime.now(UTC):
+            delta = subscription.end_date - datetime.now(UTC)
+            remaining_days = max(0, delta.days)
+
+        switch_result = pricing_engine.calculate_tariff_switch_cost(
+            current_tariff,
+            new_tariff,
+            remaining_days,
+            user=user,
+        )
+        upgrade_cost = switch_result.upgrade_cost
+        is_upgrade = switch_result.is_upgrade
+        base_upgrade_cost = switch_result.raw_cost
+        discount_value = switch_result.discount_value
+        period_discount_percent = switch_result.effective_discount_pct
+
+        balance = user.balance_kopeks or 0
+        has_enough = balance >= upgrade_cost
+        missing = max(0, upgrade_cost - balance) if not has_enough else 0
+
+        return TariffSwitchPreviewResponse(
+            can_switch=has_enough,
+            current_tariff_id=current_tariff.id if current_tariff else None,
+            current_tariff_name=current_tariff.name if current_tariff else None,
+            new_tariff_id=new_tariff.id,
+            new_tariff_name=new_tariff.name,
+            remaining_days=remaining_days,
+            upgrade_cost_kopeks=upgrade_cost,
+            upgrade_cost_label=settings.format_price(upgrade_cost) if upgrade_cost > 0 else 'Бесплатно',
+            balance_kopeks=balance,
+            balance_label=settings.format_price(balance),
+            has_enough_balance=has_enough,
+            missing_amount_kopeks=missing,
+            missing_amount_label=settings.format_price(missing) if missing > 0 else '',
+            is_upgrade=is_upgrade,
+            discount_percent=period_discount_percent if period_discount_percent > 0 and discount_value > 0 else None,
+            discount_kopeks=discount_value if period_discount_percent > 0 and discount_value > 0 else None,
+            base_upgrade_cost_kopeks=base_upgrade_cost if period_discount_percent > 0 and discount_value > 0 else None,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error previewing tariff switch', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при расчёте стоимости смены тарифа',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/subscription/tariff/switch
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    '/subscription/tariff/switch',
+    response_model=TariffSwitchResponse,
+    summary='Сменить тариф',
+    tags=['mobile'],
+)
+async def switch_tariff_mobile(
+    payload: TariffSwitchRequest,
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> TariffSwitchResponse:
+    """Switch to a different tariff. Keeps existing end_date; charges difference for upgrades."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import delete as sql_delete, select
+
+    from app.database.crud.subscription import calc_device_limit_on_tariff_switch
+    from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
+    from app.database.crud.user import lock_user_for_pricing, subtract_user_balance
+    from app.database.models import PaymentMethod, Subscription, TrafficPurchase, TransactionType
+
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        if not settings.is_tariffs_mode():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Tariffs mode is not enabled',
+            )
+
+        await db.refresh(user, ['subscriptions'])
+        subscription = getattr(user, 'subscription', None)
+
+        if not subscription or not subscription.tariff_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Нет активной подписки с тарифом',
+            )
+
+        # Lock subscription row to prevent concurrent switches
+        locked_result = await db.execute(
+            select(Subscription)
+            .where(Subscription.id == subscription.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        subscription = locked_result.scalar_one()
+
+        actual_status = subscription.actual_status
+        if actual_status == 'expired':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'code': 'subscription_expired',
+                    'message': 'Подписка истекла. Оформите новый тариф.',
+                    'use_purchase_flow': True,
+                },
+            )
+        if actual_status not in ('active', 'trial'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'code': 'subscription_not_active',
+                    'message': f'Подписка неактивна (статус: {actual_status}). Смена тарифа невозможна.',
+                },
+            )
+
+        if subscription.tariff_id == payload.tariff_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Вы уже на этом тарифе',
+            )
+
+        current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
+        new_tariff = await get_tariff_by_id(db, payload.tariff_id)
+
+        if not new_tariff or not new_tariff.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Тариф не найден или неактивен',
+            )
+
+        # Check tariff availability for user's promo group
+        promo_group = user.get_primary_promo_group() if hasattr(user, 'get_primary_promo_group') else None
+        if promo_group is None:
+            promo_group = getattr(user, 'promo_group', None)
+        promo_group_id = promo_group.id if promo_group else None
+        if not new_tariff.is_available_for_promo_group(promo_group_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Тариф недоступен для вашей группы',
+            )
+
+        # Lock user before price computation (prevent TOCTOU on promo offer)
+        user = await lock_user_for_pricing(db, user.id)
+
+        # Calculate remaining days
+        remaining_days = 0
+        if subscription.end_date and subscription.end_date > datetime.now(UTC):
+            delta = subscription.end_date - datetime.now(UTC)
+            remaining_days = max(0, delta.days)
+
+        switch_result = pricing_engine.calculate_tariff_switch_cost(
+            current_tariff,
+            new_tariff,
+            remaining_days,
+            user=user,
+        )
+        upgrade_cost = switch_result.upgrade_cost
+        base_upgrade_cost = switch_result.raw_cost
+        discount_value = switch_result.discount_value
+        period_discount_percent = switch_result.effective_discount_pct
+        new_period_days = switch_result.new_period_days
+
+        new_is_daily = getattr(new_tariff, 'is_daily', False)
+        current_is_daily = getattr(current_tariff, 'is_daily', False) if current_tariff else False
+        switching_to_daily = not current_is_daily and new_is_daily
+        switching_from_daily = current_is_daily and not new_is_daily
+
+        if switching_to_daily and (getattr(new_tariff, 'daily_price_kopeks', 0) or 0) <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Суточный тариф имеет некорректную цену',
+            )
+
+        # Charge if upgrade
+        switch_transaction = None
+        old_tariff_name = current_tariff.name if current_tariff else 'Unknown'
+
+        if upgrade_cost > 0:
+            if user.balance_kopeks < upgrade_cost:
+                missing = upgrade_cost - user.balance_kopeks
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail={
+                        'code': 'insufficient_funds',
+                        'message': f'Недостаточно средств. Не хватает {settings.format_price(missing)}',
+                        'missing_amount': missing,
+                    },
+                )
+
+            if switching_to_daily:
+                description = f"Переход на суточный тариф '{new_tariff.name}'"
+            elif switching_from_daily:
+                description = f"Переход с суточного на тариф '{new_tariff.name}' ({new_period_days} дней)"
+            else:
+                description = f"Переход на тариф '{new_tariff.name}' (доплата за {remaining_days} дней)"
+
+            if period_discount_percent > 0 and discount_value > 0:
+                description += f' (скидка {period_discount_percent}%)'
+
+            success = await subtract_user_balance(
+                db,
+                user,
+                upgrade_cost,
+                description,
+                consume_promo_offer=switch_result.offer_discount_pct > 0,
+                mark_as_paid_subscription=True,
+                commit=False,
+            )
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail='Не удалось списать средства',
+                )
+
+            switch_transaction = await create_transaction(
+                db=db,
+                user_id=user.id,
+                type=TransactionType.SUBSCRIPTION_PAYMENT,
+                amount_kopeks=upgrade_cost,
+                description=description,
+                payment_method=PaymentMethod.BALANCE,
+                commit=False,
+            )
+        else:
+            description = f"Переход на тариф '{new_tariff.name}'"
+            await create_transaction(
+                db=db,
+                user_id=user.id,
+                type=TransactionType.SUBSCRIPTION_PAYMENT,
+                amount_kopeks=0,
+                description=description,
+                commit=False,
+            )
+
+        # Re-load subscription to avoid MissingGreenlet after subtract_user_balance
+        await db.refresh(subscription)
+
+        subscription.tariff_id = new_tariff.id
+        subscription.traffic_limit_gb = new_tariff.traffic_limit_gb
+        subscription.device_limit = calc_device_limit_on_tariff_switch(
+            current_device_limit=subscription.device_limit,
+            old_tariff_device_limit=current_tariff.device_limit if current_tariff else None,
+            new_tariff_device_limit=new_tariff.device_limit,
+            max_device_limit=new_tariff.max_device_limit,
+        )
+        subscription.connected_squads = new_tariff.allowed_squads or []
+
+        # Reset purchased traffic
+        await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
+        subscription.purchased_traffic_gb = 0
+        subscription.traffic_reset_at = None
+
+        if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:
+            subscription.traffic_used_gb = 0.0
+
+        if switching_to_daily:
+            subscription.end_date = datetime.now(UTC) + timedelta(days=1)
+            subscription.last_daily_charge_at = datetime.now(UTC)
+            subscription.is_daily_paused = False
+        elif switching_from_daily:
+            subscription.end_date = datetime.now(UTC) + timedelta(days=new_period_days)
+            subscription.is_daily_paused = False
+
+        subscription.updated_at = datetime.now(UTC)
+        await db.commit()
+
+        # Emit side-effects after atomic commit
+        if upgrade_cost > 0 and switch_transaction:
+            await emit_transaction_side_effects(
+                db,
+                switch_transaction,
+                amount_kopeks=upgrade_cost,
+                user_id=user.id,
+                type=TransactionType.SUBSCRIPTION_PAYMENT,
+                payment_method=PaymentMethod.BALANCE,
+            )
+
+        # Sync with RemnaWave
+        from app.services.remnawave_service import RemnaWaveService
+        from app.services.subscription_service import SubscriptionService
+
+        should_reset_traffic = settings.RESET_TRAFFIC_ON_TARIFF_SWITCH
+        await db.refresh(subscription)
+
+        try:
+            subscription_service = SubscriptionService()
+            _has_panel = getattr(user, 'remnawave_uuid', None)
+            if _has_panel:
+                await subscription_service.update_remnawave_user(
+                    db,
+                    subscription,
+                    reset_traffic=should_reset_traffic,
+                    reset_reason='смена тарифа',
+                    sync_squads=True,
+                )
+            else:
+                await subscription_service.create_remnawave_user(
+                    db,
+                    subscription,
+                    reset_traffic=should_reset_traffic,
+                    reset_reason='смена тарифа',
+                )
+        except Exception as e:
+            logger.error('Failed to sync tariff switch with RemnaWave', error=e)
+
+        # Reset all devices
+        devices_reset = False
+        _uuid = user.remnawave_uuid
+        if _uuid:
+            try:
+                service = RemnaWaveService()
+                async with service.get_api_client() as api:
+                    await api.reset_user_devices(_uuid)
+                    devices_reset = True
+            except Exception as e:
+                logger.error('Failed to reset devices on tariff switch', error=e)
+
+        # Admin notification
+        try:
+            from aiogram import Bot
+
+            from app.services.admin_notification_service import AdminNotificationService
+
+            if getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False) and settings.BOT_TOKEN:
+                bot = Bot(token=settings.BOT_TOKEN)
+                try:
+                    notification_service = AdminNotificationService(bot)
+                    await notification_service.send_subscription_purchase_notification(
+                        db=db,
+                        user=user,
+                        subscription=subscription,
+                        transaction=switch_transaction if upgrade_cost > 0 else None,
+                        period_days=remaining_days if remaining_days > 0 else new_period_days,
+                        was_trial_conversion=False,
+                        amount_kopeks=upgrade_cost,
+                        purchase_type='tariff_switch',
+                    )
+                finally:
+                    await bot.session.close()
+        except Exception as e:
+            logger.error('Failed to send admin notification for tariff switch', error=e)
+
+        await db.refresh(subscription)
+        await db.refresh(user)
+
+        return TariffSwitchResponse(
+            success=True,
+            message=f"Тариф изменён с '{old_tariff_name}' на '{new_tariff.name}'"
+            + (' (устройства сброшены)' if devices_reset else ''),
+            old_tariff_name=old_tariff_name,
+            new_tariff_id=new_tariff.id,
+            new_tariff_name=new_tariff.name,
+            charged_kopeks=upgrade_cost,
+            balance_kopeks=user.balance_kopeks,
+            balance_label=settings.format_price(user.balance_kopeks),
+            subscription=None,
+            discount_percent=period_discount_percent if period_discount_percent > 0 and discount_value > 0 else None,
+            discount_kopeks=discount_value if period_discount_percent > 0 and discount_value > 0 else None,
+            base_charged_kopeks=base_upgrade_cost if period_discount_percent > 0 and discount_value > 0 else None,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error switching tariff', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при смене тарифа',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
