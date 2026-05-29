@@ -139,6 +139,13 @@ async def get_mobile_tariffs(
             )
             continue  # skip tariffs with no configured periods
 
+        device_price_kop = getattr(tariff, 'device_price_kopeks', None)
+        # Apply promo-group discount to device price as well
+        if device_price_kop and promo_group and hasattr(promo_group, 'get_discount_percent'):
+            dev_disc = promo_group.get_discount_percent('device', 0)
+            if dev_disc > 0:
+                device_price_kop = pricing_engine.apply_discount(device_price_kop, dev_disc)
+
         result.append({
             'id': tariff.id,
             'name': tariff.name,
@@ -146,6 +153,7 @@ async def get_mobile_tariffs(
             'traffic_limit_gb': tariff.traffic_limit_gb or 0,
             'device_limit': tariff.device_limit or 1,
             'tier_level': getattr(tariff, 'tier_level', 1) or 1,
+            'device_price_kopeks': device_price_kop,
             'periods': periods,
         })
 
