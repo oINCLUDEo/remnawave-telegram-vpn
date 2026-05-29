@@ -163,6 +163,10 @@ class TariffSwitchPreviewResponse(BaseModel):
     discount_percent: int | None = None
     discount_kopeks: int | None = None
     base_upgrade_cost_kopeks: int | None = None
+    # Optional device surcharge breakdown (when devices param was passed)
+    base_switch_cost_kopeks: int | None = None   # tariff-only part of upgrade_cost
+    extra_device_cost_kopeks: int | None = None  # device surcharge portion
+    devices_requested: int | None = None         # requested device count
 
 
 class TariffSwitchResponse(BaseModel):
@@ -209,3 +213,9 @@ class DevicesResetResponse(BaseModel):
 
     success: bool
     message: str
+
+
+class DeviceDeleteRequest(BaseModel):
+    """Request body for POST /mobile/v1/devices/delete."""
+
+    hwid: str = Field(..., description='HWID fingerprint of the device to remove')

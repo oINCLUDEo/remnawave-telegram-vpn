@@ -20,6 +20,7 @@ from app.mobile.schemas.subscription import (
     BalanceTopupResponse,
     BuyResponse,
     CalcResponse,
+    DeviceDeleteRequest,
     DevicesListResponse,
     DevicesResetResponse,
     SubscriptionBuyRequest,
@@ -1451,7 +1452,9 @@ async def preview_tariff_switch_mobile(
         period_discount_percent = switch_result.effective_discount_pct
 
         # Extra devices surcharge (Family tariff only)
+        base_switch_cost = switch_result.upgrade_cost  # tariff-only part, before device add-on
         extra_device_cost = 0
+        devices_requested: int | None = None
         if payload.devices and payload.devices > new_tariff.device_limit and remaining_days > 0:
             dev_price_kop = getattr(new_tariff, 'device_price_kopeks', None) or 0
             if dev_price_kop > 0:
@@ -1460,6 +1463,7 @@ async def preview_tariff_switch_mobile(
                 extra_device_cost = extra_devices * dev_price_kop * remaining_days // 30
                 upgrade_cost += extra_device_cost
                 is_upgrade = True
+            devices_requested = payload.devices
 
         balance = user.balance_kopeks or 0
         has_enough = balance >= upgrade_cost
@@ -1483,6 +1487,9 @@ async def preview_tariff_switch_mobile(
             discount_percent=period_discount_percent if period_discount_percent > 0 and discount_value > 0 else None,
             discount_kopeks=discount_value if period_discount_percent > 0 and discount_value > 0 else None,
             base_upgrade_cost_kopeks=base_upgrade_cost if period_discount_percent > 0 and discount_value > 0 else None,
+            base_switch_cost_kopeks=base_switch_cost if extra_device_cost > 0 else None,
+            extra_device_cost_kopeks=extra_device_cost if extra_device_cost > 0 else None,
+            devices_requested=devices_requested,
         )
 
     except HTTPException:
@@ -1948,6 +1955,58 @@ async def reset_devices_mobile(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при сбросе устройств',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# POST /mobile/v1/devices/delete  — удалить одно устройство
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    '/devices/delete',
+    response_model=DevicesResetResponse,
+    summary='Удалить одно подключённое устройство',
+    tags=['mobile'],
+)
+async def delete_device_mobile(
+    payload: DeviceDeleteRequest,
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> DevicesResetResponse:
+    """Remove a single HWID device by its fingerprint."""
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        _uuid = user.remnawave_uuid
+        if not _uuid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Пользователь не синхронизирован с панелью',
+            )
+
+        from app.services.remnawave_service import RemnaWaveService
+
+        service = RemnaWaveService()
+        async with service.get_api_client() as api:
+            ok = await api.remove_device(_uuid, payload.hwid)
+
+        if ok:
+            return DevicesResetResponse(success=True, message='Устройство удалено')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Не удалось удалить устройство',
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error deleting device', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при удалении устройства',
         ) from exc
     finally:
         await db.close()
