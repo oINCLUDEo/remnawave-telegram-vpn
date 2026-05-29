@@ -1894,14 +1894,22 @@ async def list_devices_mobile(
         from app.mobile.schemas.subscription import DeviceInfo
         devices = []
         for d in items:
-            hwid = d.get('hwid') or ''
+            hwid = d.get('hwid') or d.get('deviceId') or d.get('id') or ''
             if not hwid:
                 continue
-            created = d.get('createdAt') or d.get('created_at') or None
-            # RemnaWave API doesn't return a user-readable name for HWID devices;
-            # use the hwid itself truncated as fallback.
-            name = d.get('name') or d.get('userAgent') or d.get('user_agent') or None
-            devices.append(DeviceInfo(hwid=hwid, name=name, created_at=created))
+            created = d.get('updatedAt') or d.get('lastSeen') or d.get('createdAt') or d.get('created_at') or None
+            # RemnaWave returns platform and deviceModel as separate fields.
+            platform = d.get('platform') or d.get('platformType') or None
+            device_model = d.get('deviceModel') or d.get('model') or None
+            # Fallback name: userAgent or legacy name field (used for UA-based parsing)
+            name = d.get('userAgent') or d.get('user_agent') or d.get('name') or None
+            devices.append(DeviceInfo(
+                hwid=hwid,
+                name=name,
+                platform=platform,
+                device_model=device_model,
+                created_at=created,
+            ))
 
         return DevicesListResponse(devices=devices, count=len(devices), device_limit=device_limit)
 

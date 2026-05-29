@@ -196,7 +196,9 @@ class DeviceInfo(BaseModel):
     """Single HWID device entry."""
 
     hwid: str
-    name: str | None = None
+    name: str | None = None          # raw UA / display name (legacy)
+    platform: str | None = None      # OS platform from RemnaWave (Android, iOS, …)
+    device_model: str | None = None  # hardware model (Redmi Note 10, iPhone 14 Pro, …)
     created_at: str | None = None
 
 
