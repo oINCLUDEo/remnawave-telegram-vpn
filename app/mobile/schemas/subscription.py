@@ -135,6 +135,11 @@ class TariffSwitchRequest(BaseModel):
     """Request body for POST /mobile/v1/subscription/tariff/switch and /preview."""
 
     tariff_id: int = Field(..., description='ID of the target tariff')
+    devices: int | None = Field(
+        None,
+        ge=1,
+        description='Requested device count for Family tariff (optional, must be >= tariff base device_limit)',
+    )
 
 
 class TariffSwitchPreviewResponse(BaseModel):
@@ -176,3 +181,31 @@ class TariffSwitchResponse(BaseModel):
     discount_percent: int | None = None
     discount_kopeks: int | None = None
     base_charged_kopeks: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# Device management
+# ---------------------------------------------------------------------------
+
+
+class DeviceInfo(BaseModel):
+    """Single HWID device entry."""
+
+    hwid: str
+    name: str | None = None
+    created_at: str | None = None
+
+
+class DevicesListResponse(BaseModel):
+    """Response from GET /mobile/v1/devices."""
+
+    devices: list[DeviceInfo]
+    count: int
+    device_limit: int
+
+
+class DevicesResetResponse(BaseModel):
+    """Response from DELETE /mobile/v1/devices."""
+
+    success: bool
+    message: str

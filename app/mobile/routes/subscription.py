@@ -20,6 +20,8 @@ from app.mobile.schemas.subscription import (
     BalanceTopupResponse,
     BuyResponse,
     CalcResponse,
+    DevicesListResponse,
+    DevicesResetResponse,
     SubscriptionBuyRequest,
     SubscriptionOptionsResponse,
     SubscriptionSelectionRequest,
@@ -1448,6 +1450,17 @@ async def preview_tariff_switch_mobile(
         discount_value = switch_result.discount_value
         period_discount_percent = switch_result.effective_discount_pct
 
+        # Extra devices surcharge (Family tariff only)
+        extra_device_cost = 0
+        if payload.devices and payload.devices > new_tariff.device_limit and remaining_days > 0:
+            dev_price_kop = getattr(new_tariff, 'device_price_kopeks', None) or 0
+            if dev_price_kop > 0:
+                extra_devices = max(0, payload.devices - new_tariff.device_limit)
+                # Prorated per-day cost: device_price_kopeks / 30 days × extra × remaining
+                extra_device_cost = extra_devices * dev_price_kop * remaining_days // 30
+                upgrade_cost += extra_device_cost
+                is_upgrade = True
+
         balance = user.balance_kopeks or 0
         has_enough = balance >= upgrade_cost
         missing = max(0, upgrade_cost - balance) if not has_enough else 0
@@ -1603,6 +1616,19 @@ async def switch_tariff_mobile(
         period_discount_percent = switch_result.effective_discount_pct
         new_period_days = switch_result.new_period_days
 
+        # Extra devices surcharge (Family tariff only)
+        extra_device_cost = 0
+        requested_devices: int | None = None
+        if payload.devices and payload.devices > new_tariff.device_limit and remaining_days > 0:
+            dev_price_kop = getattr(new_tariff, 'device_price_kopeks', None) or 0
+            tariff_max = getattr(new_tariff, 'max_device_limit', None)
+            capped_devices = min(payload.devices, tariff_max) if tariff_max else payload.devices
+            if dev_price_kop > 0 and capped_devices > new_tariff.device_limit:
+                extra_devices = capped_devices - new_tariff.device_limit
+                extra_device_cost = extra_devices * dev_price_kop * remaining_days // 30
+                upgrade_cost += extra_device_cost
+            requested_devices = capped_devices
+
         new_is_daily = getattr(new_tariff, 'is_daily', False)
         current_is_daily = getattr(current_tariff, 'is_daily', False) if current_tariff else False
         switching_to_daily = not current_is_daily and new_is_daily
@@ -1636,6 +1662,9 @@ async def switch_tariff_mobile(
                 description = f"Переход с суточного на тариф '{new_tariff.name}' ({new_period_days} дней)"
             else:
                 description = f"Переход на тариф '{new_tariff.name}' (доплата за {remaining_days} дней)"
+
+            if extra_device_cost > 0 and requested_devices is not None:
+                description += f' + {requested_devices} устр.'
 
             if period_discount_percent > 0 and discount_value > 0:
                 description += f' (скидка {period_discount_percent}%)'
@@ -1680,12 +1709,16 @@ async def switch_tariff_mobile(
 
         subscription.tariff_id = new_tariff.id
         subscription.traffic_limit_gb = new_tariff.traffic_limit_gb
-        subscription.device_limit = calc_device_limit_on_tariff_switch(
-            current_device_limit=subscription.device_limit,
-            old_tariff_device_limit=current_tariff.device_limit if current_tariff else None,
-            new_tariff_device_limit=new_tariff.device_limit,
-            max_device_limit=new_tariff.max_device_limit,
-        )
+        if requested_devices is not None:
+            # User explicitly chose device count — use it directly (already capped to max)
+            subscription.device_limit = requested_devices
+        else:
+            subscription.device_limit = calc_device_limit_on_tariff_switch(
+                current_device_limit=subscription.device_limit,
+                old_tariff_device_limit=current_tariff.device_limit if current_tariff else None,
+                new_tariff_device_limit=new_tariff.device_limit,
+                max_device_limit=new_tariff.max_device_limit,
+            )
         subscription.connected_squads = new_tariff.allowed_squads or []
 
         # Reset purchased traffic
@@ -1777,6 +1810,7 @@ async def switch_tariff_mobile(
                         was_trial_conversion=False,
                         amount_kopeks=upgrade_cost,
                         purchase_type='tariff_switch',
+                        source=_MOBILE_SOURCE,
                     )
                 finally:
                     await bot.session.close()
@@ -1809,6 +1843,111 @@ async def switch_tariff_mobile(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при смене тарифа',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# GET /mobile/v1/devices
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    '/devices',
+    response_model=DevicesListResponse,
+    summary='Список подключённых устройств',
+    tags=['mobile'],
+)
+async def list_devices_mobile(
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> DevicesListResponse:
+    """Return HWID devices registered for the current user."""
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        _uuid = user.remnawave_uuid
+        if not _uuid:
+            return DevicesListResponse(devices=[], count=0, device_limit=0)
+
+        from app.services.remnawave_service import RemnaWaveService
+
+        service = RemnaWaveService()
+        async with service.get_api_client() as api:
+            raw = await api.get_user_devices_all(_uuid)
+
+        items = raw.get('devices') or []
+        if not isinstance(items, list):
+            items = []
+
+        sub = getattr(user, 'subscription', None)
+        device_limit = sub.device_limit if sub else 0
+
+        from app.mobile.schemas.subscription import DeviceInfo
+        devices = []
+        for d in items:
+            hwid = d.get('hwid') or ''
+            if not hwid:
+                continue
+            created = d.get('createdAt') or d.get('created_at') or None
+            # RemnaWave API doesn't return a user-readable name for HWID devices;
+            # use the hwid itself truncated as fallback.
+            name = d.get('name') or d.get('userAgent') or d.get('user_agent') or None
+            devices.append(DeviceInfo(hwid=hwid, name=name, created_at=created))
+
+        return DevicesListResponse(devices=devices, count=len(devices), device_limit=device_limit)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error listing devices', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при получении списка устройств',
+        ) from exc
+    finally:
+        await db.close()
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /mobile/v1/devices
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    '/devices',
+    response_model=DevicesResetResponse,
+    summary='Сбросить все подключённые устройства',
+    tags=['mobile'],
+)
+async def reset_devices_mobile(
+    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+) -> DevicesResetResponse:
+    """Reset (delete) all HWID devices for the current user."""
+    user, db, engine = await _get_db_user(x_telegram_id)
+
+    try:
+        _uuid = user.remnawave_uuid
+        if not _uuid:
+            return DevicesResetResponse(success=True, message='Устройств нет')
+
+        from app.services.remnawave_service import RemnaWaveService
+
+        service = RemnaWaveService()
+        async with service.get_api_client() as api:
+            await api.reset_user_devices(_uuid)
+
+        return DevicesResetResponse(success=True, message='Все устройства сброшены')
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Error resetting devices', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Ошибка при сбросе устройств',
         ) from exc
     finally:
         await db.close()
