@@ -19,11 +19,11 @@ Schema mapping (actual DB → spec concepts):
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Optional
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -39,7 +39,7 @@ from app.database.models import (
     User,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Environment config

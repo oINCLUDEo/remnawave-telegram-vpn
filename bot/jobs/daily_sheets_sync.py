@@ -19,7 +19,7 @@ Usage in main.py (add inside the startup block, similar to reporting_service):
 from __future__ import annotations
 
 import asyncio
-import logging
+import structlog
 import os
 from datetime import UTC, datetime, time as datetime_time, timedelta
 from zoneinfo import ZoneInfo
@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from app.database.database import AsyncSessionLocal
 from bot.export.sheets_sync import run_daily_sync
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Run at 03:00 Moscow time every day (same convention as backup_service and reporting_service).
 _SYNC_HOUR = 3
