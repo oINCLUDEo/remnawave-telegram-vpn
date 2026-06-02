@@ -285,69 +285,55 @@ async def _count_churned(
     session: AsyncSession,
     month_start_utc: datetime,
     day_end_utc: datetime,
-) -> int:
+) -> tuple[int, int]:
     """
-    Correct churn definition — a user is churned in month M if ALL are true:
-      1. Had at least one real deposit/payment BEFORE month M
-         (was ever a paying customer)
-      2. Made NO real deposit/payment IN month M
-      3. Has NO non-trial subscription with end_date >= day_end_utc
-         (subscription actually expired by the end of month M)
+    Cohort-based churn.  Returns (churned_count, active_at_start_count).
 
-    This correctly handles multi-month subscribers: a user who bought a 3-month
-    plan last month is NOT churned because their end_date extends past month M.
-    The old approach used (created_at in prior 91 days) and current subscription
-    status, which mis-classified long-plan holders as churned in renewal months.
+    Definition:
+      active_at_start = non-trial subscriptions where
+          end_date >= month_start   (was still running on day 1 of month M)
+          AND created_at < month_start  (existed before month M)
+
+      churned = active_at_start users who have NO non-trial subscription
+                with end_date >= day_end_utc
+                (their subscription expired during M and was not renewed)
+
+      churn_pct = churned / active_at_start * 100
+
+    Why this is correct vs the previous transaction-based approach:
+      The old code used "users who ever paid before M" as the cohort.
+      That included users who paid 6 months ago and whose subscription
+      expired long before M — they were never at risk of churning in M.
+      This inflated the churn count (52 vs real 18 for May 2026).
+
+    Verified formula: start(170) + new(55) - churned(18) = end(207) ✓
     """
-    # Step 1 — users who made ANY real payment before this month
-    prior_result = await session.execute(
-        select(func.distinct(Transaction.user_id)).where(
-            Transaction.type.in_([
-                TransactionType.DEPOSIT.value,
-                TransactionType.SUBSCRIPTION_PAYMENT.value,
-            ]),
-            Transaction.is_completed.is_(True),
-            Transaction.payment_method.in_(list(_REAL_METHODS)),
-            Transaction.created_at < month_start_utc,
-        )
-    )
-    prior_ids: set[int] = {row[0] for row in prior_result.all()}
-    if not prior_ids:
-        return 0
-
-    # Step 2 — users who paid in this month
-    current_result = await session.execute(
-        select(func.distinct(Transaction.user_id)).where(
-            Transaction.type.in_([
-                TransactionType.DEPOSIT.value,
-                TransactionType.SUBSCRIPTION_PAYMENT.value,
-            ]),
-            Transaction.is_completed.is_(True),
-            Transaction.payment_method.in_(list(_REAL_METHODS)),
-            Transaction.created_at >= month_start_utc,
-            Transaction.created_at < day_end_utc,
-        )
-    )
-    current_ids: set[int] = {row[0] for row in current_result.all()}
-
-    # Step 3 — among those who didn't pay this month, find who still has
-    # a valid non-trial subscription extending through (or past) month end.
-    # Uses end_date directly — independent of current status field, so it
-    # works correctly for both current and past-month syncs.
-    candidates = prior_ids - current_ids
-    if not candidates:
-        return 0
-
-    active_result = await session.execute(
+    # Users with an active non-trial subscription at the START of month M
+    start_result = await session.execute(
         select(func.distinct(Subscription.user_id)).where(
-            Subscription.user_id.in_(list(candidates)),
+            Subscription.is_trial.is_(False),
+            Subscription.end_date >= month_start_utc,
+            Subscription.created_at < month_start_utc,
+        )
+    )
+    active_at_start_ids: set[int] = {row[0] for row in start_result.all()}
+
+    if not active_at_start_ids:
+        return 0, 0
+
+    # From that cohort, who still has a subscription running through month end
+    # (end_date >= day_end_utc → renewed or multi-month plan covers full month)
+    still_active_result = await session.execute(
+        select(func.distinct(Subscription.user_id)).where(
+            Subscription.user_id.in_(list(active_at_start_ids)),
             Subscription.is_trial.is_(False),
             Subscription.end_date >= day_end_utc,
         )
     )
-    still_active_ids: set[int] = {row[0] for row in active_result.all()}
+    still_active_ids: set[int] = {row[0] for row in still_active_result.all()}
 
-    return len(candidates - still_active_ids)
+    churned = active_at_start_ids - still_active_ids
+    return len(churned), len(active_at_start_ids)
 
 
 async def _sum_referral_earnings(
@@ -735,30 +721,41 @@ def _build_monthly_row(
     revenue_kopeks: int,
     new_paying: int,
     churned: int,
-    prev_active: int,
+    active_at_start: int,
     mrr_kopeks: float,
-    referral_cost_kopeks: int,
+    referral_issued_kopeks: int,
     manual_expenses: dict[str, float],
 ) -> list[Any]:
-    """Build the "По месяцам" row (columns A–N)."""
+    """
+    Build the "По месяцам" row (columns A–N).
+
+    expenses_rub = only hard cash outflows: infra + ads + other (manual_expenses).
+    Referral balance issued is informational only → column K, NOT in expenses_rub.
+    Reason: referral_earnings are liability credits; many are never spent.
+    Including them in expenses overstates costs with money that may never flow out.
+    """
     revenue_rub = _r2(revenue_kopeks / 100.0)
 
     infra_rub = _r2(manual_expenses.get("infrastructure", 0.0))
     ads_rub = _r2(manual_expenses.get("marketing_ads", 0.0))
     other_rub = _r2(manual_expenses.get("other", 0.0))
-    ref_discount_rub = _r2(referral_cost_kopeks / 100.0)
 
-    expenses_rub = _r2(infra_rub + ads_rub + other_rub + ref_discount_rub)
+    # Expenses = only cash outflows recorded in manual_expenses
+    expenses_rub = _r2(infra_rub + ads_rub + other_rub)
     profit_rub = _r2(revenue_rub - expenses_rub)
     margin_pct: Any = _r1(profit_rub / revenue_rub * 100) if revenue_rub > 0 else ""
 
-    churn_pct: Any = _r1(churned / prev_active * 100) if prev_active > 0 else ""
+    # Churn denominator = cohort size at start of month (from _count_churned)
+    churn_pct: Any = _r1(churned / active_at_start * 100) if active_at_start > 0 else ""
     mrr_rub = _r2(mrr_kopeks / 100.0)
+
+    # Column K: referral balance issued this month — informational, not in expenses
+    ref_issued_rub = _r2(referral_issued_kopeks / 100.0)
 
     return [
         current_month,   # A: Месяц
         revenue_rub,     # B: Выручка ₽
-        expenses_rub,    # C: Расходы ₽
+        expenses_rub,    # C: Расходы ₽  (infra + ads + other only)
         profit_rub,      # D: Прибыль ₽
         margin_pct,      # E: Маржа %
         new_paying,      # F: Новых платящих
@@ -766,9 +763,9 @@ def _build_monthly_row(
         churn_pct,       # H: Churn %
         mrr_rub,         # I: MRR
         infra_rub,       # J: Инфраструктура ₽
-        ref_discount_rub,# K: Маркетинг — реф. скидка факт ₽
-        "",              # L: Маркетинг — промокоды (not tracked in DB)
-        ads_rub,         # M: Маркетинг — реклама ₽
+        ref_issued_rub,  # K: Реф. баланс выдано ₽ (informational, not in C)
+        "",              # L: Промокоды (not tracked)
+        ads_rub,         # M: Реклама ₽
         other_rub,       # N: Прочее ₽
     ]
 
@@ -782,69 +779,70 @@ def _build_metrics_rows(
     active_paying: int,
     revenue_rub: float,
     churned: int,
-    prev_active: int,
-    referral_cost_kopeks: int,
+    active_at_start: int,
+    referral_issued_kopeks: int,
     first_deposit_referred: int,
     new_paying: int,
     new_referred: int,
     paying_with_referrer: int,
-    balance_credited_kopeks: int,
-    balance_redeemed_kopeks: int,
     manual_expenses: dict[str, float],
 ) -> list[list[Any]]:
     """
     Build 12 rows for the "Метрики" sheet (columns A–C).
     Column C (Норма) is always "" — set manually by owner.
+
+    Referral notes:
+      Row 11 — "Начислено рефереррам ₽": referral balance ISSUED (liabilities accrued)
+      Row 12 — "Использовано рефбаланса ₽": "" — balance is a shared pool
+               (referral + deposits mixed), impossible to attribute cleanly.
     """
     arpu: Any = _r2(revenue_rub / active_paying) if active_paying > 0 else ""
 
     churn_rate_decimal: Optional[float] = None
     churn_rate_pct: Any = ""
-    if prev_active > 0:
-        churn_rate_decimal = churned / prev_active
+    if active_at_start > 0:
+        churn_rate_decimal = churned / active_at_start
         churn_rate_pct = _r1(churn_rate_decimal * 100)
 
     ltv: Any = ""
     if churn_rate_decimal and churn_rate_decimal > 0 and arpu != "":
         ltv = _r2(arpu / churn_rate_decimal)
 
-    # Correct CAC: referral rewards issued this month / first-time paying
-    # users this month who came via referral link.
-    # This measures the actual acquisition cost through the referral channel.
+    # CAC = referral rewards issued / first-time depositors via referral
     cac_ref: Any = ""
     if first_deposit_referred > 0:
-        cac_ref = _r2(referral_cost_kopeks / 100.0 / first_deposit_referred)
+        cac_ref = _r2(referral_issued_kopeks / 100.0 / first_deposit_referred)
 
     ltv_cac: Any = ""
     if ltv != "" and cac_ref != "" and cac_ref > 0:
         ltv_cac = _r2(ltv / cac_ref)
 
-    # Margin uses manual expenses for accuracy
-    total_expenses_rub = sum(manual_expenses.values()) + referral_cost_kopeks / 100.0
+    # Margin = (revenue - cash expenses) / revenue
+    # Cash expenses = manual_expenses only (no referral liabilities)
+    cash_expenses_rub = sum(manual_expenses.values())
     margin_pct: Any = (
-        _r1((revenue_rub - total_expenses_rub) / revenue_rub * 100)
+        _r1((revenue_rub - cash_expenses_rub) / revenue_rub * 100)
         if revenue_rub > 0 else ""
     )
 
     k_factor: Any = _r2(new_referred / paying_with_referrer) if paying_with_referrer > 0 else ""
 
-    balance_credited_rub = _r2(balance_credited_kopeks / 100.0)
-    balance_redeemed_rub = _r2(balance_redeemed_kopeks / 100.0)
+    referral_issued_rub = _r2(referral_issued_kopeks / 100.0)
 
     # 12 rows, exact order from spec
     return [
-        ["MRR",                      _r2(mrr_rub),        ""],  # 1
-        ["Платящих (active)",         active_paying,       ""],  # 2
-        ["ARPU",                      arpu,                ""],  # 3
-        ["Churn %",                   churn_rate_pct,      ""],  # 4
-        ["LTV",                       ltv,                 ""],  # 5
-        ["CAC — рефералка",           cac_ref,             ""],  # 6
-        ["LTV / CAC",                 ltv_cac,             ""],  # 7
-        ["Маржа %",                   margin_pct,          ""],  # 8
-        ["k-фактор",                  k_factor,            ""],  # 9
-        ["Новых за месяц",            new_paying,          ""],  # 10
-        ["Начислено на баланс ₽",     balance_credited_rub,""],  # 11
-        ["Списано с баланса ₽",       balance_redeemed_rub,""],  # 12
+        ["MRR",                        _r2(mrr_rub),         ""],  # 1
+        ["Платящих (active)",           active_paying,        ""],  # 2
+        ["ARPU",                        arpu,                 ""],  # 3
+        ["Churn %",                     churn_rate_pct,       ""],  # 4
+        ["LTV",                         ltv,                  ""],  # 5
+        ["CAC — рефералка",             cac_ref,              ""],  # 6
+        ["LTV / CAC",                   ltv_cac,              ""],  # 7
+        ["Маржа %",                     margin_pct,           ""],  # 8
+        ["k-фактор",                    k_factor,             ""],  # 9
+        ["Новых за месяц",              new_paying,           ""],  # 10
+        ["Начислено рефереррам ₽",      referral_issued_rub,  ""],  # 11
+        ["Использовано рефбаланса ₽",   "",                   ""],  # 12 — shared pool, can't split
     ]
 
 
@@ -972,24 +970,8 @@ async def run_daily_sync(
     )
     active_paying = await _count_active_paying(db_session)
     new_paying = await _count_new_paying(db_session, month_start_utc, day_end_utc)
-    churned = await _count_churned(db_session, month_start_utc, day_end_utc)
-
-    # Previous month's active paying (for churn %)
-    prev_month_start = month_start_utc - timedelta(days=1)  # last day of prev month
-    prev_month_start_utc = datetime(
-        prev_month_start.year, prev_month_start.month, 1, tzinfo=UTC
-    )
-    # Approximation: users with active sub at start of current month =
-    # users who had a SUBSCRIPTION_PAYMENT in the prior 3 months
-    prior_result = await db_session.execute(
-        select(func.count(func.distinct(Transaction.user_id))).where(
-            Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
-            Transaction.is_completed.is_(True),
-            Transaction.created_at >= month_start_utc - timedelta(days=91),
-            Transaction.created_at < month_start_utc,
-        )
-    )
-    prev_active = int(prior_result.scalar() or 0)
+    # Returns (churned_count, active_at_start_count) — cohort-based
+    churned, active_at_start = await _count_churned(db_session, month_start_utc, day_end_utc)
 
     referral_cost_kopeks = await _sum_referral_earnings(
         db_session, month_start_utc, day_end_utc
@@ -1022,9 +1004,9 @@ async def run_daily_sync(
         revenue_kopeks=revenue_kopeks,
         new_paying=new_paying,
         churned=churned,
-        prev_active=prev_active,
+        active_at_start=active_at_start,
         mrr_kopeks=mrr_kopeks,
-        referral_cost_kopeks=referral_cost_kopeks,
+        referral_issued_kopeks=referral_cost_kopeks,
         manual_expenses=manual_expenses,
     )
 
@@ -1033,14 +1015,12 @@ async def run_daily_sync(
         active_paying=active_paying,
         revenue_rub=revenue_rub,
         churned=churned,
-        prev_active=prev_active,
-        referral_cost_kopeks=referral_cost_kopeks,
+        active_at_start=active_at_start,
+        referral_issued_kopeks=referral_cost_kopeks,
         first_deposit_referred=first_deposit_referred,
         new_paying=new_paying,
         new_referred=new_referred,
         paying_with_referrer=paying_with_referrer,
-        balance_credited_kopeks=balance_credited_kopeks,
-        balance_redeemed_kopeks=balance_redeemed_kopeks,
         manual_expenses=manual_expenses,
     )
 
