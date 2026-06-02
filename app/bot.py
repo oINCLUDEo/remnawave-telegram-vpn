@@ -60,6 +60,7 @@ from app.handlers.admin import (
     welcome_text as admin_welcome_text,
 )
 from bot.handlers import sync_handler as sheets_sync_handler
+from bot.handlers import expense_handler as sheets_expense_handler
 from app.handlers.channel_member import register_handlers as register_channel_member_handlers
 from app.handlers.gift_activation import register_handlers as register_gift_activation_handlers
 from app.handlers.stars_payments import register_stars_handlers
@@ -224,6 +225,7 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     user_polls.register_handlers(dp)
     simple_subscription.register_simple_subscription_handlers(dp)
     sheets_sync_handler.register_handlers(dp)
+    sheets_expense_handler.register_handlers(dp)
     logger.info('⭐ Зарегистрированы обработчики Telegram Stars платежей')
     logger.info('⚡ Зарегистрированы обработчики простой покупки')
     logger.info('⚡ Зарегистрированы обработчики простой подписки')
