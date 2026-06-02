@@ -76,6 +76,8 @@ services:
       - ./uploads:/app/uploads:rw
       # Логотип для сообщений
       - ./vpn_logo.png:/app/vpn_logo.png:ro
+      # Google Sheets — сервисный аккаунт (путь берётся из GOOGLE_CREDENTIALS_JSON_PATH)
+      - /etc/ulya/google_credentials.json:/etc/ulya/google_credentials.json:ro
     ports:
       - '${WEB_API_PORT:-8080}:8080'
     networks:
