@@ -38,6 +38,7 @@ from app.services.payment_verification_service import (
 from app.services.referral_contest_service import referral_contest_service
 from app.services.remnawave_sync_service import remnawave_sync_service
 from app.services.reporting_service import reporting_service
+from bot.jobs.daily_sheets_sync import sheets_sync_service
 from app.services.riopay_service import riopay_service
 from app.services.system_settings_service import bot_configuration_service
 from app.services.traffic_monitoring_service import traffic_monitoring_scheduler
@@ -398,6 +399,24 @@ async def main():
                 'Пропущено',
                 'Telegram бот не активен',
             )
+
+        async with timeline.stage(
+            'Google Sheets синхронизация',
+            '📊',
+            success_message='Сервис Sheets синхронизации готов',
+        ) as stage:
+            try:
+                await sheets_sync_service.start()
+                if sheets_sync_service.is_running():
+                    stage.log('Синхронизация запущена: ежедневно в 03:00 МСК')
+                else:
+                    stage.skip(
+                        'Sheets синхронизация не запущена '
+                        '(не заданы SPREADSHEET_ID / GOOGLE_CREDENTIALS_JSON_PATH)'
+                    )
+            except Exception as e:
+                stage.warning(f'Ошибка запуска Sheets синхронизации: {e}')
+                logger.error('❌ Ошибка запуска Sheets синхронизации', error=e)
 
         if bot:
             async with timeline.stage(
@@ -921,6 +940,12 @@ async def main():
             await reporting_service.stop()
         except Exception as e:
             logger.error('Ошибка остановки сервиса отчетов', error=e)
+
+        logger.info('ℹ️ Остановка Sheets синхронизации...')
+        try:
+            await sheets_sync_service.stop()
+        except Exception as e:
+            logger.error('Ошибка остановки Sheets синхронизации', error=e)
 
         logger.info('ℹ️ Остановка сервиса конкурсов...')
         try:
