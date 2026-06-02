@@ -17,6 +17,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     uv sync --frozen --no-dev
 
+# gspread is not yet in uv.lock — install it on top of the frozen venv.
+# Remove this line once uv.lock is regenerated with gspread included.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install gspread>=5.12.0
+
 FROM python:3.13-slim
 
 ARG VERSION="v3.45.2" # x-release-please-version
