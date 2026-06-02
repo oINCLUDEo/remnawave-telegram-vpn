@@ -24,7 +24,6 @@ import os
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Optional
 
-import gspread
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -741,7 +740,12 @@ def _write_to_sheets(
     - По месяцам:  upsert on column A value == current_month
     - Метрики:     full overwrite rows 2+
     - Инфраструктура: NOT touched
+
+    gspread is imported lazily here so the bot can start even if the library
+    is not yet installed (uv.lock not regenerated).
     """
+    import gspread  # noqa: PLC0415 — lazy import intentional
+
     gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_JSON_PATH)
     spreadsheet = gc.open_by_key(SPREADSHEET_ID)
 
