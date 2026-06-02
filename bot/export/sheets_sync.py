@@ -127,6 +127,35 @@ def _month_bounds_utc(today: date) -> tuple[datetime, datetime]:
     return month_start, tomorrow
 
 
+def _month_range_utc(ref_date: date, today: date) -> tuple[datetime, datetime]:
+    """
+    Return (month_start_utc, exclusive_end_utc) for any target month.
+
+    For the current month: end = start of tomorrow (data up to today inclusive).
+    For a past month:      end = first day of the next month (full calendar month).
+    """
+    month_start = datetime(ref_date.year, ref_date.month, 1, tzinfo=UTC)
+
+    if ref_date.year == today.year and ref_date.month == today.month:
+        # Current month — up to end of today
+        day_end = datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=1)
+    else:
+        # Past month — full month
+        if ref_date.month == 12:
+            day_end = datetime(ref_date.year + 1, 1, 1, tzinfo=UTC)
+        else:
+            day_end = datetime(ref_date.year, ref_date.month + 1, 1, tzinfo=UTC)
+
+    return month_start, day_end
+
+
+def _prev_month_date(today: date) -> date:
+    """Return the first day of the previous calendar month."""
+    if today.month == 1:
+        return date(today.year - 1, 12, 1)
+    return date(today.year, today.month - 1, 1)
+
+
 # ---------------------------------------------------------------------------
 # DB queries
 # ---------------------------------------------------------------------------
@@ -812,16 +841,22 @@ def _write_to_sheets(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-async def run_daily_sync(db_session: AsyncSession) -> None:
+async def run_daily_sync(
+    db_session: AsyncSession,
+    target_date: Optional[date] = None,
+) -> None:
     """
-    Collect financial data for the current calendar month and write it to
-    the Google Sheets spreadsheet configured via environment variables.
+    Collect financial data for the target month and write it to Google Sheets.
 
-    Steps (per spec):
-    1. Compute today / current_month
-    2. Collect data for month start → today inclusive
+    target_date — any date within the desired month.
+                  Defaults to today (= current month).
+                  Pass the first day of a past month to back-fill it.
+
+    Steps:
+    1. Compute ref_date / current_month
+    2. Collect data: current month → start..today; past month → full calendar month
     3. Write "Транзакции" — full overwrite from row 2
-    4. Write "По месяцам" — upsert on current_month
+    4. Write "По месяцам" — upsert on month key
     5. Write "Метрики" — full overwrite from row 2
     6. "Инфраструктура" — not touched
     """
@@ -831,8 +866,9 @@ async def run_daily_sync(db_session: AsyncSession) -> None:
         raise ValueError("GOOGLE_CREDENTIALS_JSON_PATH environment variable is not set")
 
     today = date.today()
-    current_month = today.strftime("%Y-%m")
-    month_start_utc, day_end_utc = _month_bounds_utc(today)
+    ref_date = target_date or today
+    current_month = ref_date.strftime("%Y-%m")
+    month_start_utc, day_end_utc = _month_range_utc(ref_date, today)
 
     logger.info(
         "Начало синхронизации Google Sheets",
@@ -851,7 +887,10 @@ async def run_daily_sync(db_session: AsyncSession) -> None:
     )
     active_paying = await _count_active_paying(db_session)
     new_paying = await _count_new_paying(db_session, month_start_utc, day_end_utc)
-    churned = await _count_churned(db_session, month_start_utc, day_end_utc, today)
+    # For churn: use last day of the synced month (not today) so past-month
+    # calculations are based on that month's end state.
+    churn_ref_day = (day_end_utc - timedelta(seconds=1)).date()
+    churned = await _count_churned(db_session, month_start_utc, day_end_utc, churn_ref_day)
 
     # Previous month's active paying (for churn %)
     prev_month_start = month_start_utc - timedelta(days=1)  # last day of prev month
