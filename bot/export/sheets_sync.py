@@ -29,6 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from sqlalchemy import case, extract
 from app.database.crud.transaction import REAL_PAYMENT_METHODS
 from app.database.models import (
     ReferralEarning,
@@ -588,6 +589,30 @@ async def _fetch_tariff_stats(
     )
     rev_by_tariff = {row.name: int(row.rev) for row in rev_result.all()}
 
+    # Per-tariff breakdown by subscription period
+    # Approximate: <45 days ≈ 30-day plan, 45-75 ≈ 60-day, ≥75 ≈ 90-day+
+    dur_days = extract("epoch", Subscription.end_date - Subscription.start_date) / 86400
+    period_result = await session.execute(
+        select(
+            Tariff.name,
+            func.count(case((dur_days < 45, 1), else_=None)).label("d30"),
+            func.count(case(
+                ((dur_days >= 45) & (dur_days < 75), 1), else_=None
+            )).label("d60"),
+            func.count(case((dur_days >= 75, 1), else_=None)).label("d90"),
+        )
+        .join(Tariff, Subscription.tariff_id == Tariff.id)
+        .where(
+            Subscription.is_trial == sql_false(),
+            Subscription.end_date >= datetime.now(UTC),
+        )
+        .group_by(Tariff.name)
+    )
+    period_by_tariff: dict[str, tuple[int, int, int]] = {
+        row.name: (int(row.d30 or 0), int(row.d60 or 0), int(row.d90 or 0))
+        for row in period_result.all()
+    }
+
     # Collect all tariff names
     all_names = set(active_by_tariff) | set(new_by_tariff) | set(rev_by_tariff)
     total_active = sum(active_by_tariff.values()) or 1
@@ -599,12 +624,14 @@ async def _fetch_tariff_stats(
         rev_kopeks = rev_by_tariff.get(name, 0)
         rev_rub = _r2(rev_kopeks / 100.0)
         share_pct = _r1(active / total_active * 100)
+        d30, d60, d90 = period_by_tariff.get(name, (0, 0, 0))
         rows.append({
             "name": name,
             "active": active,
             "new": new,
             "rev_rub": rev_rub,
             "share_pct": share_pct,
+            "d30": d30, "d60": d60, "d90": d90,
         })
 
     return sorted(rows, key=lambda x: x["active"], reverse=True)
@@ -1081,7 +1108,9 @@ def _build_tariff_rows(tariff_stats: list[dict]) -> list[list[Any]]:
             t["new"],
             t["rev_rub"],
             t["share_pct"],
-            "", "", "",  # 30/60/90 day breakdown — placeholder
+            t.get("d30", ""),
+            t.get("d60", ""),
+            t.get("d90", ""),
         ])
     return rows
 
@@ -1357,3 +1386,64 @@ async def run_daily_sync(
         month=current_month,
         transactions_written=len(transactions_rows),
     )
+
+
+async def run_full_history_sync(
+    db_session: AsyncSession,
+    progress_callback=None,
+) -> dict[str, Any]:
+    """
+    Sync every calendar month from the first payment ever recorded to the
+    current month.  Updates По месяцам and Аналитика for every month.
+    Транзакции and Метрики are left showing the LAST synced month
+    (they are always current-state snapshots).
+
+    progress_callback: async callable(month_str, done_count, total_count)
+    """
+    first_result = await db_session.execute(
+        select(func.min(Transaction.created_at)).where(
+            Transaction.is_completed.is_(True),
+            Transaction.type.in_([
+                TransactionType.DEPOSIT.value,
+                TransactionType.SUBSCRIPTION_PAYMENT.value,
+            ]),
+        )
+    )
+    first_ts = first_result.scalar()
+    if not first_ts:
+        return {"synced": 0, "months": []}
+
+    first_date = date(first_ts.year, first_ts.month, 1)
+    today = date.today()
+    current_start = date(today.year, today.month, 1)
+
+    # Build list of first-of-month dates
+    months: list[date] = []
+    d = first_date
+    while d <= current_start:
+        months.append(d)
+        if d.month == 12:
+            d = date(d.year + 1, 1, 1)
+        else:
+            d = date(d.year, d.month + 1, 1)
+
+    synced: list[str] = []
+    for i, month_date in enumerate(months):
+        try:
+            await run_daily_sync(db_session, target_date=month_date)
+            synced.append(month_date.strftime("%Y-%m"))
+        except Exception as exc:
+            logger.error(
+                "Ошибка синхронизации месяца при полном обходе",
+                month=month_date.strftime("%Y-%m"),
+                exc_info=exc,
+            )
+        if progress_callback:
+            try:
+                await progress_callback(month_date.strftime("%Y-%m"), i + 1, len(months))
+            except Exception:
+                pass
+        # Small pause to respect Google Sheets API rate limits (60 req/min)
+        await asyncio.sleep(1.2)
+
+    return {"synced": len(synced), "total": len(months), "months": synced}
