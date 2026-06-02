@@ -1162,6 +1162,9 @@ def _compute_mrr_kopeks(
 # Google Sheets write functions (synchronous, run in executor)
 # ---------------------------------------------------------------------------
 
+import time as _time_module  # noqa: E402 — needed for sync retry inside thread
+
+
 def _ensure_sheet(spreadsheet, name: str, headers: list[str]) -> Any:
     """Return worksheet by name, creating it with headers if it doesn't exist."""
     import gspread  # noqa: PLC0415
@@ -1174,6 +1177,36 @@ def _ensure_sheet(spreadsheet, name: str, headers: list[str]) -> Any:
         return ws
 
 
+def _retry_call(fn, max_attempts: int = 4, base_sleep: float = 15.0):
+    """
+    Call fn() with exponential-backoff retry on Google Sheets 429 / quota errors.
+    Sleeps: 15s, 30s, 60s between attempts.
+    """
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            msg = str(exc)
+            is_quota = "429" in msg or "Quota exceeded" in msg or "RESOURCE_EXHAUSTED" in msg
+            if is_quota and attempt < max_attempts - 1:
+                sleep_sec = base_sleep * (2 ** attempt)
+                logger.warning(
+                    "Google Sheets quota hit, retrying",
+                    attempt=attempt + 1,
+                    sleep_sec=sleep_sec,
+                )
+                _time_module.sleep(sleep_sec)
+                continue
+            raise
+
+
+def _open_spreadsheet():
+    """Open the spreadsheet (lazy import of gspread)."""
+    import gspread  # noqa: PLC0415
+    gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_JSON_PATH)
+    return gc.open_by_key(SPREADSHEET_ID)
+
+
 def _write_to_sheets(
     transactions_rows: list[list[Any]],
     monthly_row: list[Any],
@@ -1181,75 +1214,75 @@ def _write_to_sheets(
     tariff_rows: list[list[Any]],
     analytics_row: list[Any],
     current_month: str,
+    history_mode: bool = False,
+    spreadsheet: Any = None,
 ) -> None:
     """
     Perform all Google Sheets writes synchronously.
     Called via asyncio.to_thread to avoid blocking the event loop.
 
-    Strategy:
-    - Транзакции: full overwrite rows 2+
-    - По месяцам: upsert on column A == current_month
-    - Метрики:    full overwrite rows 2+
-    - По тарифам: full overwrite rows 2+ (auto-created if missing)
-    - Аналитика:  upsert on column A == current_month (auto-created if missing)
-    - Инфраструктура: NOT touched (owner-managed)
+    history_mode=True:  only update По месяцам + Аналитика (for backfill loops).
+                        Skips Транзакции, Метрики, По тарифам and formatting —
+                        this reduces API calls from ~9 to ~3 per month and avoids
+                        hitting the 60 read-requests/min quota during full history sync.
+    spreadsheet:        pass an already-open Spreadsheet object to reuse the
+                        connection across months (avoids reconnecting every call).
     """
-    import gspread  # noqa: PLC0415 — lazy import intentional
     from bot.export.sheets_format import apply_all_formatting  # noqa: PLC0415
 
-    gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_JSON_PATH)
-    spreadsheet = gc.open_by_key(SPREADSHEET_ID)
+    if spreadsheet is None:
+        spreadsheet = _retry_call(_open_spreadsheet)
 
-    # ---- Транзакции ----
-    ws_txn = spreadsheet.worksheet(SHEET_TRANSACTIONS)
-    ws_txn.batch_clear(["A2:N1000"])
-    if transactions_rows:
-        ws_txn.append_rows(transactions_rows, value_input_option="USER_ENTERED")
+    if not history_mode:
+        # ---- Транзакции ----
+        ws_txn = _retry_call(lambda: spreadsheet.worksheet(SHEET_TRANSACTIONS))
+        _retry_call(lambda: ws_txn.batch_clear(["A2:N1000"]))
+        if transactions_rows:
+            _retry_call(lambda: ws_txn.append_rows(transactions_rows, value_input_option="USER_ENTERED"))
 
-    # ---- Метрики ----
-    ws_met = spreadsheet.worksheet(SHEET_METRICS)
-    ws_met.batch_clear(["A2:C1000"])
-    if metrics_rows:
-        ws_met.append_rows(metrics_rows, value_input_option="USER_ENTERED")
+        # ---- Метрики ----
+        ws_met = _retry_call(lambda: spreadsheet.worksheet(SHEET_METRICS))
+        _retry_call(lambda: ws_met.batch_clear(["A2:C1000"]))
+        if metrics_rows:
+            _retry_call(lambda: ws_met.append_rows(metrics_rows, value_input_option="USER_ENTERED"))
 
-    # ---- По месяцам (upsert) ----
-    ws_mon = spreadsheet.worksheet(SHEET_BY_MONTHS)
-    col_a = ws_mon.col_values(1)
+    # ---- По месяцам (upsert — always) ----
+    ws_mon = _retry_call(lambda: spreadsheet.worksheet(SHEET_BY_MONTHS))
+    col_a = _retry_call(lambda: ws_mon.col_values(1))
     if current_month in col_a:
         row_index = col_a.index(current_month) + 1
-        ws_mon.update(f"A{row_index}:N{row_index}", [monthly_row])
+        _retry_call(lambda: ws_mon.update(f"A{row_index}:N{row_index}", [monthly_row]))
     else:
-        ws_mon.append_rows([monthly_row], value_input_option="USER_ENTERED")
+        _retry_call(lambda: ws_mon.append_rows([monthly_row], value_input_option="USER_ENTERED"))
 
-    # ---- По тарифам (full overwrite, auto-create) ----
-    from bot.export.sheets_sync import TARIFFS_HEADER  # noqa: PLC0415
-    ws_tar = _ensure_sheet(spreadsheet, SHEET_BY_TARIFFS, TARIFFS_HEADER)
-    ws_tar.batch_clear(["A2:H500"])
-    if tariff_rows:
-        ws_tar.append_rows(tariff_rows, value_input_option="USER_ENTERED")
-
-    # ---- Аналитика (upsert, auto-create) ----
-    from bot.export.sheets_sync import ANALYTICS_HEADER  # noqa: PLC0415
-    ws_ana = _ensure_sheet(spreadsheet, SHEET_ANALYTICS, ANALYTICS_HEADER)
-    col_a_ana = ws_ana.col_values(1)
+    # ---- Аналитика (upsert — always) ----
+    ws_ana = _retry_call(lambda: _ensure_sheet(spreadsheet, SHEET_ANALYTICS, ANALYTICS_HEADER))
+    col_a_ana = _retry_call(lambda: ws_ana.col_values(1))
     if current_month in col_a_ana:
         row_idx = col_a_ana.index(current_month) + 1
-        ws_ana.update(f"A{row_idx}:J{row_idx}", [analytics_row])
+        _retry_call(lambda: ws_ana.update(f"A{row_idx}:J{row_idx}", [analytics_row]))
     else:
-        ws_ana.append_rows([analytics_row], value_input_option="USER_ENTERED")
+        _retry_call(lambda: ws_ana.append_rows([analytics_row], value_input_option="USER_ENTERED"))
 
-    # ---- Formatting + Charts (best-effort, non-blocking errors) ----
-    try:
-        existing = [ws.title for ws in spreadsheet.worksheets()]
-        mon_rows = len(col_a) + 1
-        row_counts = {
-            "По месяцам": mon_rows,
-            "По тарифам": len(tariff_rows) + 1,
-            "Аналитика": len(col_a_ana) + 1,
-        }
-        apply_all_formatting(spreadsheet, existing, row_counts)
-    except Exception:
-        pass  # formatting failure must not abort the sync
+    if not history_mode:
+        # ---- По тарифам (full overwrite, auto-create) ----
+        ws_tar = _retry_call(lambda: _ensure_sheet(spreadsheet, SHEET_BY_TARIFFS, TARIFFS_HEADER))
+        _retry_call(lambda: ws_tar.batch_clear(["A2:H500"]))
+        if tariff_rows:
+            _retry_call(lambda: ws_tar.append_rows(tariff_rows, value_input_option="USER_ENTERED"))
+
+        # ---- Formatting + Charts (best-effort) ----
+        try:
+            existing = [ws.title for ws in spreadsheet.worksheets()]
+            mon_rows = len(col_a) + 1
+            row_counts = {
+                "По месяцам": mon_rows,
+                "По тарифам": len(tariff_rows) + 1,
+                "Аналитика": len(col_a_ana) + 1,
+            }
+            apply_all_formatting(spreadsheet, existing, row_counts)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1259,6 +1292,9 @@ def _write_to_sheets(
 async def run_daily_sync(
     db_session: AsyncSession,
     target_date: Optional[date] = None,
+    *,
+    history_mode: bool = False,
+    spreadsheet: Any = None,
 ) -> None:
     """
     Collect financial data for the target month and write it to Google Sheets.
@@ -1376,6 +1412,8 @@ async def run_daily_sync(
             tariff_rows,
             analytics_row,
             current_month,
+            history_mode,
+            spreadsheet,
         )
     except Exception as exc:
         logger.error("Ошибка записи в Google Sheets", exc_info=exc)
@@ -1427,10 +1465,26 @@ async def run_full_history_sync(
         else:
             d = date(d.year, d.month + 1, 1)
 
+    today = date.today()
+    current_start = date(today.year, today.month, 1)
+
+    # Open the spreadsheet ONCE — reusing the connection avoids hitting the
+    # "60 read requests per minute" quota that occurs when reconnecting every month.
+    spreadsheet = await asyncio.to_thread(_open_spreadsheet)
+
     synced: list[str] = []
     for i, month_date in enumerate(months):
+        is_last = month_date >= current_start
         try:
-            await run_daily_sync(db_session, target_date=month_date)
+            await run_daily_sync(
+                db_session,
+                target_date=month_date,
+                # history_mode skips Транзакции/Метрики/По тарифам/formatting
+                # (those are current-state snapshots, not needed per-month in history).
+                # The final (current) month gets a full sync with all sheets.
+                history_mode=not is_last,
+                spreadsheet=spreadsheet,
+            )
             synced.append(month_date.strftime("%Y-%m"))
         except Exception as exc:
             logger.error(
@@ -1443,7 +1497,9 @@ async def run_full_history_sync(
                 await progress_callback(month_date.strftime("%Y-%m"), i + 1, len(months))
             except Exception:
                 pass
-        # Small pause to respect Google Sheets API rate limits (60 req/min)
-        await asyncio.sleep(1.2)
+        # 2-second pause between months — keeps well within the 60 req/min quota
+        # (history_mode does ~3 requests per month → 30 months/min max throughput)
+        if not is_last:
+            await asyncio.sleep(2.0)
 
     return {"synced": len(synced), "total": len(months), "months": synced}
