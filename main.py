@@ -39,6 +39,7 @@ from app.services.referral_contest_service import referral_contest_service
 from app.services.remnawave_sync_service import remnawave_sync_service
 from app.services.reporting_service import reporting_service
 from bot.jobs.daily_sheets_sync import sheets_sync_service
+from bot.jobs.server_reminder import server_reminder_service
 from app.services.riopay_service import riopay_service
 from app.services.system_settings_service import bot_configuration_service
 from app.services.traffic_monitoring_service import traffic_monitoring_scheduler
@@ -417,6 +418,23 @@ async def main():
             except Exception as e:
                 stage.warning(f'Ошибка запуска Sheets синхронизации: {e}')
                 logger.error('❌ Ошибка запуска Sheets синхронизации', error=e)
+
+        if bot:
+            async with timeline.stage(
+                'Напоминания о серверах',
+                '🖥',
+                success_message='Сервис напоминаний готов',
+            ) as stage:
+                try:
+                    server_reminder_service.set_bot(bot)
+                    await server_reminder_service.start()
+                    if server_reminder_service.is_running():
+                        stage.log('Напоминания запущены: ежедневно в 09:00 МСК')
+                    else:
+                        stage.skip('Напоминания не запущены (бот не активен)')
+                except Exception as e:
+                    stage.warning(f'Ошибка запуска напоминаний: {e}')
+                    logger.error('❌ Ошибка запуска напоминаний о серверах', error=e)
 
         if bot:
             async with timeline.stage(
@@ -946,6 +964,12 @@ async def main():
             await sheets_sync_service.stop()
         except Exception as e:
             logger.error('Ошибка остановки Sheets синхронизации', error=e)
+
+        logger.info('ℹ️ Остановка напоминаний серверов...')
+        try:
+            await server_reminder_service.stop()
+        except Exception as e:
+            logger.error('Ошибка остановки напоминаний серверов', error=e)
 
         logger.info('ℹ️ Остановка сервиса конкурсов...')
         try:

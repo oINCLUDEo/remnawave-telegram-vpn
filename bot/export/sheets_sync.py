@@ -35,6 +35,7 @@ from app.database.models import (
     Subscription,
     SubscriptionConversion,
     SubscriptionStatus,
+    Tariff,
     Transaction,
     TransactionType,
     User,
@@ -53,6 +54,8 @@ STARS_RUB_RATE: float = float(os.getenv("SHEETS_STARS_RUB_RATE", "1.3"))
 SHEET_TRANSACTIONS = "Транзакции"
 SHEET_BY_MONTHS = "По месяцам"
 SHEET_METRICS = "Метрики"
+SHEET_BY_TARIFFS = "По тарифам"
+SHEET_ANALYTICS = "Аналитика"
 
 # Payment methods that represent real external cash inflows.
 # Imported from existing crud to stay in sync with the rest of the codebase.
@@ -522,6 +525,213 @@ async def _sum_manual_expenses(
     return result
 
 
+async def _fetch_tariff_stats(
+    session: AsyncSession,
+    month_start_utc: datetime,
+    day_end_utc: datetime,
+) -> list[dict]:
+    """
+    Per-tariff breakdown for the current month.
+    Returns list of dicts with tariff analytics.
+    """
+    from sqlalchemy.sql import false as sql_false
+
+    # Active subscriptions right now, grouped by tariff
+    active_result = await session.execute(
+        select(
+            Tariff.name,
+            func.count(func.distinct(Subscription.user_id)).label("active_count"),
+        )
+        .join(Tariff, Subscription.tariff_id == Tariff.id)
+        .where(
+            Subscription.is_trial == sql_false(),
+            Subscription.end_date >= datetime.now(UTC),
+        )
+        .group_by(Tariff.name)
+        .order_by(func.count(func.distinct(Subscription.user_id)).desc())
+    )
+    active_by_tariff = {row.name: row.active_count for row in active_result.all()}
+
+    # New subscriptions this month by tariff
+    new_result = await session.execute(
+        select(
+            Tariff.name,
+            func.count(Subscription.id).label("new_count"),
+        )
+        .join(Tariff, Subscription.tariff_id == Tariff.id)
+        .where(
+            Subscription.is_trial == sql_false(),
+            Subscription.created_at >= month_start_utc,
+            Subscription.created_at < day_end_utc,
+        )
+        .group_by(Tariff.name)
+    )
+    new_by_tariff = {row.name: row.new_count for row in new_result.all()}
+
+    # Revenue this month by tariff (SUBSCRIPTION_PAYMENT linked via description tariff name)
+    # We match via subscriptions created in same window (same user_id proximity)
+    rev_result = await session.execute(
+        select(
+            Tariff.name,
+            func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0).label("rev"),
+        )
+        .join(Subscription, Transaction.user_id == Subscription.user_id)
+        .join(Tariff, Subscription.tariff_id == Tariff.id)
+        .where(
+            Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
+            Transaction.is_completed.is_(True),
+            Transaction.created_at >= month_start_utc,
+            Transaction.created_at < day_end_utc,
+            Subscription.is_trial == sql_false(),
+        )
+        .group_by(Tariff.name)
+    )
+    rev_by_tariff = {row.name: int(row.rev) for row in rev_result.all()}
+
+    # Collect all tariff names
+    all_names = set(active_by_tariff) | set(new_by_tariff) | set(rev_by_tariff)
+    total_active = sum(active_by_tariff.values()) or 1
+
+    rows = []
+    for name in sorted(all_names):
+        active = active_by_tariff.get(name, 0)
+        new = new_by_tariff.get(name, 0)
+        rev_kopeks = rev_by_tariff.get(name, 0)
+        rev_rub = _r2(rev_kopeks / 100.0)
+        share_pct = _r1(active / total_active * 100)
+        rows.append({
+            "name": name,
+            "active": active,
+            "new": new,
+            "rev_rub": rev_rub,
+            "share_pct": share_pct,
+        })
+
+    return sorted(rows, key=lambda x: x["active"], reverse=True)
+
+
+async def _fetch_analytics_stats(
+    session: AsyncSession,
+    month_start_utc: datetime,
+    day_end_utc: datetime,
+    revenue_kopeks: int,
+    active_at_start: int,
+    churned: int,
+    new_paying: int,
+) -> dict:
+    """
+    Compute analytics metrics including month-over-month comparisons.
+    Fetches previous month data for growth calculations.
+    """
+    from sqlalchemy.sql import false as sql_false
+
+    # Active subscribers at END of this month
+    active_at_end_result = await session.execute(
+        select(func.count(func.distinct(Subscription.user_id))).where(
+            Subscription.is_trial == sql_false(),
+            Subscription.end_date >= day_end_utc,
+        )
+    )
+    active_at_end = int(active_at_end_result.scalar() or 0)
+
+    # Previous month bounds for comparison
+    prev_end = month_start_utc
+    if month_start_utc.month == 1:
+        prev_start = datetime(month_start_utc.year - 1, 12, 1, tzinfo=UTC)
+    else:
+        prev_start = datetime(month_start_utc.year, month_start_utc.month - 1, 1, tzinfo=UTC)
+
+    # Previous month revenue
+    prev_rev_result = await session.execute(
+        select(func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0)).where(
+            Transaction.is_completed.is_(True),
+            Transaction.created_at >= prev_start,
+            Transaction.created_at < prev_end,
+            Transaction.type.in_([
+                TransactionType.DEPOSIT.value,
+                TransactionType.SUBSCRIPTION_PAYMENT.value,
+            ]),
+            Transaction.payment_method.in_(list(_REAL_METHODS)),
+        )
+    )
+    prev_rev_kopeks = int(prev_rev_result.scalar() or 0)
+
+    # Previous month active at end
+    prev_active_end_result = await session.execute(
+        select(func.count(func.distinct(Subscription.user_id))).where(
+            Subscription.is_trial == sql_false(),
+            Subscription.end_date >= prev_end,
+        )
+    )
+    prev_active_end = int(prev_active_end_result.scalar() or 0)
+
+    # Growth %
+    rev_growth_pct: Any = ""
+    if prev_rev_kopeks > 0:
+        rev_growth_pct = _r1((revenue_kopeks - prev_rev_kopeks) / prev_rev_kopeks * 100)
+
+    user_growth_pct: Any = ""
+    if prev_active_end > 0:
+        user_growth_pct = _r1((active_at_end - prev_active_end) / prev_active_end * 100)
+
+    # Retention = (active_at_start - churned) / active_at_start
+    retention_pct: Any = ""
+    if active_at_start > 0:
+        retention_pct = _r1((active_at_start - churned) / active_at_start * 100)
+
+    # ARPU new vs returning (all paying in month)
+    all_paying_result = await session.execute(
+        select(func.count(func.distinct(Transaction.user_id))).where(
+            Transaction.type.in_([
+                TransactionType.DEPOSIT.value,
+                TransactionType.SUBSCRIPTION_PAYMENT.value,
+            ]),
+            Transaction.is_completed.is_(True),
+            Transaction.payment_method.in_(list(_REAL_METHODS)),
+            Transaction.created_at >= month_start_utc,
+            Transaction.created_at < day_end_utc,
+        )
+    )
+    all_paying = int(all_paying_result.scalar() or 1)
+    arpu_all: Any = _r2(revenue_kopeks / 100.0 / all_paying) if all_paying > 0 else ""
+
+    # LTV estimate: ARPU / monthly_churn_rate
+    ltv_estimate: Any = ""
+    if active_at_start > 0 and churned >= 0 and arpu_all != "":
+        monthly_churn = churned / active_at_start
+        if monthly_churn > 0:
+            ltv_estimate = _r2(arpu_all / monthly_churn)
+
+    # Conversion rate: trial → paid this month
+    conv_result = await session.execute(
+        select(func.count(SubscriptionConversion.id)).where(
+            SubscriptionConversion.converted_at >= month_start_utc,
+            SubscriptionConversion.converted_at < day_end_utc,
+        )
+    )
+    conversions = int(conv_result.scalar() or 0)
+    trial_result = await session.execute(
+        select(func.count(Subscription.id)).where(
+            Subscription.created_at >= month_start_utc,
+            Subscription.created_at < day_end_utc,
+            Subscription.is_trial.is_(True),
+        )
+    )
+    new_trials = int(trial_result.scalar() or 0)
+    conv_rate: Any = _r1(conversions / new_trials * 100) if new_trials > 0 else ""
+
+    return {
+        "active_at_end": active_at_end,
+        "rev_growth_pct": rev_growth_pct,
+        "user_growth_pct": user_growth_pct,
+        "retention_pct": retention_pct,
+        "arpu_all": arpu_all,
+        "ltv_estimate": ltv_estimate,
+        "conv_rate": conv_rate,
+        "new_trials": new_trials,
+    }
+
+
 async def _revenue_kopeks(
     session: AsyncSession,
     month_start_utc: datetime,
@@ -847,6 +1057,55 @@ def _build_metrics_rows(
 
 
 # ---------------------------------------------------------------------------
+# New sheet row builders
+# ---------------------------------------------------------------------------
+
+TARIFFS_HEADER = [
+    "Тариф", "Активных", "Новых за месяц", "Выручка ₽", "Доля %",
+    "30-дн.", "60-дн.", "90-дн.+",
+]
+
+ANALYTICS_HEADER = [
+    "Месяц", "Активных конец", "Рост выручки %", "Рост активных %",
+    "Retention %", "ARPU ₽", "LTV прогноз ₽", "Конверсия trial→paid %",
+    "Новых триалов", "Новых платящих",
+]
+
+
+def _build_tariff_rows(tariff_stats: list[dict]) -> list[list[Any]]:
+    rows = []
+    for t in tariff_stats:
+        rows.append([
+            t["name"],
+            t["active"],
+            t["new"],
+            t["rev_rub"],
+            t["share_pct"],
+            "", "", "",  # 30/60/90 day breakdown — placeholder
+        ])
+    return rows
+
+
+def _build_analytics_row(
+    current_month: str,
+    analytics: dict,
+    new_paying: int,
+) -> list[Any]:
+    return [
+        current_month,
+        analytics["active_at_end"],
+        analytics["rev_growth_pct"],
+        analytics["user_growth_pct"],
+        analytics["retention_pct"],
+        analytics["arpu_all"],
+        analytics["ltv_estimate"],
+        analytics["conv_rate"],
+        analytics["new_trials"],
+        new_paying,
+    ]
+
+
+# ---------------------------------------------------------------------------
 # MRR computation from transaction rows
 # ---------------------------------------------------------------------------
 
@@ -874,26 +1133,40 @@ def _compute_mrr_kopeks(
 # Google Sheets write functions (synchronous, run in executor)
 # ---------------------------------------------------------------------------
 
+def _ensure_sheet(spreadsheet, name: str, headers: list[str]) -> Any:
+    """Return worksheet by name, creating it with headers if it doesn't exist."""
+    import gspread  # noqa: PLC0415
+
+    try:
+        return spreadsheet.worksheet(name)
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=name, rows=500, cols=len(headers) + 2)
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+        return ws
+
+
 def _write_to_sheets(
     transactions_rows: list[list[Any]],
     monthly_row: list[Any],
     metrics_rows: list[list[Any]],
+    tariff_rows: list[list[Any]],
+    analytics_row: list[Any],
     current_month: str,
 ) -> None:
     """
     Perform all Google Sheets writes synchronously.
     Called via asyncio.to_thread to avoid blocking the event loop.
 
-    Strategy per sheet:
+    Strategy:
     - Транзакции: full overwrite rows 2+
-    - По месяцам:  upsert on column A value == current_month
-    - Метрики:     full overwrite rows 2+
-    - Инфраструктура: NOT touched
-
-    gspread is imported lazily here so the bot can start even if the library
-    is not yet installed (uv.lock not regenerated).
+    - По месяцам: upsert on column A == current_month
+    - Метрики:    full overwrite rows 2+
+    - По тарифам: full overwrite rows 2+ (auto-created if missing)
+    - Аналитика:  upsert on column A == current_month (auto-created if missing)
+    - Инфраструктура: NOT touched (owner-managed)
     """
     import gspread  # noqa: PLC0415 — lazy import intentional
+    from bot.export.sheets_format import apply_all_formatting  # noqa: PLC0415
 
     gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_JSON_PATH)
     spreadsheet = gc.open_by_key(SPREADSHEET_ID)
@@ -912,12 +1185,42 @@ def _write_to_sheets(
 
     # ---- По месяцам (upsert) ----
     ws_mon = spreadsheet.worksheet(SHEET_BY_MONTHS)
-    col_a = ws_mon.col_values(1)  # 1-based column index
+    col_a = ws_mon.col_values(1)
     if current_month in col_a:
-        row_index = col_a.index(current_month) + 1  # convert to 1-based row number
+        row_index = col_a.index(current_month) + 1
         ws_mon.update(f"A{row_index}:N{row_index}", [monthly_row])
     else:
         ws_mon.append_rows([monthly_row], value_input_option="USER_ENTERED")
+
+    # ---- По тарифам (full overwrite, auto-create) ----
+    from bot.export.sheets_sync import TARIFFS_HEADER  # noqa: PLC0415
+    ws_tar = _ensure_sheet(spreadsheet, SHEET_BY_TARIFFS, TARIFFS_HEADER)
+    ws_tar.batch_clear(["A2:H500"])
+    if tariff_rows:
+        ws_tar.append_rows(tariff_rows, value_input_option="USER_ENTERED")
+
+    # ---- Аналитика (upsert, auto-create) ----
+    from bot.export.sheets_sync import ANALYTICS_HEADER  # noqa: PLC0415
+    ws_ana = _ensure_sheet(spreadsheet, SHEET_ANALYTICS, ANALYTICS_HEADER)
+    col_a_ana = ws_ana.col_values(1)
+    if current_month in col_a_ana:
+        row_idx = col_a_ana.index(current_month) + 1
+        ws_ana.update(f"A{row_idx}:J{row_idx}", [analytics_row])
+    else:
+        ws_ana.append_rows([analytics_row], value_input_option="USER_ENTERED")
+
+    # ---- Formatting + Charts (best-effort, non-blocking errors) ----
+    try:
+        existing = [ws.title for ws in spreadsheet.worksheets()]
+        mon_rows = len(col_a) + 1
+        row_counts = {
+            "По месяцам": mon_rows,
+            "По тарифам": len(tariff_rows) + 1,
+            "Аналитика": len(col_a_ana) + 1,
+        }
+        apply_all_formatting(spreadsheet, existing, row_counts)
+    except Exception:
+        pass  # formatting failure must not abort the sync
 
 
 # ---------------------------------------------------------------------------
@@ -989,6 +1292,13 @@ async def run_daily_sync(
     manual_expenses = await _sum_manual_expenses(
         db_session, month_start_utc, day_end_utc
     )
+    tariff_stats = await _fetch_tariff_stats(
+        db_session, month_start_utc, day_end_utc
+    )
+    analytics_stats = await _fetch_analytics_stats(
+        db_session, month_start_utc, day_end_utc,
+        revenue_kopeks, active_at_start, churned, new_paying,
+    )
 
     # --- Build rows ---
     transactions_rows = [
@@ -1024,6 +1334,9 @@ async def run_daily_sync(
         manual_expenses=manual_expenses,
     )
 
+    tariff_rows = _build_tariff_rows(tariff_stats)
+    analytics_row = _build_analytics_row(current_month, analytics_stats, new_paying)
+
     # --- Write to sheets (sync I/O → thread) ---
     try:
         await asyncio.to_thread(
@@ -1031,6 +1344,8 @@ async def run_daily_sync(
             transactions_rows,
             monthly_row,
             metrics_rows,
+            tariff_rows,
+            analytics_row,
             current_month,
         )
     except Exception as exc:
