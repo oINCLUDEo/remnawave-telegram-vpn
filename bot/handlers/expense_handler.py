@@ -17,7 +17,7 @@ from datetime import date
 
 import structlog
 from aiogram import Dispatcher, F, types
-from aiogram.filters import Command
+
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -56,7 +56,7 @@ def _category_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=label, callback_data=f"exp_cat_{key}")]
             for key, label in CATEGORIES.items()
         ]
-        + [[InlineKeyboardButton(text="❌ Отмена", callback_data="exp_cancel")]]
+        + [[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_submenu_system")]]
     )
 
 
@@ -109,16 +109,17 @@ def _parse_date(text: str) -> date | None:
 
 @admin_required
 @error_handler
-async def cmd_add_expense(
-    message: types.Message, db_user: User, db: AsyncSession, state: FSMContext
+async def btn_add_expense(
+    callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext
 ) -> None:
     await state.clear()
     await state.set_state(ExpenseStates.category)
-    await message.answer(
+    await callback.message.edit_text(
         "💸 <b>Добавить расход</b>\n\nВыберите категорию:",
         parse_mode="HTML",
         reply_markup=_category_keyboard(),
     )
+    await callback.answer()
 
 
 @admin_required
@@ -284,7 +285,14 @@ async def cancel_expense(
     callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext
 ) -> None:
     await state.clear()
-    await callback.message.edit_text("❌ Отменено.")
+    await callback.message.edit_text(
+        "❌ Отменено.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text="◀️ Назад", callback_data="admin_submenu_system")
+            ]]
+        ),
+    )
     await callback.answer()
 
 
@@ -293,7 +301,7 @@ async def cancel_expense(
 # ---------------------------------------------------------------------------
 
 def register_handlers(dp: Dispatcher) -> None:
-    dp.message.register(cmd_add_expense, Command("add_expense"))
+    dp.callback_query.register(btn_add_expense, F.data == "admin_add_expense")
     dp.callback_query.register(choose_category, F.data.startswith("exp_cat_"), ExpenseStates.category)
     dp.message.register(enter_subcategory, ExpenseStates.subcategory)
     dp.message.register(enter_amount, ExpenseStates.amount)

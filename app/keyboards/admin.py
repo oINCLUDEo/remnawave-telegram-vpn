@@ -248,6 +248,7 @@ def get_admin_system_submenu_keyboard(language: str = 'ru') -> InlineKeyboardMar
             [InlineKeyboardButton(text=_t(texts, 'ADMIN_SYSTEM_LOGS', '🧾 Логи'), callback_data='admin_system_logs')],
             [InlineKeyboardButton(text=texts.t('ADMIN_REPORTS', '📊 Отчеты'), callback_data='admin_reports')],
             [InlineKeyboardButton(text='📊 Google Sheets', callback_data='admin_sheets_sync')],
+            [InlineKeyboardButton(text='💸 Добавить расход', callback_data='admin_add_expense')],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_panel')],
         ]
     )
