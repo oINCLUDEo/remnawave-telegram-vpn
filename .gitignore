@@ -36,6 +36,8 @@
 
 !app/
 !app/**
+!bot/
+!bot/**
 !tests/
 !tests/**
 !migrations/
