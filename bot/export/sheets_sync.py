@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Optional
 
@@ -74,6 +75,38 @@ def _r1(v: float) -> float:
 def _kopeks_rub(kopeks: int) -> float:
     """Absolute kopeks → rubles, 2 dp."""
     return _r2(abs(kopeks) / 100.0)
+
+
+def _extract_period_months(description: Optional[str]) -> Optional[float]:
+    """
+    Extract period in months from transaction description.
+    Looks for the pattern 'на N дней' which is always present in subscription
+    descriptions like 'Покупка тарифа X на 30 дней'.
+    This is more reliable than (end_date - start_date) because renewals extend
+    end_date cumulatively, making the date-diff much larger than the actual
+    paid period.
+    """
+    if not description:
+        return None
+    match = re.search(r'на\s+(\d+)\s+дней', description)
+    if match:
+        days = int(match.group(1))
+        if days > 0:
+            return _r2(days / 30.0)
+    return None
+
+
+def _extract_stars_count(description: Optional[str]) -> Optional[int]:
+    """
+    Extract Telegram Stars count from deposit description.
+    Matches patterns like 'Пополнение через Telegram Stars (8 ⭐)'.
+    """
+    if not description:
+        return None
+    match = re.search(r'\((\d+)\s*[⭐★]\)', description)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def _detect_method(payment_method: Optional[str]) -> str:
@@ -501,14 +534,13 @@ def _build_transaction_row(
     # F: Сумма ₽ — empty for Stars and Balance rows; filled for RUB
     col_f: Any = "" if (is_stars or is_balance) else amount_rub
 
-    # G: Stars — stars_count is NOT stored as a separate field in this DB.
-    # It was encoded in the description string at payment time, but parsing
-    # that text is fragile. Per spec: empty string when not available.
-    col_g: Any = ""
+    # G: Stars count — extracted from description when available.
+    # Example description: "Пополнение через Telegram Stars (8 ⭐)"
+    stars_count = _extract_stars_count(txn.description) if is_stars else None
+    col_g: Any = stars_count if stars_count is not None else ""
 
     # H: ₽ итого — always filled.
-    # For Stars: amount_kopeks already stores the ruble-equivalent at payment time
-    # (converted by the Stars payment service, not by us).
+    # For Stars: amount_kopeks already stores the ruble-equivalent at payment time.
     col_h: Any = amount_rub
 
     # C/D: Category / Subcategory
@@ -532,7 +564,12 @@ def _build_transaction_row(
     if txn_type == TransactionType.SUBSCRIPTION_PAYMENT.value:
         sub = _best_subscription(txn, subs_by_user)
 
-    period_m = _period_months(sub)
+    # Period: prefer description-based extraction ("на 30 дней") as it reflects
+    # the actual purchased period, not the cumulative subscription window.
+    period_m = _extract_period_months(txn.description)
+    if period_m is None and txn_type == TransactionType.SUBSCRIPTION_PAYMENT.value:
+        period_m = _period_months(sub)  # fallback to date diff
+
     tariff_name = (sub.tariff.name if sub and sub.tariff else "") if sub else ""
 
     # I: Период мес.
