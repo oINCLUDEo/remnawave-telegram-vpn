@@ -1,7 +1,0 @@
-# TLS termination for the mobile app API.
-# Caddy obtains and renews the Let's Encrypt certificate automatically —
-# requires the api.ulya.space A-record to point at this server and
-# ports 80/443 to be reachable from the internet.
-api.ulya.space {
-	reverse_proxy bot:8080
-}
