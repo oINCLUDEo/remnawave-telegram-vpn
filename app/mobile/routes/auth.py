@@ -50,7 +50,16 @@ async def _resolve_user_data(
 ) -> MobileAuthResponse:
     """Look up or create the user in the DB and return full auth response."""
     try:
+        import hashlib
+
+        from app.cabinet.auth.jwt_handler import (
+            create_access_token,
+            create_refresh_token,
+            get_refresh_token_expires_at,
+        )
+        from app.database.crud.rbac import UserRoleCRUD
         from app.database.crud.user import create_user, get_user_by_telegram_id
+        from app.database.models import CabinetRefreshToken
 
         db_url = settings.get_database_url()
         engine = create_async_engine(db_url, echo=False)
@@ -85,6 +94,39 @@ async def _resolve_user_data(
             if subscription and getattr(subscription, 'subscription_url', None):
                 subscription_url = subscription.subscription_url
 
+            # Issue a Cabinet JWT pair so the mobile app can call /cabinet/*
+            # endpoints (referral, subscription) with proper Bearer auth —
+            # the deep-link flow is the authoritative proof of telegram_id.
+            # Mirrors _create_auth_response in app/cabinet/routes/auth.py.
+            access_token: str | None = None
+            refresh_token: str | None = None
+            expires_in: int | None = None
+            try:
+                perms, role_names, role_level = await UserRoleCRUD.get_user_permissions(db, user.id)
+                access_token = create_access_token(
+                    user.id,
+                    user.telegram_id,
+                    permissions=perms,
+                    roles=role_names,
+                    role_level=role_level,
+                )
+                refresh_token = create_refresh_token(user.id)
+                expires_in = settings.get_cabinet_access_token_expire_minutes() * 60
+                db.add(
+                    CabinetRefreshToken(
+                        user_id=user.id,
+                        token_hash=hashlib.sha256(refresh_token.encode()).hexdigest(),
+                        device_info='mobile-app',
+                        expires_at=get_refresh_token_expires_at(),
+                    )
+                )
+                await db.commit()
+            except Exception as exc:  # noqa: BLE001 — tokens are an enhancement, not a hard dependency
+                logger.error('Failed to issue cabinet tokens for mobile auth', error=exc)
+                access_token = None
+                refresh_token = None
+                expires_in = None
+
         await engine.dispose()
 
     except HTTPException:
@@ -106,6 +148,9 @@ async def _resolve_user_data(
         ),
         is_new_user=is_new_user,
         has_subscription=bool(subscription_url),
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=expires_in,
     )
 
 
