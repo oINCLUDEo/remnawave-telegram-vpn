@@ -47,6 +47,28 @@ class TelegramOIDCAuthRequest(BaseModel):
     )
 
 
+class TelegramOIDCCodeRequest(BaseModel):
+    """Request for Telegram OIDC authentication via Authorization Code flow.
+
+    Used by native mobile apps: the app obtains an authorization ``code`` from
+    oauth.telegram.org (custom-scheme redirect, no browser bridge) and sends it
+    here; the backend exchanges it for an id_token at the token endpoint using
+    the confidential client secret, then logs the user in.
+    """
+
+    code: str = Field(..., max_length=2048, description='Authorization code from oauth.telegram.org')
+    redirect_uri: str = Field(..., max_length=512, description='Redirect URI used in the authorize request (must match)')
+    code_verifier: str | None = Field(
+        None, min_length=43, max_length=128, description='PKCE code_verifier (if PKCE was used)'
+    )
+    campaign_slug: str | None = Field(
+        None, min_length=1, max_length=64, pattern=r'^[a-zA-Z0-9_-]+$', description='Campaign slug from web link'
+    )
+    referral_code: str | None = Field(
+        None, max_length=32, pattern=r'^[a-zA-Z0-9_-]+$', description='Referral code of inviter'
+    )
+
+
 class EmailRegisterRequest(BaseModel):
     """Request to register/link email to existing Telegram account."""
 

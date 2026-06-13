@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from datetime import UTC, datetime
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -83,6 +84,7 @@ from ..schemas.auth import (
     RegisterResponse,
     TelegramAuthRequest,
     TelegramOIDCAuthRequest,
+    TelegramOIDCCodeRequest,
     TelegramWidgetAuthRequest,
     TokenResponse,
     UserResponse,
@@ -837,6 +839,106 @@ async def auth_telegram_oidc(
         response.user = _user_to_response(user)
 
     return response
+
+
+@router.post('/telegram/oidc/code', response_model=AuthResponse)
+async def auth_telegram_oidc_code(
+    request: TelegramOIDCCodeRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Authenticate using the Telegram OIDC Authorization Code flow.
+
+    Designed for native mobile apps. The app gets an authorization ``code`` from
+    oauth.telegram.org delivered straight to its custom-scheme redirect URI
+    (no browser bridge needed). We exchange the code for an id_token here —
+    server-side, because the token endpoint requires the confidential client
+    secret — then reuse the normal OIDC login path.
+    """
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'telegram_oidc', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
+    # Resolve client credentials (DB settings first, then env), mirroring
+    # auth_telegram_oidc.
+    oidc_enabled_val = await get_setting_value(db, 'TELEGRAM_OIDC_ENABLED')
+    oidc_client_id_val = await get_setting_value(db, 'TELEGRAM_OIDC_CLIENT_ID')
+    oidc_client_secret_val = await get_setting_value(db, 'TELEGRAM_OIDC_CLIENT_SECRET')
+    oidc_client_id = oidc_client_id_val or settings.TELEGRAM_OIDC_CLIENT_ID
+    oidc_client_secret = oidc_client_secret_val or settings.TELEGRAM_OIDC_CLIENT_SECRET
+    oidc_enabled = (
+        oidc_enabled_val.lower() == 'true' if oidc_enabled_val is not None else settings.TELEGRAM_OIDC_ENABLED
+    ) and bool(oidc_client_id)
+
+    if not oidc_enabled or not oidc_client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Telegram OIDC is not configured',
+        )
+
+    # Exchange the authorization code for tokens at the Telegram token endpoint.
+    token_form = {
+        'grant_type': 'authorization_code',
+        'code': request.code,
+        'redirect_uri': request.redirect_uri,
+        'client_id': oidc_client_id,
+        'client_secret': oidc_client_secret,
+    }
+    if request.code_verifier:
+        token_form['code_verifier'] = request.code_verifier
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_resp = await client.post(
+                'https://oauth.telegram.org/token',
+                data=token_form,
+                headers={'Accept': 'application/json'},
+            )
+    except httpx.HTTPError as exc:
+        logger.error('Telegram OIDC token exchange transport error', error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to reach Telegram token endpoint',
+        ) from exc
+
+    if token_resp.status_code != 200:
+        logger.warning(
+            'Telegram OIDC token exchange rejected',
+            status=token_resp.status_code,
+            body=token_resp.text[:300],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid or expired authorization code',
+        )
+
+    try:
+        token_data = token_resp.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Malformed token response from Telegram',
+        ) from exc
+
+    id_token = token_data.get('id_token')
+    if not id_token:
+        logger.warning('Telegram OIDC token response missing id_token')
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Telegram did not return an id_token',
+        )
+
+    # Reuse the exact same validation + login path as the popup flow.
+    oidc_req = TelegramOIDCAuthRequest(
+        id_token=id_token,
+        campaign_slug=request.campaign_slug,
+        referral_code=request.referral_code,
+    )
+    return await auth_telegram_oidc(oidc_req, raw_request, db)
 
 
 @router.post('/email/register')
