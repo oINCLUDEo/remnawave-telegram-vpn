@@ -29,7 +29,7 @@ def calculate_prorated_price(monthly_price: int, end_date: datetime, min_charge_
     days_remaining = max(1, (end_date - now).days)
     days_to_charge = max(min_charge_days, days_remaining)
 
-    total_price = monthly_price * days_to_charge // 30
+    total_price = (monthly_price * days_to_charge // 30 + 50) // 100 * 100
     if monthly_price > 0:
         total_price = max(100, total_price)  # Минимум 1 рубль
 

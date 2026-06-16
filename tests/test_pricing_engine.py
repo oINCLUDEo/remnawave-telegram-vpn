@@ -22,6 +22,23 @@ def test_renewal_pricing_is_frozen():
         p.final_total = 0
 
 
+class TestRoundToRubles:
+    def test_already_whole(self):
+        assert PricingEngine.round_to_rubles(10000) == 10000
+
+    def test_rounds_down_below_half(self):
+        assert PricingEngine.round_to_rubles(6930) == 6900
+
+    def test_rounds_up_at_half(self):
+        assert PricingEngine.round_to_rubles(6950) == 7000
+
+    def test_rounds_up_above_half(self):
+        assert PricingEngine.round_to_rubles(6970) == 7000
+
+    def test_zero(self):
+        assert PricingEngine.round_to_rubles(0) == 0
+
+
 class TestApplyDiscount:
     def test_basic_discount(self):
         assert PricingEngine.apply_discount(10000, 20) == 8000
@@ -38,8 +55,9 @@ class TestApplyDiscount:
     def test_over_100_clamped(self):
         assert PricingEngine.apply_discount(10000, 150) == 0
 
-    def test_integer_floor_division(self):
-        assert PricingEngine.apply_discount(99900, 30) == 69930
+    def test_rounds_to_whole_rubles(self):
+        # 99900 * 30% = 29970 discount → 69930 kopeks → rounds to 69900 (699 rubles)
+        assert PricingEngine.apply_discount(99900, 30) == 69900
 
 
 class TestStackedDiscounts:

@@ -102,12 +102,17 @@ class PricingEngine:
     """Unified pricing engine for all subscription renewal calculations."""
 
     @staticmethod
+    def round_to_rubles(kopeks: int) -> int:
+        """Round kopek amount to nearest whole ruble (100 kopeks), half-up."""
+        return (kopeks + 50) // 100 * 100
+
+    @staticmethod
     def apply_discount(amount_kopeks: int, percent: int) -> int:
-        """Apply percentage discount with integer arithmetic.
-        Clamps percent to [0, 100]. Uses floor division."""
+        """Apply percentage discount rounded to the nearest whole ruble.
+        Clamps percent to [0, 100]."""
         percent = max(0, min(100, percent))
         discount = amount_kopeks * percent // 100
-        return amount_kopeks - discount
+        return PricingEngine.round_to_rubles(amount_kopeks - discount)
 
     @staticmethod
     def apply_stacked_discounts(
