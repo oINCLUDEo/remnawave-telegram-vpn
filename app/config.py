@@ -1528,6 +1528,10 @@ class Settings(BaseSettings):
         username = bot_username or self.get_bot_username() or 'bot'
         return f'https://t.me/{username}?start={safe_code}'
 
+    def get_cabinet_home_url(self) -> str | None:
+        """Return the configured cabinet URL, or None if not set up."""
+        return self._normalized_cabinet_url()
+
     def get_cabinet_referral_link(self, referral_code: str) -> str | None:
         """Return the cabinet referral link, or None if cabinet is not configured."""
         cabinet_url = self._normalized_cabinet_url()

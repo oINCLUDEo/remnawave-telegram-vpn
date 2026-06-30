@@ -38,7 +38,7 @@ class ButtonSectionConfig(BaseModel):
 
 
 class ButtonStylesResponse(BaseModel):
-    """Full button styles configuration (all 7 sections)."""
+    """Full button styles configuration (all sections)."""
 
     home: ButtonSectionConfig = ButtonSectionConfig()
     subscription: ButtonSectionConfig = ButtonSectionConfig()
@@ -47,6 +47,8 @@ class ButtonStylesResponse(BaseModel):
     support: ButtonSectionConfig = ButtonSectionConfig()
     info: ButtonSectionConfig = ButtonSectionConfig()
     admin: ButtonSectionConfig = ButtonSectionConfig()
+    language: ButtonSectionConfig = ButtonSectionConfig()
+    cabinet: ButtonSectionConfig = ButtonSectionConfig()
 
 
 MAX_LABEL_LENGTH = 100
@@ -71,6 +73,8 @@ class ButtonStylesUpdate(BaseModel):
     support: ButtonSectionUpdate | None = None
     info: ButtonSectionUpdate | None = None
     admin: ButtonSectionUpdate | None = None
+    language: ButtonSectionUpdate | None = None
+    cabinet: ButtonSectionUpdate | None = None
 
 
 # ---- Helpers ---------------------------------------------------------------

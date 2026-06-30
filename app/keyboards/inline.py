@@ -358,6 +358,46 @@ def _is_support_enabled() -> bool:
         return settings.SUPPORT_MENU_ENABLED
 
 
+def _styled_button(
+    text: str,
+    section: str,
+    language: str,
+    *,
+    callback_data: str | None = None,
+    url: str | None = None,
+) -> InlineKeyboardButton | None:
+    """Build a classic-menu button with admin-configurable style/custom emoji.
+
+    Reuses the same per-section config (``button_styles_cache``) that already
+    drives Cabinet-mode buttons, so the same admin screen ("Настройки системы"
+    -> "Кнопки") controls both menu modes. Returns ``None`` when the section
+    is explicitly disabled, so the caller can skip the button entirely.
+    """
+    from app.utils.button_styles_cache import get_cached_button_styles
+    from app.utils.miniapp_buttons import _resolve_style
+
+    section_cfg = get_cached_button_styles().get(section, {})
+    if not section_cfg.get('enabled', True):
+        return None
+
+    label = section_cfg.get('labels', {}).get(language, '') or text
+    style = _resolve_style(section_cfg.get('style'))
+    icon_custom_emoji_id = section_cfg.get('icon_custom_emoji_id') or None
+
+    kwargs: dict = {}
+    if url:
+        kwargs['url'] = url
+    else:
+        kwargs['callback_data'] = callback_data
+
+    return InlineKeyboardButton(
+        text=label,
+        style=style,
+        icon_custom_emoji_id=icon_custom_emoji_id,
+        **kwargs,
+    )
+
+
 def _build_cabinet_main_menu_keyboard(
     language: str,
     texts,
@@ -659,7 +699,9 @@ def get_main_menu_keyboard(
             if settings.is_multi_tariff_enabled()
             else texts.MENU_SUBSCRIPTION
         )
-        paired_buttons.append(InlineKeyboardButton(text=sub_btn_text, callback_data='menu_subscription'))
+        sub_button = _styled_button(sub_btn_text, 'subscription', language, callback_data='menu_subscription')
+        if sub_button:
+            paired_buttons.append(sub_button)
 
         # Добавляем кнопку докупки трафика для лимитированных подписок
         # В режиме тарифов проверяем tariff_id (детальная проверка в хендлере)
@@ -680,7 +722,17 @@ def get_main_menu_keyboard(
                 )
             )
 
-    keyboard.append([InlineKeyboardButton(text=balance_button_text, callback_data='menu_balance')])
+    balance_button = _styled_button(balance_button_text, 'balance', language, callback_data='menu_balance')
+    if balance_button:
+        keyboard.append([balance_button])
+
+    cabinet_url = settings.get_cabinet_home_url()
+    if cabinet_url:
+        cabinet_button = _styled_button(
+            texts.t('MENU_CABINET', '🌐 Онлайн-кабинет'), 'cabinet', language, url=cabinet_url
+        )
+        if cabinet_button:
+            keyboard.append([cabinet_button])
 
     show_trial = not has_had_paid_subscription and not has_active_subscription
 
@@ -730,7 +782,11 @@ def get_main_menu_keyboard(
 
     # Добавляем кнопку рефералов, только если программа включена
     if settings.is_referral_program_enabled():
-        paired_buttons.append(InlineKeyboardButton(text=texts.MENU_REFERRALS, callback_data='menu_referrals'))
+        referral_button = _styled_button(
+            texts.MENU_REFERRALS, 'referral', language, callback_data='menu_referrals'
+        )
+        if referral_button:
+            paired_buttons.append(referral_button)
 
     # Добавляем кнопку конкурсов
     if settings.CONTESTS_ENABLED and settings.CONTESTS_BUTTON_VISIBLE:
@@ -746,21 +802,24 @@ def get_main_menu_keyboard(
         support_enabled = settings.SUPPORT_MENU_ENABLED
 
     if support_enabled:
-        paired_buttons.append(InlineKeyboardButton(text=texts.MENU_SUPPORT, callback_data='menu_support'))
+        support_button = _styled_button(texts.MENU_SUPPORT, 'support', language, callback_data='menu_support')
+        if support_button:
+            paired_buttons.append(support_button)
 
     # Добавляем кнопку активации
     if settings.ACTIVATE_BUTTON_VISIBLE:
         paired_buttons.append(InlineKeyboardButton(text=settings.ACTIVATE_BUTTON_TEXT, callback_data='activate_button'))
 
-    paired_buttons.append(
-        InlineKeyboardButton(
-            text=texts.t('MENU_INFO', 'ℹ️ Инфо'),
-            callback_data='menu_info',
-        )
+    info_button = _styled_button(
+        texts.t('MENU_INFO', 'ℹ️ Инфо'), 'info', language, callback_data='menu_info'
     )
+    if info_button:
+        paired_buttons.append(info_button)
 
     if settings.is_language_selection_enabled():
-        paired_buttons.append(InlineKeyboardButton(text=texts.MENU_LANGUAGE, callback_data='menu_language'))
+        lang_button = _styled_button(texts.MENU_LANGUAGE, 'language', language, callback_data='menu_language')
+        if lang_button:
+            paired_buttons.append(lang_button)
 
     for i in range(0, len(paired_buttons), 2):
         row = paired_buttons[i : i + 2]
@@ -772,7 +831,9 @@ def get_main_menu_keyboard(
     if is_admin:
         if settings.DEBUG:
             logger.debug('DEBUG KEYBOARD: Админ кнопка ДОБАВЛЕНА')
-        keyboard.append([InlineKeyboardButton(text=texts.MENU_ADMIN, callback_data='admin_panel')])
+        admin_button = _styled_button(texts.MENU_ADMIN, 'admin', language, callback_data='admin_panel')
+        if admin_button:
+            keyboard.append([admin_button])
     elif settings.DEBUG:
         logger.debug('DEBUG KEYBOARD: Админ кнопка НЕ добавлена')
     # Moderator access (limited support panel)
