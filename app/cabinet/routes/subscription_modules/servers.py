@@ -33,7 +33,11 @@ async def get_available_countries(
 ) -> dict[str, Any]:
     """Get available countries/servers for the user."""
     from app.database.crud.server_squad import get_available_server_squads
-    from app.utils.pricing_utils import apply_percentage_discount, calculate_prorated_price
+    from app.utils.pricing_utils import (
+        apply_percentage_discount,
+        balance_covers_price,
+        calculate_prorated_price,
+    )
 
     subscription = await resolve_subscription(db, user, subscription_id)
 
@@ -109,7 +113,11 @@ async def update_countries(
     from app.database.crud.transaction import create_transaction
     from app.database.crud.user import subtract_user_balance
     from app.database.models import TransactionType
-    from app.utils.pricing_utils import apply_percentage_discount, calculate_prorated_price
+    from app.utils.pricing_utils import (
+        apply_percentage_discount,
+        balance_covers_price,
+        calculate_prorated_price,
+    )
 
     subscription = await resolve_subscription(db, user, subscription_id)
 
@@ -195,7 +203,7 @@ async def update_countries(
             removed_names.append(server.display_name)
 
     # Check balance
-    if total_cost > 0 and user.balance_kopeks < total_cost:
+    if total_cost > 0 and not balance_covers_price(user.balance_kopeks, total_cost):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f'Insufficient balance. Need {total_cost / 100:.2f} RUB, have {user.balance_kopeks / 100:.2f} RUB',

@@ -94,6 +94,7 @@ from app.services.tribute_service import TributeService
 from app.utils.currency_converter import currency_converter
 from app.utils.pricing_utils import (
     apply_percentage_discount,
+    balance_covers_price,
     calculate_prorated_price,
     format_period_description,
 )
@@ -5332,7 +5333,7 @@ async def submit_subscription_renewal_endpoint(
         )
 
     if not method:
-        if final_total > 0 and balance_kopeks < final_total:
+        if final_total > 0 and not balance_covers_price(balance_kopeks, final_total):
             missing = final_total - balance_kopeks
             raise HTTPException(
                 status.HTTP_402_PAYMENT_REQUIRED,
@@ -6566,7 +6567,7 @@ async def purchase_tariff_endpoint(
     discount_percent = group_pcts.get('period', 0)
 
     # Проверяем баланс (при 100% скидке — пропускаем)
-    if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
+    if price_kopeks > 0 and not balance_covers_price(user.balance_kopeks, price_kopeks):
         missing = price_kopeks - user.balance_kopeks
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -6911,7 +6912,7 @@ async def switch_tariff_endpoint(
 
     # Списываем доплату если апгрейд
     if upgrade_cost > 0:
-        if user.balance_kopeks < upgrade_cost:
+        if not balance_covers_price(user.balance_kopeks, upgrade_cost):
             missing = upgrade_cost - user.balance_kopeks
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -7197,7 +7198,7 @@ async def purchase_traffic_topup_endpoint(
     )
 
     # Проверяем баланс (при 100% скидке — пропускаем)
-    if final_price > 0 and user.balance_kopeks < final_price:
+    if final_price > 0 and not balance_covers_price(user.balance_kopeks, final_price):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
@@ -7350,7 +7351,7 @@ async def toggle_daily_subscription_pause_endpoint(
 
     # Если снимаем с паузы, проверяем баланс и списываем оплату
     if not new_paused_state:
-        if daily_price > 0 and user.balance_kopeks < daily_price:
+        if daily_price > 0 and not balance_covers_price(user.balance_kopeks, daily_price):
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail={

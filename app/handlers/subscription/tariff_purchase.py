@@ -29,6 +29,7 @@ from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.utils.decorators import error_handler
 from app.utils.formatting import format_period, format_price_kopeks, format_traffic
+from app.utils.pricing_utils import balance_covers_price
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 
 
@@ -536,11 +537,11 @@ async def format_custom_tariff_preview(
 
 💳 Ваш баланс: {format_price_kopeks(user_balance)}"""
 
-    if user_balance < total_price:
+    if not balance_covers_price(user_balance, total_price):
         missing = total_price - user_balance
         text += f'\n⚠️ <b>Не хватает: {format_price_kopeks(missing)}</b>'
     else:
-        text += f'\nПосле оплаты: {format_price_kopeks(user_balance - total_price)}'
+        text += f'\nПосле оплаты: {format_price_kopeks(max(0, user_balance - total_price))}'
 
     return text
 
@@ -642,7 +643,7 @@ async def select_tariff(
         user_balance = db_user.balance_kopeks or 0
         traffic = format_traffic(tariff.traffic_limit_gb)
 
-        if user_balance >= daily_price:
+        if balance_covers_price(user_balance, daily_price):
             await callback.message.edit_text(
                 f'✅ <b>Подтверждение покупки</b>\n\n'
                 f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
@@ -935,7 +936,7 @@ async def handle_custom_confirm(
 
     # Проверяем баланс (при 100% скидке — пропускаем)
     user_balance = db_user.balance_kopeks or 0
-    if total_price > 0 and user_balance < total_price:
+    if total_price > 0 and not balance_covers_price(user_balance, total_price):
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
@@ -1230,7 +1231,7 @@ async def select_tariff_period(
 
     traffic = format_traffic(tariff.traffic_limit_gb)
 
-    if user_balance >= final_price:
+    if balance_covers_price(user_balance, final_price):
         # Показываем подтверждение
         discount_text = ''
         if discount_percent > 0:
@@ -1353,7 +1354,7 @@ async def confirm_tariff_purchase(
 
     # Проверяем баланс (user already locked, balance is fresh)
     user_balance = db_user.balance_kopeks or 0
-    if final_price > 0 and user_balance < final_price:
+    if final_price > 0 and not balance_covers_price(user_balance, final_price):
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
@@ -1694,7 +1695,7 @@ async def confirm_daily_tariff_purchase(
 
     # Проверяем баланс (user already locked, balance is fresh)
     user_balance = db_user.balance_kopeks or 0
-    if final_daily_price > 0 and user_balance < final_daily_price:
+    if final_daily_price > 0 and not balance_covers_price(user_balance, final_daily_price):
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
@@ -2131,7 +2132,7 @@ async def select_tariff_extend_period(
 
     traffic = format_traffic(tariff.traffic_limit_gb)
 
-    if user_balance >= final_price:
+    if balance_covers_price(user_balance, final_price):
         discount_text = ''
         if discount_percent > 0:
             discount_text = f'\n🎁 Скидка: {discount_percent}% (-{format_price_kopeks(total_discount)})'
@@ -2244,7 +2245,7 @@ async def confirm_tariff_extend(
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
-    if final_price > 0 and user_balance < final_price:
+    if final_price > 0 and not balance_covers_price(user_balance, final_price):
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
@@ -2627,7 +2628,7 @@ async def select_tariff_switch(
             if remaining_days > 1:
                 days_warning = f'\n\n⚠️ <b>Внимание!</b> У вас осталось {remaining_days} дн. подписки.\nПри смене на суточный тариф они будут утеряны!'
 
-        if user_balance >= daily_price:
+        if balance_covers_price(user_balance, daily_price):
             await callback.message.edit_text(
                 f'✅ <b>Подтверждение смены тарифа</b>\n\n'
                 f'📦 Новый тариф: <b>{html.escape(tariff.name)}</b>\n'
@@ -2752,7 +2753,7 @@ async def select_tariff_switch_period(
     # При смене тарифа устанавливается ровно оплаченный период
     time_info = f'⏰ Будет установлено: {period} дней'
 
-    if user_balance >= final_price:
+    if balance_covers_price(user_balance, final_price):
         discount_text = ''
         if discount_percent > 0:
             discount_text = f'\n🎁 Скидка: {discount_percent}% (-{format_price_kopeks(total_discount)})'
@@ -2840,7 +2841,7 @@ async def confirm_tariff_switch(
 
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
-    if final_price > 0 and user_balance < final_price:
+    if final_price > 0 and not balance_covers_price(user_balance, final_price):
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
@@ -3046,7 +3047,7 @@ async def confirm_daily_tariff_switch(
 
     # Проверяем баланс (user already locked, balance is fresh)
     user_balance = db_user.balance_kopeks or 0
-    if final_daily_price > 0 and user_balance < final_daily_price:
+    if final_daily_price > 0 and not balance_covers_price(user_balance, final_daily_price):
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
@@ -3526,7 +3527,7 @@ async def preview_instant_switch(
         discount_text = f'\n💎 Скидка: {daily_discount}%' if daily_discount > 0 else ''
         user_balance = db_user.balance_kopeks or 0
 
-        if user_balance >= daily_price:
+        if balance_covers_price(user_balance, daily_price):
             await callback.message.edit_text(
                 f'🔄 <b>Переключение на суточный тариф</b>\n\n'
                 f'📌 Текущий: <b>{html.escape(current_tariff.name)}</b>\n'
@@ -3571,7 +3572,7 @@ async def preview_instant_switch(
 
     if is_upgrade:
         # Upgrade - нужна доплата
-        if user_balance >= upgrade_cost:
+        if balance_covers_price(user_balance, upgrade_cost):
             await callback.message.edit_text(
                 f'⬆️ <b>Повышение тарифа</b>\n\n'
                 f'📌 Текущий: <b>{html.escape(current_tariff.name)}</b>\n'
@@ -3672,7 +3673,7 @@ async def confirm_instant_switch(
 
     # Проверяем баланс если это upgrade (use locked user's fresh balance)
     user_balance = db_user.balance_kopeks or 0
-    if is_upgrade and user_balance < upgrade_cost:
+    if is_upgrade and not balance_covers_price(user_balance, upgrade_cost):
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
@@ -3748,7 +3749,7 @@ async def confirm_instant_switch(
 
             # Списываем первый день если ещё не списано (upgrade_cost был 0)
             if upgrade_cost == 0 and daily_price > 0:
-                if user_balance >= daily_price:
+                if balance_covers_price(user_balance, daily_price):
                     success = await subtract_user_balance(
                         db,
                         db_user,
@@ -3951,7 +3952,7 @@ async def return_to_saved_tariff_cart(
     traffic = format_traffic(tariff.traffic_limit_gb)
 
     # Проверяем баланс (при 100% скидке — пропускаем)
-    if total_price > 0 and user_balance < total_price:
+    if total_price > 0 and not balance_covers_price(user_balance, total_price):
         missing = total_price - user_balance
 
         if cart_mode == 'daily_tariff_purchase':

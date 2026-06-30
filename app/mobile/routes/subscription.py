@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.config import settings
 from app.database.crud.user import get_user_by_telegram_id
 from app.database.crud.tariff import get_tariff_by_id
+from app.utils.pricing_utils import balance_covers_price
 from app.mobile.schemas.subscription import (
     AutopayRequest,
     AutopayResponse,
@@ -484,7 +485,7 @@ async def buy_subscription(
 
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
-        if balance_kopeks >= pricing.final_total:
+        if balance_covers_price(balance_kopeks, pricing.final_total):
             # Sufficient balance – purchase immediately
             result = await service.submit_purchase(db, context, pricing)
             subscription = result.get('subscription')
@@ -711,7 +712,7 @@ async def upgrade_subscription(
 
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
-        if balance_kopeks >= price:
+        if balance_covers_price(balance_kopeks, price):
             # Deduct balance
             success = await subtract_user_balance(db, user, price, description)
             if not success:
@@ -1051,7 +1052,7 @@ async def buy_tariff(
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
         # ── Sufficient balance — activate immediately ─────────────────────────
-        if balance_kopeks >= price_kopeks:
+        if balance_covers_price(balance_kopeks, price_kopeks):
             from app.database.crud.subscription import (
                 create_paid_subscription,
                 extend_subscription,
@@ -1652,7 +1653,7 @@ async def switch_tariff_mobile(
         old_tariff_name = current_tariff.name if current_tariff else 'Unknown'
 
         if upgrade_cost > 0:
-            if user.balance_kopeks < upgrade_cost:
+            if not balance_covers_price(user.balance_kopeks, upgrade_cost):
                 missing = upgrade_cost - user.balance_kopeks
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,

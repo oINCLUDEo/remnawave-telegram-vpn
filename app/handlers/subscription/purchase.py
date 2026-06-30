@@ -107,6 +107,7 @@ from app.handlers.simple_subscription import (
 from app.states import SubscriptionStates
 from app.utils.price_display import PriceInfo, format_price_text
 from app.utils.pricing_utils import (
+    balance_covers_price,
     calculate_months_from_days,
     format_period_description,
 )
@@ -1537,7 +1538,7 @@ async def return_to_saved_cart(callback: types.CallbackQuery, state: FSMContext,
 
     total_price = prepared_cart_data.get('total_price', 0)
 
-    if total_price > 0 and db_user.balance_kopeks < total_price:
+    if total_price > 0 and not balance_covers_price(db_user.balance_kopeks, total_price):
         missing_amount = total_price - db_user.balance_kopeks
         insufficient_keyboard = get_insufficient_balance_keyboard_with_cart(
             db_user.language,
@@ -1932,7 +1933,7 @@ async def confirm_extend_subscription(
         await callback.answer('⚠ Ошибка расчета стоимости', show_alert=True)
         return
 
-    if price > 0 and db_user.balance_kopeks < price:
+    if price > 0 and not balance_covers_price(db_user.balance_kopeks, price):
         missing_kopeks = price - db_user.balance_kopeks
         required_text = texts.format_price(price)
         message_text = texts.t(
@@ -2340,7 +2341,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
         )
     logger.info('ИТОГО: ₽', final_price=final_price / 100)
 
-    if final_price > 0 and db_user.balance_kopeks < final_price:
+    if final_price > 0 and not balance_covers_price(db_user.balance_kopeks, final_price):
         missing_kopeks = final_price - db_user.balance_kopeks
         message_text = texts.t(
             'ADDON_INSUFFICIENT_FUNDS_MESSAGE',
@@ -3057,7 +3058,7 @@ async def handle_toggle_daily_subscription_pause(callback: types.CallbackQuery, 
         daily_price = (
             PricingEngine.apply_discount(raw_daily_price, daily_group_pct) if daily_group_pct > 0 else raw_daily_price
         )
-        if daily_price > 0 and db_user.balance_kopeks < daily_price:
+        if daily_price > 0 and not balance_covers_price(db_user.balance_kopeks, daily_price):
             await callback.answer(
                 texts.t(
                     'INSUFFICIENT_BALANCE_FOR_RESUME',
@@ -4449,7 +4450,7 @@ async def _extend_existing_subscription(
     )
 
     # Проверяем баланс пользователя (при 100% скидке — пропускаем)
-    if price_kopeks > 0 and db_user.balance_kopeks < price_kopeks:
+    if price_kopeks > 0 and not balance_covers_price(db_user.balance_kopeks, price_kopeks):
         missing_kopeks = price_kopeks - db_user.balance_kopeks
         message_text = texts.t(
             'ADDON_INSUFFICIENT_FUNDS_MESSAGE',

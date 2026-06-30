@@ -15,6 +15,21 @@ if TYPE_CHECKING:  # pragma: no cover
 logger = structlog.get_logger(__name__)
 
 
+SUB_RUBLE_GRACE_KOPEKS = 99
+"""Допустимая недостача баланса при оплате (строго меньше 1 рубля).
+
+Цены округляются до целых рублей (см. PricingEngine.round_to_rubles), а баланс
+пользователя не всегда кратен рублю (конвертация из CryptoBot/Stars, реферальные
+начисления и т.п.) — из-за этого иногда не хватает буквально нескольких копеек.
+Такая недостача прощается списанием остатка баланса вместо блокировки покупки.
+"""
+
+
+def balance_covers_price(balance_kopeks: int, price_kopeks: int) -> bool:
+    """Хватает ли баланса на покупку с учётом прощения недостачи < 1 рубля."""
+    return balance_kopeks >= price_kopeks - SUB_RUBLE_GRACE_KOPEKS
+
+
 def calculate_months_from_days(days: int) -> int:
     return max(1, round(days / 30))
 

@@ -23,6 +23,7 @@ from app.database.models import (
     UserPromoGroup,
     UserStatus,
 )
+from app.utils.pricing_utils import SUB_RUBLE_GRACE_KOPEKS
 from app.utils.validators import sanitize_telegram_name
 
 
@@ -670,8 +671,19 @@ async def subtract_user_balance(
                     log_context['percent'] = offer.discount_percent
 
     if user.balance_kopeks < amount_kopeks:
-        logger.error('   ❌ НЕДОСТАТОЧНО СРЕДСТВ!')
-        return False
+        shortfall = amount_kopeks - user.balance_kopeks
+        if 0 < shortfall <= SUB_RUBLE_GRACE_KOPEKS:
+            logger.info(
+                'Списание: недостача < 1 руб. прощена, списан остаток баланса',
+                user_id=user.id,
+                requested_amount_kopeks=amount_kopeks,
+                balance_kopeks=user.balance_kopeks,
+                shortfall_kopeks=shortfall,
+            )
+            amount_kopeks = user.balance_kopeks
+        else:
+            logger.error('   ❌ НЕДОСТАТОЧНО СРЕДСТВ!')
+            return False
 
     try:
         old_balance = user.balance_kopeks

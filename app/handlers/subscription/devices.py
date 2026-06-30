@@ -29,6 +29,7 @@ from app.services.user_cart_service import user_cart_service
 from app.utils.pagination import paginate_list
 from app.utils.pricing_utils import (
     apply_percentage_discount,
+    balance_covers_price,
 )
 from app.utils.subscription_utils import (
     get_display_subscription_link,
@@ -356,7 +357,7 @@ async def confirm_change_devices(
         total_discount = int(discount_per_month * days_left / 30)
         period_label = f'{days_left} дн.' if days_left > 1 else '1 день'
 
-        if price > 0 and db_user.balance_kopeks < price:
+        if price > 0 and not balance_covers_price(db_user.balance_kopeks, price):
             missing_kopeks = price - db_user.balance_kopeks
             required_text = f'{texts.format_price(price)} (за {period_label})'
             message_text = texts.t(
@@ -1273,7 +1274,7 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
         total_discount=total_discount / 100,
     )
 
-    if price > 0 and db_user.balance_kopeks < price:
+    if price > 0 and not balance_covers_price(db_user.balance_kopeks, price):
         missing_kopeks = price - db_user.balance_kopeks
         required_text = f'{texts.format_price(price)} (за {period_label})'
         message_text = texts.t(

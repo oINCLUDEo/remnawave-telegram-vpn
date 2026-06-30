@@ -59,6 +59,7 @@ from app.services.notification_settings_service import NotificationSettingsServi
 from app.services.promo_offer_service import promo_offer_service
 from app.services.subscription_service import SubscriptionService, get_traffic_reset_strategy
 from app.utils.cache import cache
+from app.utils.pricing_utils import balance_covers_price
 from app.utils.message_patch import caption_exceeds_telegram_limit
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 from app.utils.promo_offer import get_user_active_promo_discount_percent
@@ -1243,7 +1244,7 @@ class MonitoringService:
                 if autopay_key in self._notified_users:
                     continue
 
-                if user.balance_kopeks >= charge_amount:
+                if balance_covers_price(user.balance_kopeks, charge_amount):
                     success = await subtract_user_balance(
                         db,
                         user,

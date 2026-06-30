@@ -26,6 +26,7 @@ from app.services.subscription_service import SubscriptionService
 from app.states import SubscriptionStates
 from app.utils.pricing_utils import (
     apply_percentage_discount,
+    balance_covers_price,
     calculate_prorated_price,
 )
 
@@ -330,7 +331,7 @@ async def apply_countries_changes(callback: types.CallbackQuery, db_user: User, 
             total_discount=total_discount / 100,
         )
 
-    if total_cost > 0 and db_user.balance_kopeks < total_cost:
+    if total_cost > 0 and not balance_covers_price(db_user.balance_kopeks, total_cost):
         missing_kopeks = total_cost - db_user.balance_kopeks
         required_text = f'{texts.format_price(total_cost)} (за {charged_days} дн.)'
         message_text = texts.t(
@@ -861,7 +862,7 @@ async def confirm_add_countries_to_subscription(
         if country['uuid'] in removed_countries:
             removed_countries_names.append(html.escape(country['name']))
 
-    if new_countries and total_price > 0 and db_user.balance_kopeks < total_price:
+    if new_countries and total_price > 0 and not balance_covers_price(db_user.balance_kopeks, total_price):
         missing_kopeks = total_price - db_user.balance_kopeks
         message_text = texts.t(
             'ADDON_INSUFFICIENT_FUNDS_MESSAGE',

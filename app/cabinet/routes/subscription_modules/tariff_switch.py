@@ -22,6 +22,7 @@ from app.database.models import PaymentMethod, Subscription, TransactionType, Us
 from app.services.pricing_engine import pricing_engine
 from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
+from app.utils.pricing_utils import balance_covers_price
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import TariffPurchaseRequest
@@ -283,7 +284,7 @@ async def switch_tariff(
     # Charge if upgrade
     switch_transaction = None
     if upgrade_cost > 0:
-        if user.balance_kopeks < upgrade_cost:
+        if not balance_covers_price(user.balance_kopeks, upgrade_cost):
             missing = upgrade_cost - user.balance_kopeks
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,

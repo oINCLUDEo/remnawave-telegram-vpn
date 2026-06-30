@@ -27,6 +27,7 @@ from app.localization.texts import get_texts
 from app.services.subscription_service import SubscriptionService
 from app.utils.pricing_utils import (
     apply_percentage_discount,
+    balance_covers_price,
     calculate_months_from_days,
     format_period_description,
     validate_pricing_calculation,
@@ -994,7 +995,7 @@ class MiniAppSubscriptionPurchaseService:
         if pricing.final_total <= 0 and pricing.base_original_total <= 0:
             raise PurchaseValidationError('Invalid total amount', code='calculation_error')
 
-        if pricing.final_total > 0 and user.balance_kopeks < pricing.final_total:
+        if pricing.final_total > 0 and not balance_covers_price(user.balance_kopeks, pricing.final_total):
             raise PurchaseBalanceError(
                 texts.t(
                     'MINIAPP_PURCHASE_STATUS_INSUFFICIENT',

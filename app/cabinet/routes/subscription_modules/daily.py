@@ -16,6 +16,7 @@ from app.config import settings
 from app.database.crud.tariff import get_tariff_by_id
 from app.database.models import User
 from app.services.subscription_service import SubscriptionService
+from app.utils.pricing_utils import balance_covers_price
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from .helpers import resolve_subscription
@@ -99,7 +100,7 @@ async def toggle_subscription_pause(
 
     # If resuming, check balance and charge
     if not new_paused_state:
-        if daily_price > 0 and user.balance_kopeks < daily_price:
+        if daily_price > 0 and not balance_covers_price(user.balance_kopeks, daily_price):
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail={

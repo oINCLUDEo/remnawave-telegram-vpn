@@ -26,6 +26,7 @@ from app.database.crud.tariff import get_tariff_by_id
 from app.database.models import Subscription, TransactionType, User
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
+from app.utils.pricing_utils import balance_covers_price
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import DevicePurchaseRequest
@@ -135,7 +136,7 @@ async def purchase_devices_legacy(
         )
 
     # Check balance (skip for 100% discount)
-    if total_price > 0 and user.balance_kopeks < total_price:
+    if total_price > 0 and not balance_covers_price(user.balance_kopeks, total_price):
         missing = total_price - user.balance_kopeks
 
         # Сохраняем корзину для автопокупки после пополнения
@@ -376,7 +377,7 @@ async def purchase_devices(
             price_kopeks = max(100, price_kopeks)
 
         # Check balance (skip for 100% discount)
-        if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
+        if price_kopeks > 0 and not balance_covers_price(user.balance_kopeks, price_kopeks):
             missing = price_kopeks - user.balance_kopeks
 
             # Сохраняем корзину для автопокупки после пополнения

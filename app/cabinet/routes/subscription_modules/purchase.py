@@ -43,7 +43,7 @@ from app.services.subscription_purchase_service import (
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
-from app.utils.pricing_utils import format_period_description
+from app.utils.pricing_utils import balance_covers_price, format_period_description
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import (
@@ -686,7 +686,7 @@ async def purchase_tariff(
             )
 
         # Check balance
-        if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
+        if price_kopeks > 0 and not balance_covers_price(user.balance_kopeks, price_kopeks):
             missing = price_kopeks - user.balance_kopeks
 
             # Save cart for auto-purchase after balance top-up

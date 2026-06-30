@@ -26,6 +26,7 @@ from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.utils.cache import RateLimitCache, cache, cache_key
+from app.utils.pricing_utils import balance_covers_price
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import (
@@ -254,7 +255,7 @@ async def purchase_traffic(
         final_price = max(100, final_price)
 
     # Проверяем баланс
-    if final_price > 0 and user.balance_kopeks < final_price:
+    if final_price > 0 and not balance_covers_price(user.balance_kopeks, final_price):
         missing = final_price - user.balance_kopeks
 
         # Save cart for auto-purchase after balance top-up
@@ -560,7 +561,7 @@ async def switch_traffic_package(
         # Prorated calculation
         final_price, days_charged = calculate_prorated_price(price_diff, subscription.end_date)
 
-        if final_price > 0 and user.balance_kopeks < final_price:
+        if final_price > 0 and not balance_covers_price(user.balance_kopeks, final_price):
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=f'Insufficient balance. Need {final_price / 100:.2f} RUB',

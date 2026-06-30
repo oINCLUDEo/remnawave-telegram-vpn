@@ -28,6 +28,7 @@ from app.services.guest_purchase_service import (
     create_purchase,
     fulfill_purchase,
 )
+from app.utils.pricing_utils import balance_covers_price
 from app.services.payment_method_config_service import get_enabled_methods_for_user
 from app.utils.cache import RateLimitCache
 from app.utils.promo_offer import get_user_active_promo_discount_percent
@@ -426,7 +427,7 @@ async def create_gift_purchase(
         )
 
     # Balance mode (skip for 100% discount)
-    if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
+    if price_kopeks > 0 and not balance_covers_price(user.balance_kopeks, price_kopeks):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Insufficient balance',

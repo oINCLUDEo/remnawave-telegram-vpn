@@ -21,6 +21,7 @@ from app.services.subscription_renewal_service import (
     SubscriptionRenewalService,
 )
 from app.services.user_cart_service import user_cart_service
+from app.utils.pricing_utils import balance_covers_price
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
 from ...schemas.subscription import (
@@ -169,7 +170,7 @@ async def renew_subscription(
     tariff = subscription.tariff if subscription.tariff_id else None
 
     # Check balance (skip for 100% discount)
-    if price_kopeks > 0 and user.balance_kopeks < price_kopeks:
+    if price_kopeks > 0 and not balance_covers_price(user.balance_kopeks, price_kopeks):
         missing = price_kopeks - user.balance_kopeks
 
         # Get tariff info for cart

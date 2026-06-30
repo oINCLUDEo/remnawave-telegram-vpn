@@ -18,7 +18,7 @@ from app.services.payment_service import PaymentService
 from app.services.subscription_purchase_service import SubscriptionPurchaseService
 from app.states import SubscriptionStates
 from app.utils.decorators import error_handler
-from app.utils.pricing_utils import compute_simple_subscription_price
+from app.utils.pricing_utils import balance_covers_price, compute_simple_subscription_price
 from app.utils.subscription_utils import (
     get_display_subscription_link,
     resolve_simple_subscription_device_limit,
@@ -122,7 +122,7 @@ async def start_simple_subscription_purchase(
         else 'none',
     )
 
-    can_pay_from_balance = user_balance_kopeks >= price_kopeks
+    can_pay_from_balance = balance_covers_price(user_balance_kopeks, price_kopeks)
     logger.warning(
         'SIMPLE_SUBSCRIPTION_DEBUG_START_BALANCE | user= | balance= | min_required= | can_pay',
         db_user_id=db_user.id,
@@ -441,7 +441,7 @@ async def handle_simple_subscription_pay_with_balance(
     # Проверяем баланс пользователя
     user_balance_kopeks = getattr(db_user, 'balance_kopeks', 0)
 
-    if total_required > 0 and user_balance_kopeks < total_required:
+    if total_required > 0 and not balance_covers_price(user_balance_kopeks, total_required):
         await callback.answer('❌ Недостаточно средств на балансе для оплаты подписки', show_alert=True)
         return
 
@@ -739,7 +739,7 @@ async def handle_simple_subscription_other_payment_methods(
     )
 
     user_balance_kopeks = getattr(db_user, 'balance_kopeks', 0)
-    can_pay_from_balance = user_balance_kopeks >= price_kopeks
+    can_pay_from_balance = balance_covers_price(user_balance_kopeks, price_kopeks)
     logger.warning(
         'SIMPLE_SUBSCRIPTION_DEBUG_METHODS | user= | balance= | base= | traffic= | devices= | servers= | discount= | total_required= | can_pay',
         db_user_id=db_user.id,
@@ -2181,7 +2181,7 @@ async def confirm_simple_subscription_purchase(
     # Проверяем баланс пользователя
     user_balance_kopeks = getattr(db_user, 'balance_kopeks', 0)
 
-    if total_required > 0 and user_balance_kopeks < total_required:
+    if total_required > 0 and not balance_covers_price(user_balance_kopeks, total_required):
         await callback.answer('❌ Недостаточно средств на балансе для оплаты подписки', show_alert=True)
         return
 

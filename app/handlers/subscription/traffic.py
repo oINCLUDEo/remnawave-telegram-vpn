@@ -28,6 +28,7 @@ from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.states import SubscriptionStates
 from app.utils.pricing_utils import (
+    balance_covers_price,
     calculate_prorated_price,
 )
 
@@ -280,7 +281,7 @@ async def handle_reset_traffic(
         )
 
     # Проверяем достаточно ли средств
-    has_enough_balance = db_user.balance_kopeks >= reset_price
+    has_enough_balance = balance_covers_price(db_user.balance_kopeks, reset_price)
     missing_kopeks = max(0, reset_price - db_user.balance_kopeks)
 
     # Формируем текст о балансе
@@ -332,7 +333,7 @@ async def confirm_reset_traffic(
 
     reset_price = _calculate_traffic_reset_price(subscription)
 
-    if reset_price > 0 and db_user.balance_kopeks < reset_price:
+    if reset_price > 0 and not balance_covers_price(db_user.balance_kopeks, reset_price):
         missing_kopeks = reset_price - db_user.balance_kopeks
         message_text = texts.t(
             'ADDON_INSUFFICIENT_FUNDS_MESSAGE',
@@ -574,7 +575,7 @@ async def add_traffic(callback: types.CallbackQuery, db_user: User, db: AsyncSes
 
     total_discount_value = int(discount_per_month * charged_days / 30)
 
-    if price > 0 and db_user.balance_kopeks < price:
+    if price > 0 and not balance_covers_price(db_user.balance_kopeks, price):
         missing_kopeks = price - db_user.balance_kopeks
 
         # Save cart for auto-purchase after balance top-up
@@ -830,7 +831,7 @@ async def confirm_switch_traffic(
         total_price_difference = int(price_difference_per_month * days_remaining / 30)
         total_price_difference = max(100, total_price_difference)
 
-        if total_price_difference > 0 and db_user.balance_kopeks < total_price_difference:
+        if total_price_difference > 0 and not balance_covers_price(db_user.balance_kopeks, total_price_difference):
             missing_kopeks = total_price_difference - db_user.balance_kopeks
             message_text = texts.t(
                 'ADDON_INSUFFICIENT_FUNDS_MESSAGE',
