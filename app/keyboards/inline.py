@@ -516,7 +516,7 @@ def _build_cabinet_main_menu_keyboard(
                     home_text = section_cfg.get('labels', {}).get(language, '') or texts.t(
                         'MENU_PROFILE', '👤 Личный кабинет'
                     )
-                    row_buttons.append(_cabinet_button(home_text, '/', 'menu_profile_unavailable'))
+                    row_buttons.append(_cabinet_button(home_text, '/', 'back_to_menu'))
 
                 case 'subscription':
                     if not section_cfg.get('enabled', True):
