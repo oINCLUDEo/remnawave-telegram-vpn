@@ -618,28 +618,6 @@ def _build_cabinet_main_menu_keyboard(
             for i in range(0, len(row_buttons), max_per_row):
                 keyboard_rows.append(row_buttons[i : i + max_per_row])
 
-    # -- Auto-append the Cabinet link button if it wasn't explicitly placed in a row --
-    # (covers deployments where the admin hasn't touched the row layout yet)
-    placed_btn_ids = {b for row_key in row_keys for b in layout[row_key].get('buttons', [])}
-    if 'cabinet' not in placed_btn_ids:
-        cabinet_section_cfg = cached_styles.get('cabinet', {})
-        cabinet_url = settings.get_cabinet_home_url()
-        if cabinet_url and cabinet_section_cfg.get('enabled', True):
-            cabinet_text = cabinet_section_cfg.get('labels', {}).get(language, '') or texts.t(
-                'MENU_CABINET', '🌐 Онлайн-кабинет'
-            )
-            cabinet_icon = cabinet_section_cfg.get('icon_custom_emoji_id') or None
-            keyboard_rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=strip_leading_emoji_if_custom_icon(cabinet_text, cabinet_icon),
-                        url=cabinet_url,
-                        style=_resolve_style(cabinet_section_cfg.get('style')) or global_style,
-                        icon_custom_emoji_id=cabinet_icon,
-                    )
-                ]
-            )
-
     # -- Moderator panel (only when not admin — admin row handled above) --
     if is_moderator and not is_admin:
         keyboard_rows.append([InlineKeyboardButton(text='🧑‍⚖️ Модерация', callback_data='moderator_panel')])
