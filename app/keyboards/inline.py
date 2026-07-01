@@ -477,6 +477,8 @@ def _build_cabinet_main_menu_keyboard(
             'cabinet_button_debug',
             callback_fallback=callback_fallback,
             url=url,
+            miniapp_custom_url=settings.MINIAPP_CUSTOM_URL,
+            path=path,
             took_webapp_branch=False,
         )
         return InlineKeyboardButton(text=text, callback_data=callback_fallback)
