@@ -1401,7 +1401,14 @@ class MonitoringService:
             extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [build_miniapp_or_callback_button(text='💎 Продлить подписку', callback_data=extend_callback)],
+                    [
+                        build_miniapp_or_callback_button(
+                            text='Продлить подписку',
+                            callback_data=extend_callback,
+                            style='success',
+                            icon_custom_emoji_id='5258419835922030550',
+                        )
+                    ],
                     [build_miniapp_or_callback_button(text='💳 Пополнить баланс', callback_data='balance_topup')],
                 ]
             )
@@ -1502,9 +1509,11 @@ class MonitoringService:
                 inline_keyboard=[
                     [
                         build_miniapp_or_callback_button(
-                            text=texts.t('BTN_RENEW_SUBSCRIPTION', '⏰ Продлить подписку'),
+                            text=texts.t('BTN_RENEW_SUBSCRIPTION', 'Продлить подписку'),
                             callback_data=extend_callback,
                             cabinet_path='/subscription',
+                            style='success',
+                            icon_custom_emoji_id='5258419835922030550',
                         )
                     ],
                     [
