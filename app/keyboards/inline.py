@@ -557,6 +557,8 @@ def _build_cabinet_main_menu_keyboard(
                                     texts.MENU_EXTEND_SUBSCRIPTION,
                                     '/subscription/extend',
                                     'subscription_extend',
+                                    style='danger',
+                                    icon_custom_emoji_id='5258419835922030550',
                                 )
                             )
 
