@@ -383,7 +383,15 @@ def _styled_button(
     label = section_cfg.get('labels', {}).get(language, '') or text
     style = _resolve_style(section_cfg.get('style'))
     icon_custom_emoji_id = section_cfg.get('icon_custom_emoji_id') or None
-    label = strip_leading_emoji_if_custom_icon(label, icon_custom_emoji_id)
+    stripped_label = strip_leading_emoji_if_custom_icon(label, icon_custom_emoji_id)
+    logger.warning(
+        'styled_button_debug',
+        section=section,
+        icon_custom_emoji_id=icon_custom_emoji_id,
+        original_label=label,
+        stripped_label=stripped_label,
+    )
+    label = stripped_label
 
     kwargs: dict = {}
     if url:
@@ -448,7 +456,7 @@ def _build_cabinet_main_menu_keyboard(
                 resolved = global_style or _resolve_style(CALLBACK_TO_CABINET_STYLE.get(callback_fallback))
             resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
             stripped_text = strip_leading_emoji_if_custom_icon(text, resolved_emoji)
-            logger.debug(
+            logger.warning(
                 'cabinet_button_debug',
                 callback_fallback=callback_fallback,
                 section=section,
@@ -465,7 +473,7 @@ def _build_cabinet_main_menu_keyboard(
                 style=resolved,
                 icon_custom_emoji_id=resolved_emoji or None,
             )
-        logger.debug(
+        logger.warning(
             'cabinet_button_debug',
             callback_fallback=callback_fallback,
             url=url,
