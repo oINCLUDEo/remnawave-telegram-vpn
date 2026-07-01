@@ -9,7 +9,7 @@ from app.config import PERIOD_PRICES, settings
 from app.database.models import User
 from app.localization.loader import DEFAULT_LANGUAGE
 from app.localization.texts import get_texts
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button, strip_leading_emoji_if_custom_icon
+from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 from app.utils.price_display import PriceInfo, format_price_button
 from app.utils.pricing_utils import (
     apply_percentage_discount,
@@ -383,7 +383,6 @@ def _styled_button(
     label = section_cfg.get('labels', {}).get(language, '') or text
     style = _resolve_style(section_cfg.get('style'))
     icon_custom_emoji_id = section_cfg.get('icon_custom_emoji_id') or None
-    label = strip_leading_emoji_if_custom_icon(label, icon_custom_emoji_id)
 
     kwargs: dict = {}
     if url:
@@ -449,7 +448,7 @@ def _build_cabinet_main_menu_keyboard(
             resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
 
             return InlineKeyboardButton(
-                text=strip_leading_emoji_if_custom_icon(text, resolved_emoji),
+                text=text,
                 web_app=types.WebAppInfo(url=url),
                 style=resolved,
                 icon_custom_emoji_id=resolved_emoji or None,
@@ -491,7 +490,7 @@ def _build_cabinet_main_menu_keyboard(
                 )
                 row_buttons.append(
                     InlineKeyboardButton(
-                        text=strip_leading_emoji_if_custom_icon(custom_text, resolved_emoji),
+                        text=custom_text,
                         **link_kwarg,
                         style=resolved_style,
                         icon_custom_emoji_id=resolved_emoji,
@@ -559,7 +558,7 @@ def _build_cabinet_main_menu_keyboard(
                     resolved_lang_emoji = section_cfg.get('icon_custom_emoji_id') or None
                     row_buttons.append(
                         InlineKeyboardButton(
-                            text=strip_leading_emoji_if_custom_icon(lang_text, resolved_lang_emoji),
+                            text=lang_text,
                             callback_data='menu_language',
                             icon_custom_emoji_id=resolved_lang_emoji,
                         )
@@ -584,13 +583,12 @@ def _build_cabinet_main_menu_keyboard(
                     cabinet_text = section_cfg.get('labels', {}).get(language, '') or texts.t(
                         'MENU_CABINET', '🌐 Онлайн-кабинет'
                     )
-                    cabinet_icon = section_cfg.get('icon_custom_emoji_id') or None
                     row_buttons.append(
                         InlineKeyboardButton(
-                            text=strip_leading_emoji_if_custom_icon(cabinet_text, cabinet_icon),
+                            text=cabinet_text,
                             url=cabinet_url,
                             style=_resolve_style(section_cfg.get('style')) or global_style,
-                            icon_custom_emoji_id=cabinet_icon,
+                            icon_custom_emoji_id=section_cfg.get('icon_custom_emoji_id') or None,
                         )
                     )
 
@@ -609,14 +607,13 @@ def _build_cabinet_main_menu_keyboard(
             cabinet_text = cabinet_section_cfg.get('labels', {}).get(language, '') or texts.t(
                 'MENU_CABINET', '🌐 Онлайн-кабинет'
             )
-            cabinet_icon = cabinet_section_cfg.get('icon_custom_emoji_id') or None
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        text=strip_leading_emoji_if_custom_icon(cabinet_text, cabinet_icon),
+                        text=cabinet_text,
                         url=cabinet_url,
                         style=_resolve_style(cabinet_section_cfg.get('style')) or global_style,
-                        icon_custom_emoji_id=cabinet_icon,
+                        icon_custom_emoji_id=cabinet_section_cfg.get('icon_custom_emoji_id') or None,
                     )
                 ]
             )

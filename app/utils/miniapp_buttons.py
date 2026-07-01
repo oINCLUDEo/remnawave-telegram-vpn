@@ -1,37 +1,8 @@
-import re
-
 from aiogram import types
 from aiogram.types import InlineKeyboardButton
 
 from app.config import settings
 from app.utils.button_styles_cache import CALLBACK_TO_SECTION, get_cached_button_styles
-
-
-# Leading emoji (with optional variation selector / ZWJ sequences) followed by
-# whitespace, e.g. the "🌐 " in "🌐 Онлайн-кабинет".
-_EMOJI_CHAR_CLASS = (
-    r'\U0001F000-\U0001FFFF'  # main emoji blocks (emoticons, symbols, transport, supplemental...)
-    r'ℹ'  # information source (ℹ️)
-    r'←-⇿'  # arrows
-    r'⌀-⏿'  # misc technical (⏰, ⌛, ⚙️, ⏱️...)
-    r'☀-➿'  # misc symbols & dingbats (☀️-➿)
-    r'⬀-⯿'  # misc symbols and arrows (⬛, ⭐...)
-    r'️'  # variation selector-16
-    r'‍'  # zero-width joiner (for ZWJ emoji sequences)
-)
-_LEADING_EMOJI_RE = re.compile(rf'^[{_EMOJI_CHAR_CLASS}]+\s*')
-
-
-def strip_leading_emoji_if_custom_icon(text: str, icon_custom_emoji_id: str | None) -> str:
-    """Drop a leading Unicode emoji from *text* when a custom emoji icon is set.
-
-    Telegram renders ``icon_custom_emoji_id`` as its own icon next to the
-    button, so a text that also starts with a built-in emoji would show two
-    icons for the same button.
-    """
-    if not icon_custom_emoji_id:
-        return text
-    return _LEADING_EMOJI_RE.sub('', text, count=1)
 
 
 # Mapping from callback_data to cabinet frontend paths.
