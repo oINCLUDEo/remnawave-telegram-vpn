@@ -383,15 +383,7 @@ def _styled_button(
     label = section_cfg.get('labels', {}).get(language, '') or text
     style = _resolve_style(section_cfg.get('style'))
     icon_custom_emoji_id = section_cfg.get('icon_custom_emoji_id') or None
-    stripped_label = strip_leading_emoji_if_custom_icon(label, icon_custom_emoji_id)
-    logger.warning(
-        'styled_button_debug',
-        section=section,
-        icon_custom_emoji_id=icon_custom_emoji_id,
-        original_label=label,
-        stripped_label=stripped_label,
-    )
-    label = stripped_label
+    label = strip_leading_emoji_if_custom_icon(label, icon_custom_emoji_id)
 
     kwargs: dict = {}
     if url:
@@ -443,45 +435,33 @@ def _build_cabinet_main_menu_keyboard(
         icon_custom_emoji_id: str | None = None,
     ) -> InlineKeyboardButton:
         url = build_cabinet_url(path)
+
+        section = CALLBACK_TO_SECTION.get(callback_fallback)
+        section_cfg = cached_styles.get(section or '', {}) if section else {}
+
+        # 'default' in per-section config means "no color" — do not fall through.
+        if style:
+            resolved = _resolve_style(style)
+        elif section_cfg.get('style'):
+            resolved = _resolve_style(section_cfg['style'])
+        else:
+            resolved = global_style or _resolve_style(CALLBACK_TO_CABINET_STYLE.get(callback_fallback))
+        resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
+        stripped_text = strip_leading_emoji_if_custom_icon(text, resolved_emoji)
+
         if url:
-            section = CALLBACK_TO_SECTION.get(callback_fallback)
-            section_cfg = cached_styles.get(section or '', {}) if section else {}
-
-            # 'default' in per-section config means "no color" — do not fall through.
-            if style:
-                resolved = _resolve_style(style)
-            elif section_cfg.get('style'):
-                resolved = _resolve_style(section_cfg['style'])
-            else:
-                resolved = global_style or _resolve_style(CALLBACK_TO_CABINET_STYLE.get(callback_fallback))
-            resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
-            stripped_text = strip_leading_emoji_if_custom_icon(text, resolved_emoji)
-            logger.warning(
-                'cabinet_button_debug',
-                callback_fallback=callback_fallback,
-                section=section,
-                url=url,
-                resolved_emoji=resolved_emoji,
-                original_text=text,
-                stripped_text=stripped_text,
-                took_webapp_branch=True,
-            )
-
             return InlineKeyboardButton(
                 text=stripped_text,
                 web_app=types.WebAppInfo(url=url),
                 style=resolved,
                 icon_custom_emoji_id=resolved_emoji or None,
             )
-        logger.warning(
-            'cabinet_button_debug',
-            callback_fallback=callback_fallback,
-            url=url,
-            miniapp_custom_url=settings.MINIAPP_CUSTOM_URL,
-            path=path,
-            took_webapp_branch=False,
+        return InlineKeyboardButton(
+            text=stripped_text,
+            callback_data=callback_fallback,
+            style=resolved,
+            icon_custom_emoji_id=resolved_emoji or None,
         )
-        return InlineKeyboardButton(text=text, callback_data=callback_fallback)
 
     # -- Collect row definitions sorted by row_N key --
     row_keys = sorted(
