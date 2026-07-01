@@ -399,6 +399,9 @@ def _styled_button(
     )
 
 
+SUBSCRIPTION_EXTEND_WARNING_DAYS = 3
+
+
 def _build_cabinet_main_menu_keyboard(
     language: str,
     texts,
@@ -406,6 +409,7 @@ def _build_cabinet_main_menu_keyboard(
     is_admin: bool,
     is_moderator: bool,
     balance_kopeks: int = 0,
+    subscription=None,
 ) -> InlineKeyboardMarkup:
     """Build the main-menu keyboard for Cabinet mode.
 
@@ -541,6 +545,21 @@ def _build_cabinet_main_menu_keyboard(
                     sub_text = section_cfg.get('labels', {}).get(language, '') or default_sub_text
                     row_buttons.append(_cabinet_button(sub_text, '/subscription', 'menu_subscription'))
 
+                    if subscription is not None and not getattr(subscription, 'is_trial', False):
+                        is_active = getattr(subscription, 'is_active', True)
+                        days_left = getattr(subscription, 'days_left', None)
+                        expiring_soon = (
+                            days_left is not None and days_left <= SUBSCRIPTION_EXTEND_WARNING_DAYS
+                        )
+                        if not is_active or expiring_soon:
+                            row_buttons.append(
+                                _cabinet_button(
+                                    texts.MENU_EXTEND_SUBSCRIPTION,
+                                    '/subscription/extend',
+                                    'subscription_extend',
+                                )
+                            )
+
                 case 'balance':
                     if not section_cfg.get('enabled', True):
                         continue
@@ -648,6 +667,7 @@ def get_main_menu_keyboard(
             is_admin=is_admin,
             is_moderator=is_moderator,
             balance_kopeks=balance_kopeks,
+            subscription=subscription,
         )
 
     if settings.DEBUG:
