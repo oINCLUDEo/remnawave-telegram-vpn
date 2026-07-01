@@ -542,15 +542,7 @@ def _build_cabinet_main_menu_keyboard(
                     if subscription is None:
                         # Совсем новый пользователь — ни активной, ни истёкшей подписки нет
                         buy_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_BUY_SUBSCRIPTION
-                        row_buttons.append(
-                            _cabinet_button(
-                                buy_text,
-                                '/subscription',
-                                'menu_buy',
-                                style='success',
-                                icon_custom_emoji_id='5203996991054432397',
-                            )
-                        )
+                        row_buttons.append(_cabinet_button(buy_text, '/subscription', 'menu_buy'))
 
                         if not has_had_paid_subscription:
                             row_buttons.append(
@@ -558,7 +550,8 @@ def _build_cabinet_main_menu_keyboard(
                                     'Бесплатная подписка',
                                     '/subscription',
                                     'menu_trial',
-                                    icon_custom_emoji_id='5406756500108501710',
+                                    style='success',
+                                    icon_custom_emoji_id='5203996991054432397',
                                 )
                             )
                     else:
