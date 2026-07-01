@@ -410,6 +410,7 @@ def _build_cabinet_main_menu_keyboard(
     is_moderator: bool,
     balance_kopeks: int = 0,
     subscription=None,
+    has_had_paid_subscription: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build the main-menu keyboard for Cabinet mode.
 
@@ -537,30 +538,39 @@ def _build_cabinet_main_menu_keyboard(
                 case 'subscription':
                     if not section_cfg.get('enabled', True):
                         continue
-                    default_sub_text = (
-                        texts.t('MY_SUBSCRIPTIONS_BUTTON', '📱 Мои подписки')
-                        if settings.is_multi_tariff_enabled()
-                        else texts.MENU_SUBSCRIPTION
-                    )
-                    sub_text = section_cfg.get('labels', {}).get(language, '') or default_sub_text
-                    row_buttons.append(_cabinet_button(sub_text, '/subscription', 'menu_subscription'))
 
-                    if subscription is not None and not getattr(subscription, 'is_trial', False):
-                        is_active = getattr(subscription, 'is_active', True)
-                        days_left = getattr(subscription, 'days_left', None)
-                        expiring_soon = (
-                            days_left is not None and days_left <= SUBSCRIPTION_EXTEND_WARNING_DAYS
+                    if subscription is None:
+                        # Совсем новый пользователь — ни активной, ни истёкшей подписки нет
+                        buy_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_BUY_SUBSCRIPTION
+                        row_buttons.append(_cabinet_button(buy_text, '/subscription', 'menu_buy'))
+
+                        if not has_had_paid_subscription:
+                            row_buttons.append(_cabinet_button(texts.MENU_TRIAL, '/subscription', 'menu_trial'))
+                    else:
+                        default_sub_text = (
+                            texts.t('MY_SUBSCRIPTIONS_BUTTON', '📱 Мои подписки')
+                            if settings.is_multi_tariff_enabled()
+                            else texts.MENU_SUBSCRIPTION
                         )
-                        if not is_active or expiring_soon:
-                            row_buttons.append(
-                                _cabinet_button(
-                                    texts.MENU_EXTEND_SUBSCRIPTION,
-                                    '/subscription/extend',
-                                    'subscription_extend',
-                                    style='danger',
-                                    icon_custom_emoji_id='5258419835922030550',
-                                )
+                        sub_text = section_cfg.get('labels', {}).get(language, '') or default_sub_text
+                        row_buttons.append(_cabinet_button(sub_text, '/subscription', 'menu_subscription'))
+
+                        if not getattr(subscription, 'is_trial', False):
+                            is_active = getattr(subscription, 'is_active', True)
+                            days_left = getattr(subscription, 'days_left', None)
+                            expiring_soon = (
+                                days_left is not None and days_left <= SUBSCRIPTION_EXTEND_WARNING_DAYS
                             )
+                            if not is_active or expiring_soon:
+                                row_buttons.append(
+                                    _cabinet_button(
+                                        texts.MENU_EXTEND_SUBSCRIPTION,
+                                        '/subscription/extend',
+                                        'subscription_extend',
+                                        style='danger',
+                                        icon_custom_emoji_id='5258419835922030550',
+                                    )
+                                )
 
                 case 'balance':
                     if not section_cfg.get('enabled', True):
@@ -670,6 +680,7 @@ def get_main_menu_keyboard(
             is_moderator=is_moderator,
             balance_kopeks=balance_kopeks,
             subscription=subscription,
+            has_had_paid_subscription=has_had_paid_subscription,
         )
 
     if settings.DEBUG:
