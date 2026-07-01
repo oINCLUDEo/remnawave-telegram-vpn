@@ -447,13 +447,30 @@ def _build_cabinet_main_menu_keyboard(
             else:
                 resolved = global_style or _resolve_style(CALLBACK_TO_CABINET_STYLE.get(callback_fallback))
             resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
+            stripped_text = strip_leading_emoji_if_custom_icon(text, resolved_emoji)
+            logger.debug(
+                'cabinet_button_debug',
+                callback_fallback=callback_fallback,
+                section=section,
+                url=url,
+                resolved_emoji=resolved_emoji,
+                original_text=text,
+                stripped_text=stripped_text,
+                took_webapp_branch=True,
+            )
 
             return InlineKeyboardButton(
-                text=strip_leading_emoji_if_custom_icon(text, resolved_emoji),
+                text=stripped_text,
                 web_app=types.WebAppInfo(url=url),
                 style=resolved,
                 icon_custom_emoji_id=resolved_emoji or None,
             )
+        logger.debug(
+            'cabinet_button_debug',
+            callback_fallback=callback_fallback,
+            url=url,
+            took_webapp_branch=False,
+        )
         return InlineKeyboardButton(text=text, callback_data=callback_fallback)
 
     # -- Collect row definitions sorted by row_N key --
