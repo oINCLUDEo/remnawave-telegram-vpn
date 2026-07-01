@@ -516,7 +516,19 @@ def _build_cabinet_main_menu_keyboard(
                     home_text = section_cfg.get('labels', {}).get(language, '') or texts.t(
                         'MENU_PROFILE', '👤 Личный кабинет'
                     )
-                    row_buttons.append(_cabinet_button(home_text, '/', 'back_to_menu'))
+                    home_cabinet_url = settings.get_cabinet_home_url()
+                    if home_cabinet_url:
+                        home_icon = section_cfg.get('icon_custom_emoji_id') or None
+                        row_buttons.append(
+                            InlineKeyboardButton(
+                                text=strip_leading_emoji_if_custom_icon(home_text, home_icon),
+                                url=home_cabinet_url,
+                                style=_resolve_style(section_cfg.get('style')) or global_style,
+                                icon_custom_emoji_id=home_icon,
+                            )
+                        )
+                    else:
+                        row_buttons.append(_cabinet_button(home_text, '/', 'back_to_menu'))
 
                 case 'subscription':
                     if not section_cfg.get('enabled', True):
