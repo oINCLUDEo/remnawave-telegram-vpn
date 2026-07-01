@@ -26,6 +26,7 @@ BUILTIN_SECTIONS: tuple[str, ...] = (
     'info',
     'admin',
     'language',
+    'cabinet',
 )
 
 VALID_MAX_PER_ROW = frozenset({1, 2, 3})

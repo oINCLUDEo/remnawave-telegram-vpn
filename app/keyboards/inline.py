@@ -574,10 +574,49 @@ def _build_cabinet_main_menu_keyboard(
                     keyboard_rows.append(admin_row)
                     continue  # bypass max_per_row chunking
 
+                case 'cabinet':
+                    if not section_cfg.get('enabled', True):
+                        continue
+                    cabinet_url = settings.get_cabinet_home_url()
+                    if not cabinet_url:
+                        continue
+                    cabinet_text = section_cfg.get('labels', {}).get(language, '') or texts.t(
+                        'MENU_CABINET', '🌐 Онлайн-кабинет'
+                    )
+                    row_buttons.append(
+                        InlineKeyboardButton(
+                            text=cabinet_text,
+                            url=cabinet_url,
+                            style=_resolve_style(section_cfg.get('style')) or global_style,
+                            icon_custom_emoji_id=section_cfg.get('icon_custom_emoji_id') or None,
+                        )
+                    )
+
         # Split collected buttons into keyboard rows respecting max_per_row
         if row_buttons:
             for i in range(0, len(row_buttons), max_per_row):
                 keyboard_rows.append(row_buttons[i : i + max_per_row])
+
+    # -- Auto-append the Cabinet link button if it wasn't explicitly placed in a row --
+    # (covers deployments where the admin hasn't touched the row layout yet)
+    placed_btn_ids = {b for row_key in row_keys for b in layout[row_key].get('buttons', [])}
+    if 'cabinet' not in placed_btn_ids:
+        cabinet_section_cfg = cached_styles.get('cabinet', {})
+        cabinet_url = settings.get_cabinet_home_url()
+        if cabinet_url and cabinet_section_cfg.get('enabled', True):
+            cabinet_text = cabinet_section_cfg.get('labels', {}).get(language, '') or texts.t(
+                'MENU_CABINET', '🌐 Онлайн-кабинет'
+            )
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=cabinet_text,
+                        url=cabinet_url,
+                        style=_resolve_style(cabinet_section_cfg.get('style')) or global_style,
+                        icon_custom_emoji_id=cabinet_section_cfg.get('icon_custom_emoji_id') or None,
+                    )
+                ]
+            )
 
     # -- Moderator panel (only when not admin — admin row handled above) --
     if is_moderator and not is_admin:
