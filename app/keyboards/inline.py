@@ -545,7 +545,14 @@ def _build_cabinet_main_menu_keyboard(
                         row_buttons.append(_cabinet_button(buy_text, '/subscription', 'menu_buy'))
 
                         if not has_had_paid_subscription:
-                            row_buttons.append(_cabinet_button(texts.MENU_TRIAL, '/subscription', 'menu_trial'))
+                            row_buttons.append(
+                                _cabinet_button(
+                                    'Бесплатная подписка',
+                                    '/subscription',
+                                    'menu_trial',
+                                    icon_custom_emoji_id='5406756500108501710',
+                                )
+                            )
                     else:
                         default_sub_text = (
                             texts.t('MY_SUBSCRIPTIONS_BUTTON', '📱 Мои подписки')
