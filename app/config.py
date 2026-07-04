@@ -121,6 +121,12 @@ class Settings(BaseSettings):
     REMNAWAVE_WEBHOOK_SECRET: str | None = None  # HMAC-SHA256 shared secret (min 32 chars)
     REMNAWAVE_WEBHOOK_NOTIFY_NODE_CONNECTION_STATUS: bool = True
 
+    # Резервный сквад для grace-периода при просрочке (доступ к Telegram для продления).
+    # ТЕСТОВЫЙ РЕЖИМ: включается только для telegram_id из RESERVE_TEST_TELEGRAM_IDS.
+    RESERVE_SQUAD_UUID: str | None = None
+    RESERVE_GRACE_DAYS: int = 3
+    RESERVE_TEST_TELEGRAM_IDS: str = ''  # comma-separated, пусто = фича выключена
+
     # Webhook user notification toggles (what Telegram messages users receive from webhook events)
     WEBHOOK_NOTIFY_USER_ENABLED: bool = True
     WEBHOOK_NOTIFY_SUB_STATUS: bool = True
@@ -1255,6 +1261,20 @@ class Settings(BaseSettings):
         if not value:
             return []
         return [n.strip() for n in value.split(',') if n.strip()]
+
+    def get_reserve_test_telegram_ids(self) -> list[int]:
+        """Telegram ID, для которых включена тестовая фича резервного сквада при просрочке"""
+        if not self.RESERVE_TEST_TELEGRAM_IDS:
+            return []
+        result = []
+        for part in self.RESERVE_TEST_TELEGRAM_IDS.split(','):
+            part = part.strip()
+            if part.isdigit():
+                result.append(int(part))
+        return result
+
+    def is_reserve_access_enabled_for(self, telegram_id: int) -> bool:
+        return bool(self.RESERVE_SQUAD_UUID) and telegram_id in self.get_reserve_test_telegram_ids()
 
     def get_traffic_excluded_user_uuids(self) -> list[str]:
         """Возвращает список UUID пользователей для исключения из мониторинга (например, тунельные/служебные)"""

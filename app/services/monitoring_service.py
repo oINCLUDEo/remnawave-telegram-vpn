@@ -225,6 +225,13 @@ class MonitoringService:
                         '🧹 Отозвано истекших тестовых доступов к сквадам', cleaned_test_access=cleaned_test_access
                     )
 
+                cleaned_reserve_access = await self._cleanup_expired_reserve_access(db)
+                if cleaned_reserve_access:
+                    logger.info(
+                        '🧹 Отозван истекший grace-доступ резервного сквада (тест)',
+                        cleaned_reserve_access=cleaned_reserve_access,
+                    )
+
                 # ВАЖНО: autopay ПЕРЕД check_expired — иначе подписки с автоплатой
                 # экспайрятся до того, как autopay успеет их продлить
                 # Продление с баланса работает всегда, если у подписки autopay_enabled=True
@@ -271,6 +278,44 @@ class MonitoringService:
                 except Exception:
                     pass
                 await db.rollback()
+
+    async def _cleanup_expired_reserve_access(self, db: AsyncSession) -> int:
+        """ТЕСТОВАЯ ФИЧА: по истечении grace-периода отзывает временный резервный
+        сквад у не продливших подписку пользователей (отключает в RemnaWave,
+        восстанавливает исходные сквады локально)."""
+        if not settings.RESERVE_SQUAD_UUID:
+            return 0
+
+        now = datetime.now(UTC)
+        grace_deadline = now - timedelta(days=settings.RESERVE_GRACE_DAYS)
+
+        result = await db.execute(
+            select(Subscription).where(
+                Subscription.reserve_access_granted_at.isnot(None),
+                Subscription.reserve_access_granted_at <= grace_deadline,
+            )
+        )
+        subscriptions = result.scalars().all()
+        if not subscriptions:
+            return 0
+
+        from app.services.subscription_service import SubscriptionService
+
+        subscription_service = SubscriptionService()
+        cleaned = 0
+
+        for subscription in subscriptions:
+            remnawave_uuid = getattr(subscription, 'remnawave_uuid', None)
+            if remnawave_uuid and subscription_service.is_configured:
+                await subscription_service.disable_remnawave_user(remnawave_uuid)
+
+            subscription.connected_squads = list(subscription.reserve_original_squads or [])
+            subscription.reserve_access_granted_at = None
+            subscription.reserve_original_squads = None
+            cleaned += 1
+
+        await db.commit()
+        return cleaned
 
     async def _cleanup_notification_cache(self):
         current_time = datetime.now(UTC)

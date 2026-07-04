@@ -1392,6 +1392,10 @@ class Subscription(Base):
 
     connected_squads = Column(JSON, default=list)
 
+    # Grace-период при просрочке: временный перевод на резервный сквад (тестовая фича)
+    reserve_access_granted_at = Column(AwareDateTime(), nullable=True)
+    reserve_original_squads = Column(JSON, nullable=True)
+
     autopay_enabled = Column(Boolean, default=False)
     autopay_days_before = Column(Integer, default=3)
 

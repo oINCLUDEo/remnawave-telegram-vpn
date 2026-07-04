@@ -569,13 +569,22 @@ async def _auto_extend_subscription(
         should_reset_traffic = settings.RESET_TRAFFIC_ON_TARIFF_SWITCH
     else:
         should_reset_traffic = settings.RESET_TRAFFIC_ON_PAYMENT
+
+    # ТЕСТОВАЯ ФИЧА: если во время просрочки юзер был переведён на резервный
+    # сквад (grace-период), при автопродлении восстанавливаем исходные сквады.
+    restore_reserve_squads = bool(getattr(updated_subscription, 'reserve_access_granted_at', None))
+    if restore_reserve_squads:
+        updated_subscription.connected_squads = list(updated_subscription.reserve_original_squads or [])
+        updated_subscription.reserve_access_granted_at = None
+        updated_subscription.reserve_original_squads = None
+
     try:
         await subscription_service.update_remnawave_user(
             db,
             updated_subscription,
             reset_traffic=should_reset_traffic,
             reset_reason='смена тарифа' if is_tariff_change else 'продление подписки',
-            sync_squads=is_tariff_change,
+            sync_squads=is_tariff_change or restore_reserve_squads,
         )
     except Exception as error:  # pragma: no cover - defensive logging
         logger.error(

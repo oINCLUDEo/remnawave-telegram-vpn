@@ -489,6 +489,15 @@ class SubscriptionRenewalService:
 
         reset_traffic = was_expired and settings.RESET_TRAFFIC_ON_PAYMENT
         subscription_service = SubscriptionService()
+
+        # ТЕСТОВАЯ ФИЧА: если во время просрочки юзер был переведён на резервный
+        # сквад (grace-период), при продлении восстанавливаем исходные сквады.
+        restore_reserve_squads = bool(getattr(subscription_after, 'reserve_access_granted_at', None))
+        if restore_reserve_squads:
+            subscription_after.connected_squads = list(subscription_after.reserve_original_squads or [])
+            subscription_after.reserve_access_granted_at = None
+            subscription_after.reserve_original_squads = None
+
         try:
             await db.refresh(user)
             _renew_uuid = (
@@ -502,6 +511,7 @@ class SubscriptionRenewalService:
                     subscription_after,
                     reset_traffic=reset_traffic,
                     reset_reason='subscription renewal',
+                    sync_squads=restore_reserve_squads,
                 )
             else:
                 await subscription_service.create_remnawave_user(
