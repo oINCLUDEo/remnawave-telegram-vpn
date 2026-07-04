@@ -793,7 +793,11 @@ class RemnaWaveWebhookService:
         if not settings.is_reserve_access_enabled_for(user.telegram_id):
             return
 
-        remnawave_uuid = getattr(subscription, 'remnawave_uuid', None)
+        remnawave_uuid = (
+            getattr(subscription, 'remnawave_uuid', None)
+            if settings.is_multi_tariff_enabled()
+            else getattr(user, 'remnawave_uuid', None)
+        )
         if not remnawave_uuid:
             return
 

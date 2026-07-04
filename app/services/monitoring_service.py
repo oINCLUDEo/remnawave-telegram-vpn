@@ -290,7 +290,9 @@ class MonitoringService:
         grace_deadline = now - timedelta(days=settings.RESERVE_GRACE_DAYS)
 
         result = await db.execute(
-            select(Subscription).where(
+            select(Subscription)
+            .options(selectinload(Subscription.user))
+            .where(
                 Subscription.reserve_access_granted_at.isnot(None),
                 Subscription.reserve_access_granted_at <= grace_deadline,
             )
@@ -305,7 +307,11 @@ class MonitoringService:
         cleaned = 0
 
         for subscription in subscriptions:
-            remnawave_uuid = getattr(subscription, 'remnawave_uuid', None)
+            remnawave_uuid = (
+                getattr(subscription, 'remnawave_uuid', None)
+                if settings.is_multi_tariff_enabled()
+                else getattr(subscription.user, 'remnawave_uuid', None)
+            )
             if remnawave_uuid and subscription_service.is_configured:
                 await subscription_service.disable_remnawave_user(remnawave_uuid)
 
