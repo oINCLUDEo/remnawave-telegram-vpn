@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -786,61 +786,14 @@ class RemnaWaveWebhookService:
     async def _grant_reserve_access_if_test(
         self, db: AsyncSession, user: User, subscription: Subscription
     ) -> None:
-        """ТЕСТОВАЯ ФИЧА: временно переводит юзера на резервный сквад (доступ к Telegram)
-        на grace-период после просрочки, чтобы дать время продлить подписку.
-        Включена только для telegram_id из RESERVE_TEST_TELEGRAM_IDS.
-        """
+        """ТЕСТОВАЯ ФИЧА: см. SubscriptionService.grant_reserve_squad_grace_if_test."""
         if not settings.is_reserve_access_enabled_for(user.telegram_id):
-            return
-
-        remnawave_uuid = (
-            getattr(subscription, 'remnawave_uuid', None)
-            if settings.is_multi_tariff_enabled()
-            else getattr(user, 'remnawave_uuid', None)
-        )
-        if not remnawave_uuid:
             return
 
         from app.services.subscription_service import SubscriptionService
 
         subscription_service = SubscriptionService()
-        if not subscription_service.is_configured:
-            return
-
-        original_squads = list(subscription.connected_squads or [])
-        grace_expire_at = datetime.now(UTC) + timedelta(days=settings.RESERVE_GRACE_DAYS)
-
-        try:
-            async with subscription_service.get_api_client() as api:
-                from app.external.remnawave_api import UserStatus
-
-                await api.update_user(
-                    uuid=remnawave_uuid,
-                    status=UserStatus.ACTIVE,
-                    expire_at=grace_expire_at,
-                    active_internal_squads=[settings.RESERVE_SQUAD_UUID],
-                )
-        except Exception as exc:
-            logger.error(
-                'Не удалось активировать резервный сквад grace-периода',
-                subscription_id=subscription.id,
-                user_id=user.id,
-                exc=exc,
-            )
-            return
-
-        subscription.reserve_access_granted_at = datetime.now(UTC)
-        subscription.reserve_original_squads = original_squads
-        subscription.connected_squads = [settings.RESERVE_SQUAD_UUID]
-        await db.commit()
-
-        logger.info(
-            'Grace-период резервного сквада активирован (тест)',
-            subscription_id=subscription.id,
-            user_id=user.id,
-            telegram_id=user.telegram_id,
-            grace_expire_at=grace_expire_at.isoformat(),
-        )
+        await subscription_service.grant_reserve_squad_grace_if_test(db, user, subscription)
 
     async def _handle_user_disabled(
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict

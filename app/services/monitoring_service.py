@@ -421,6 +421,10 @@ class MonitoringService:
                 await expire_subscription(db, subscription)
 
                 user = await get_user_by_id(db, subscription.user_id)
+
+                if user and settings.is_reserve_access_enabled_for(user.telegram_id):
+                    await self.subscription_service.grant_reserve_squad_grace_if_test(db, user, subscription)
+
                 if user and self.bot:
                     await self._send_subscription_expired_notification(user, subscription, tariff_name=_tariff_name)
 

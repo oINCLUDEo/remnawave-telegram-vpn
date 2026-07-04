@@ -1417,6 +1417,24 @@ async def check_and_update_subscription_status(db: AsyncSession, subscription: S
         await db.refresh(subscription)
 
         logger.info("⏰ Статус подписки пользователя изменен на 'expired'", user_id=subscription.user_id)
+
+        # ТЕСТОВАЯ ФИЧА: grace-период на резервном сквад для избранных telegram_id.
+        # Эта функция — самый частый и надёжный триггер реального перехода в expired
+        # (вызывается почти при любой загрузке подписки), поэтому фича подключена сюда,
+        # а не только к вебхуку user.expired или периодической проверке в monitoring_service.
+        try:
+            user_result = await db.execute(select(User).where(User.id == subscription.user_id))
+            expired_user = user_result.scalar_one_or_none()
+            if expired_user and settings.is_reserve_access_enabled_for(expired_user.telegram_id):
+                from app.services.subscription_service import SubscriptionService
+
+                await SubscriptionService().grant_reserve_squad_grace_if_test(db, expired_user, subscription)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(
+                'Не удалось активировать grace-период резервного сквада (тест)',
+                subscription_id=subscription.id,
+                exc=exc,
+            )
     elif subscription.status == SubscriptionStatus.PENDING.value:
         logger.info('ℹ️ Проверка PENDING подписки статус остается без изменений', subscription_id=subscription.id)
 
