@@ -37,7 +37,7 @@ from app.database.models import Subscription, SubscriptionServer, SubscriptionSt
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.notification_delivery_service import NotificationType, notification_delivery_service
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button
+from app.utils.miniapp_buttons import build_miniapp_or_callback_button, strip_leading_emoji_if_custom_icon
 
 
 logger = structlog.get_logger(__name__)
@@ -915,11 +915,27 @@ class RemnaWaveWebhookService:
             'исчерпан. Продлите подписку, чтобы восстановить полный доступ.'
         )
 
+        extend_icon = '5258419835922030550' if settings.is_cabinet_mode() else None
+        balance_icon = '5220048868682532055' if settings.is_cabinet_mode() else None
         extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text='Продлить подписку', callback_data=extend_callback)],
-                [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
+                [
+                    build_miniapp_or_callback_button(
+                        text=strip_leading_emoji_if_custom_icon('Продлить подписку', extend_icon),
+                        callback_data=extend_callback,
+                        style='success',
+                        icon_custom_emoji_id=extend_icon,
+                    )
+                ],
+                [
+                    build_miniapp_or_callback_button(
+                        text=strip_leading_emoji_if_custom_icon('💳 Пополнить баланс', balance_icon),
+                        callback_data='balance_topup',
+                        icon_custom_emoji_id=balance_icon,
+                    )
+                ],
+                [build_miniapp_or_callback_button(text='🏠 Главное меню', callback_data='back_to_menu')],
             ]
         )
 

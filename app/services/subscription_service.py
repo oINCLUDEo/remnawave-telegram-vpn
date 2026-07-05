@@ -640,9 +640,10 @@ class SubscriptionService:
         if not user.telegram_id:
             return
 
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        from aiogram.types import InlineKeyboardMarkup
 
         from app.bot_factory import create_bot
+        from app.utils.miniapp_buttons import build_miniapp_or_callback_button, strip_leading_emoji_if_custom_icon
 
         message = (
             '🔌 <b>Временный доступ к VPN</b>\n\n'
@@ -652,11 +653,30 @@ class SubscriptionService:
             'После истечения срока или лимита трафика доступ будет отключён.'
         )
 
+        # icon_custom_emoji_id виден только в режиме кабинета (web_app-кнопки);
+        # в обычном callback-режиме телеграм его игнорирует, поэтому исходный
+        # emoji в тексте кнопки убираем только когда он реально будет заменён.
+        extend_icon = '5258419835922030550' if settings.is_cabinet_mode() else None
+        balance_icon = '5220048868682532055' if settings.is_cabinet_mode() else None
         extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text='Продлить подписку', callback_data=extend_callback)],
-                [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
+                [
+                    build_miniapp_or_callback_button(
+                        text=strip_leading_emoji_if_custom_icon('Продлить подписку', extend_icon),
+                        callback_data=extend_callback,
+                        style='success',
+                        icon_custom_emoji_id=extend_icon,
+                    )
+                ],
+                [
+                    build_miniapp_or_callback_button(
+                        text=strip_leading_emoji_if_custom_icon('💳 Пополнить баланс', balance_icon),
+                        callback_data='balance_topup',
+                        icon_custom_emoji_id=balance_icon,
+                    )
+                ],
+                [build_miniapp_or_callback_button(text='🏠 Главное меню', callback_data='back_to_menu')],
             ]
         )
 
