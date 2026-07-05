@@ -1053,6 +1053,15 @@ async def handle_custom_confirm(
         await callback.answer('Произошла ошибка при оформлении подписки', show_alert=True)
         return
 
+    # ТЕСТОВАЯ ФИЧА: connected_squads уже корректно перезаписан тарифными сквадами
+    # выше, но guard-поля grace-периода нужно явно сбросить — иначе
+    # grant_reserve_squad_grace_if_test молча проигнорирует следующий
+    # grace-период для этого пользователя.
+    if getattr(subscription, 'reserve_access_granted_at', None):
+        subscription.reserve_access_granted_at = None
+        subscription.reserve_original_squads = None
+        await db.commit()
+
     try:
         # Обновляем пользователя в Remnawave
         # При покупке тарифа ВСЕГДА сбрасываем трафик в панели
@@ -1565,6 +1574,15 @@ async def confirm_tariff_purchase(
         await callback.answer('Произошла ошибка при оформлении подписки', show_alert=True)
         return
 
+    # ТЕСТОВАЯ ФИЧА: connected_squads уже корректно перезаписан тарифными сквадами
+    # выше, но guard-поля grace-периода нужно явно сбросить — иначе
+    # grant_reserve_squad_grace_if_test молча проигнорирует следующий
+    # grace-период для этого пользователя.
+    if getattr(subscription, 'reserve_access_granted_at', None):
+        subscription.reserve_access_granted_at = None
+        subscription.reserve_original_squads = None
+        await db.commit()
+
     # Обновляем пользователя в Remnawave
     # При покупке тарифа ВСЕГДА сбрасываем трафик в панели
     try:
@@ -1754,6 +1772,9 @@ async def confirm_daily_tariff_purchase(
                 max_device_limit=getattr(tariff, 'max_device_limit', None),
             )
             existing_subscription.connected_squads = squads
+            # ТЕСТОВАЯ ФИЧА: смена тарифа считается восстановлением после grace-периода
+            existing_subscription.reserve_access_granted_at = None
+            existing_subscription.reserve_original_squads = None
             existing_subscription.status = 'active'
             existing_subscription.is_trial = False  # Сбрасываем триальный статус
             existing_subscription.is_daily_paused = False
@@ -2900,6 +2921,15 @@ async def confirm_tariff_switch(
             connected_squads=squads,
         )
 
+        # ТЕСТОВАЯ ФИЧА: connected_squads уже корректно перезаписан выше, но
+        # guard-поля grace-периода нужно явно сбросить — иначе
+        # grant_reserve_squad_grace_if_test молча проигнорирует следующий
+        # grace-период для этого пользователя.
+        if getattr(subscription, 'reserve_access_granted_at', None):
+            subscription.reserve_access_granted_at = None
+            subscription.reserve_original_squads = None
+            await db.commit()
+
         # Обновляем пользователя в Remnawave
         try:
             subscription_service = SubscriptionService()
@@ -3106,6 +3136,9 @@ async def confirm_daily_tariff_switch(
             max_device_limit=getattr(tariff, 'max_device_limit', None),
         )
         subscription.connected_squads = squads
+        # ТЕСТОВАЯ ФИЧА: смена тарифа считается восстановлением после grace-периода
+        subscription.reserve_access_granted_at = None
+        subscription.reserve_original_squads = None
         subscription.status = 'active'
         subscription.is_trial = False  # Сбрасываем триальный статус
         subscription.is_daily_paused = False
@@ -3731,6 +3764,9 @@ async def confirm_instant_switch(
             max_device_limit=getattr(new_tariff, 'max_device_limit', None),
         )
         subscription.connected_squads = squads
+        # ТЕСТОВАЯ ФИЧА: смена тарифа считается восстановлением после grace-периода
+        subscription.reserve_access_granted_at = None
+        subscription.reserve_original_squads = None
 
         # Сбрасываем докупленный трафик при смене тарифа
         from sqlalchemy import delete as sql_delete
