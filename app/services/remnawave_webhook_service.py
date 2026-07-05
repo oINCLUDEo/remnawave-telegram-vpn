@@ -868,6 +868,24 @@ class RemnaWaveWebhookService:
             logger.info('Webhook user.limited: подписка не найдена в БД (уже удалена), пропуск', user_id=user.id)
             return
 
+        # ТЕСТОВАЯ ФИЧА: если это исчерпание лимита трафика на резервном скваде
+        # grace-периода (а не обычный лимит трафика оплаченного тарифа) — отдельное
+        # уведомление и немедленная очистка guard-полей, вместо обычного "пополните трафик".
+        if getattr(subscription, 'reserve_access_granted_at', None):
+            self._stamp_webhook_update(subscription)
+            subscription.connected_squads = list(subscription.reserve_original_squads or [])
+            subscription.reserve_access_granted_at = None
+            subscription.reserve_original_squads = None
+            await db.commit()
+            await db.refresh(subscription)
+            logger.info(
+                'Grace-доступ резервного сквада исчерпан по лимиту трафика (тест)',
+                subscription_id=subscription.id,
+                user_id=user.id,
+            )
+            await self._notify_reserve_grace_traffic_exhausted(user)
+            return
+
         self._stamp_webhook_update(subscription)
         if subscription.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value):
             subscription.status = SubscriptionStatus.LIMITED.value
@@ -883,6 +901,29 @@ class RemnaWaveWebhookService:
         await self._notify_user(
             user, 'WEBHOOK_SUB_LIMITED', reply_markup=self._get_traffic_keyboard(user), subscription=subscription
         )
+
+    async def _notify_reserve_grace_traffic_exhausted(self, user: User) -> None:
+        """ТЕСТОВАЯ ФИЧА: уведомление об исчерпании лимита трафика на резервном
+        скваде grace-периода. Использует прямую отправку через self.bot,
+        т.к. это не обычное событие тарифа и не заведено в locale/NotificationType.
+        """
+        if not user.telegram_id:
+            return
+
+        message = (
+            '⛔ <b>Временный доступ исчерпан</b>\n\n'
+            f'Лимит трафика ({settings.RESERVE_GRACE_TRAFFIC_GB} ГБ) на временном резервном доступе '
+            'исчерпан. Продлите подписку, чтобы восстановить полный доступ.'
+        )
+        try:
+            await self.bot.send_message(chat_id=user.telegram_id, text=message, parse_mode='HTML')
+        except Exception as exc:
+            logger.error(
+                'Не удалось отправить уведомление об исчерпании трафика grace-доступа (тест)',
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+                exc=exc,
+            )
 
     async def _handle_user_traffic_reset(
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
