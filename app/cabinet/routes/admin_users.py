@@ -246,6 +246,15 @@ async def _sync_subscription_to_panel(
             logger.warning('Remnawave not configured, skipping panel sync for user', user_id=user.id)
             return {'skipped': True, 'reason': 'Remnawave not configured'}
 
+        # ТЕСТОВАЯ ФИЧА: любая ручная синхронизация из админки (extend/activate/
+        # set_end_date и т.д.) считается восстановлением после grace-периода —
+        # иначе панель продолжит получать резервный сквад вместо тарифного,
+        # т.к. этот путь не проходит через SubscriptionRenewalService.finalize().
+        if getattr(subscription, 'reserve_access_granted_at', None):
+            subscription.connected_squads = list(subscription.reserve_original_squads or [])
+            subscription.reserve_access_granted_at = None
+            subscription.reserve_original_squads = None
+
         is_active = (
             subscription.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)
             and subscription.end_date
