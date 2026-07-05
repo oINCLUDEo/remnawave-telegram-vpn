@@ -915,13 +915,13 @@ class RemnaWaveWebhookService:
             'исчерпан. Продлите подписку, чтобы восстановить полный доступ.'
         )
 
-        extend_icon = '5258419835922030550' if settings.is_cabinet_mode() else None
-        balance_icon = '5220048868682532055' if settings.is_cabinet_mode() else None
+        extend_icon = '5258419835922030550'
+        balance_icon = '5220048868682532055'
         extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    build_miniapp_or_callback_button(
+                    InlineKeyboardButton(
                         text=strip_leading_emoji_if_custom_icon('Продлить подписку', extend_icon),
                         callback_data=extend_callback,
                         style='success',
@@ -929,13 +929,13 @@ class RemnaWaveWebhookService:
                     )
                 ],
                 [
-                    build_miniapp_or_callback_button(
+                    InlineKeyboardButton(
                         text=strip_leading_emoji_if_custom_icon('💳 Пополнить баланс', balance_icon),
                         callback_data='balance_topup',
                         icon_custom_emoji_id=balance_icon,
                     )
                 ],
-                [build_miniapp_or_callback_button(text='🏠 Главное меню', callback_data='back_to_menu')],
+                [InlineKeyboardButton(text='🏠 Главное меню', callback_data='back_to_menu')],
             ]
         )
 
