@@ -2278,6 +2278,15 @@ async def confirm_tariff_extend(
             device_limit=actual_device_limit if was_trial else None,
         )
 
+        # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+        # реальное продление тарифа считается восстановлением — иначе панель
+        # продолжит получать резервный сквад вместо тарифного.
+        if getattr(subscription, 'reserve_access_granted_at', None):
+            subscription.connected_squads = list(subscription.reserve_original_squads or [])
+            subscription.reserve_access_granted_at = None
+            subscription.reserve_original_squads = None
+            await db.commit()
+
         # Обновляем пользователя в Remnawave
         try:
             subscription_service = SubscriptionService()
