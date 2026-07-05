@@ -1146,6 +1146,15 @@ async def update_user_subscription(
             await db.commit()
             await db.refresh(subscription)
 
+            # ТЕСТОВАЯ ФИЧА: этот код сам выставляет EXPIRED в обход
+            # check_and_update_subscription_status, поэтому grace-хук
+            # нужно вызывать здесь явно, иначе фича не сработает при
+            # тестировании просрочки через админку.
+            if settings.is_reserve_access_enabled_for(user.telegram_id):
+                from app.services.subscription_service import SubscriptionService
+
+                await SubscriptionService().grant_reserve_squad_grace_if_test(db, user, subscription)
+
         # Sync to Remnawave panel
         await _sync_subscription_to_panel(db, user, subscription)
 
@@ -1174,6 +1183,15 @@ async def update_user_subscription(
 
         await db.commit()
         await db.refresh(subscription)
+
+        # ТЕСТОВАЯ ФИЧА: та же причина, что и в 'shorten' — это прямой
+        # обход check_and_update_subscription_status, grace-хук вызываем явно.
+        if subscription.status == SubscriptionStatus.EXPIRED.value and settings.is_reserve_access_enabled_for(
+            user.telegram_id
+        ):
+            from app.services.subscription_service import SubscriptionService
+
+            await SubscriptionService().grant_reserve_squad_grace_if_test(db, user, subscription)
 
         # Sync to Remnawave panel
         await _sync_subscription_to_panel(db, user, subscription)
