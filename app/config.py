@@ -125,6 +125,7 @@ class Settings(BaseSettings):
     # ТЕСТОВЫЙ РЕЖИМ: включается только для telegram_id из RESERVE_TEST_TELEGRAM_IDS.
     RESERVE_SQUAD_UUID: str | None = None
     RESERVE_GRACE_DAYS: int = 3
+    RESERVE_GRACE_TRAFFIC_GB: int = 3  # лимит трафика на резервном скваде во время grace-периода
     RESERVE_TEST_TELEGRAM_IDS: str = ''  # comma-separated, пусто = фича выключена
 
     # Webhook user notification toggles (what Telegram messages users receive from webhook events)

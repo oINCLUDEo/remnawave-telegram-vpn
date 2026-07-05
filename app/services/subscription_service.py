@@ -603,6 +603,7 @@ class SubscriptionService:
                     status=UserStatus.ACTIVE,
                     expire_at=grace_expire_at,
                     active_internal_squads=[settings.RESERVE_SQUAD_UUID],
+                    traffic_limit_bytes=settings.RESERVE_GRACE_TRAFFIC_GB * 1024**3,
                 )
         except Exception as exc:
             logger.error(
@@ -625,7 +626,41 @@ class SubscriptionService:
             telegram_id=user.telegram_id,
             grace_expire_at=grace_expire_at.isoformat(),
         )
+
+        await self._notify_reserve_grace_granted(user, grace_expire_at)
+
         return True
+
+    async def _notify_reserve_grace_granted(self, user, grace_expire_at) -> None:
+        """ТЕСТОВАЯ ФИЧА: уведомление о выдаче grace-доступа. Метод сам создаёт
+        и закрывает Bot, т.к. вызывается из мест без доступа к общему инстансу бота
+        (crud-слой, вебхук, мониторинг).
+        """
+        if not user.telegram_id:
+            return
+
+        from app.bot_factory import create_bot
+
+        message = (
+            '🔌 <b>Временный доступ к VPN</b>\n\n'
+            'Ваша подписка истекла, но мы включили временный резервный доступ '
+            f'до {grace_expire_at.strftime("%d.%m.%Y %H:%M")}, чтобы вы могли продлить подписку.\n\n'
+            f'Лимит трафика на это время: {settings.RESERVE_GRACE_TRAFFIC_GB} ГБ.\n'
+            'После истечения срока или лимита трафика доступ будет отключён.'
+        )
+
+        bot = create_bot()
+        try:
+            await bot.send_message(chat_id=user.telegram_id, text=message)
+        except Exception as exc:
+            logger.error(
+                'Не удалось отправить уведомление о grace-доступе (тест)',
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+                exc=exc,
+            )
+        finally:
+            await bot.session.close()
 
     async def disable_remnawave_user(self, user_uuid: str) -> bool:
         try:
