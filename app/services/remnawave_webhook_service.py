@@ -883,7 +883,7 @@ class RemnaWaveWebhookService:
                 subscription_id=subscription.id,
                 user_id=user.id,
             )
-            await self._notify_reserve_grace_traffic_exhausted(user)
+            await self._notify_reserve_grace_traffic_exhausted(user, subscription)
             return
 
         self._stamp_webhook_update(subscription)
@@ -902,7 +902,7 @@ class RemnaWaveWebhookService:
             user, 'WEBHOOK_SUB_LIMITED', reply_markup=self._get_traffic_keyboard(user), subscription=subscription
         )
 
-    async def _notify_reserve_grace_traffic_exhausted(self, user: User) -> None:
+    async def _notify_reserve_grace_traffic_exhausted(self, user: User, subscription: Subscription) -> None:
         """ТЕСТОВАЯ ФИЧА: уведомление об исчерпании лимита трафика на резервном
         скваде grace-периода. Использует прямую отправку через self.bot,
         т.к. это не обычное событие тарифа и не заведено в locale/NotificationType.
@@ -915,8 +915,17 @@ class RemnaWaveWebhookService:
             f'Лимит трафика ({settings.RESERVE_GRACE_TRAFFIC_GB} ГБ) на временном резервном доступе '
             'исчерпан. Продлите подписку, чтобы восстановить полный доступ.'
         )
+
+        extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text='Продлить подписку', callback_data=extend_callback)],
+                [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
+            ]
+        )
+
         try:
-            await self.bot.send_message(chat_id=user.telegram_id, text=message, parse_mode='HTML')
+            await self.bot.send_message(chat_id=user.telegram_id, text=message, parse_mode='HTML', reply_markup=keyboard)
         except Exception as exc:
             logger.error(
                 'Не удалось отправить уведомление об исчерпании трафика grace-доступа (тест)',

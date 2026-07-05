@@ -627,17 +627,19 @@ class SubscriptionService:
             grace_expire_at=grace_expire_at.isoformat(),
         )
 
-        await self._notify_reserve_grace_granted(user, grace_expire_at)
+        await self._notify_reserve_grace_granted(user, subscription, grace_expire_at)
 
         return True
 
-    async def _notify_reserve_grace_granted(self, user, grace_expire_at) -> None:
+    async def _notify_reserve_grace_granted(self, user, subscription, grace_expire_at) -> None:
         """ТЕСТОВАЯ ФИЧА: уведомление о выдаче grace-доступа. Метод сам создаёт
         и закрывает Bot, т.к. вызывается из мест без доступа к общему инстансу бота
         (crud-слой, вебхук, мониторинг).
         """
         if not user.telegram_id:
             return
+
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
         from app.bot_factory import create_bot
 
@@ -649,9 +651,17 @@ class SubscriptionService:
             'После истечения срока или лимита трафика доступ будет отключён.'
         )
 
+        extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text='Продлить подписку', callback_data=extend_callback)],
+                [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
+            ]
+        )
+
         bot = create_bot()
         try:
-            await bot.send_message(chat_id=user.telegram_id, text=message)
+            await bot.send_message(chat_id=user.telegram_id, text=message, reply_markup=keyboard)
         except Exception as exc:
             logger.error(
                 'Не удалось отправить уведомление о grace-доступе (тест)',
