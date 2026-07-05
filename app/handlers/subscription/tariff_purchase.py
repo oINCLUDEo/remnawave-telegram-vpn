@@ -17,6 +17,7 @@ from app.database.crud.subscription import (
     get_active_subscriptions_by_user_id,
     get_subscription_by_id_for_user,
     get_subscription_by_user_id,
+    restore_reserve_grace_if_active,
 )
 from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction
@@ -986,6 +987,12 @@ async def handle_custom_confirm(
     else:
         existing_subscription = await get_subscription_by_user_id(db, db_user.id)
 
+    # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+    # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+    # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+    if existing_subscription:
+        restore_reserve_grace_if_active(existing_subscription)
+
     try:
         if existing_subscription:
             # Продлеваем существующую подписку и обновляем параметры тарифа
@@ -1052,15 +1059,6 @@ async def handle_custom_confirm(
             )
         await callback.answer('Произошла ошибка при оформлении подписки', show_alert=True)
         return
-
-    # ТЕСТОВАЯ ФИЧА: connected_squads уже корректно перезаписан тарифными сквадами
-    # выше, но guard-поля grace-периода нужно явно сбросить — иначе
-    # grant_reserve_squad_grace_if_test молча проигнорирует следующий
-    # grace-период для этого пользователя.
-    if getattr(subscription, 'reserve_access_granted_at', None):
-        subscription.reserve_access_granted_at = None
-        subscription.reserve_original_squads = None
-        await db.commit()
 
     try:
         # Обновляем пользователя в Remnawave
@@ -1405,6 +1403,12 @@ async def confirm_tariff_purchase(
     # Reuse existing_sub fetched above for device pricing
     existing_subscription = existing_sub
 
+    # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+    # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+    # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+    if existing_subscription:
+        restore_reserve_grace_if_active(existing_subscription)
+
     try:
         if settings.is_multi_tariff_enabled():
             if existing_subscription and existing_subscription.tariff_id == tariff.id:
@@ -1573,15 +1577,6 @@ async def confirm_tariff_purchase(
             )
         await callback.answer('Произошла ошибка при оформлении подписки', show_alert=True)
         return
-
-    # ТЕСТОВАЯ ФИЧА: connected_squads уже корректно перезаписан тарифными сквадами
-    # выше, но guard-поля grace-периода нужно явно сбросить — иначе
-    # grant_reserve_squad_grace_if_test молча проигнорирует следующий
-    # grace-период для этого пользователя.
-    if getattr(subscription, 'reserve_access_granted_at', None):
-        subscription.reserve_access_granted_at = None
-        subscription.reserve_original_squads = None
-        await db.commit()
 
     # Обновляем пользователя в Remnawave
     # При покупке тарифа ВСЕГДА сбрасываем трафик в панели
@@ -1754,6 +1749,12 @@ async def confirm_daily_tariff_purchase(
     else:
         existing_subscription = await get_subscription_by_user_id(db, db_user.id)
 
+    # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+    # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+    # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+    if existing_subscription:
+        restore_reserve_grace_if_active(existing_subscription)
+
     try:
         if existing_subscription:
             # Обновляем существующую подписку на суточный тариф
@@ -1772,9 +1773,6 @@ async def confirm_daily_tariff_purchase(
                 max_device_limit=getattr(tariff, 'max_device_limit', None),
             )
             existing_subscription.connected_squads = squads
-            # ТЕСТОВАЯ ФИЧА: смена тарифа считается восстановлением после grace-периода
-            existing_subscription.reserve_access_granted_at = None
-            existing_subscription.reserve_original_squads = None
             existing_subscription.status = 'active'
             existing_subscription.is_trial = False  # Сбрасываем триальный статус
             existing_subscription.is_daily_paused = False
@@ -2299,13 +2297,10 @@ async def confirm_tariff_extend(
             device_limit=actual_device_limit if was_trial else None,
         )
 
-        # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
-        # реальное продление тарифа считается восстановлением — иначе панель
-        # продолжит получать резервный сквад вместо тарифного.
-        if getattr(subscription, 'reserve_access_granted_at', None):
-            subscription.connected_squads = list(subscription.reserve_original_squads or [])
-            subscription.reserve_access_granted_at = None
-            subscription.reserve_original_squads = None
+        # ТЕСТОВАЯ ФИЧА: реальное продление тарифа считается восстановлением
+        # после grace-периода на резервном скваде — иначе панель продолжит
+        # получать резервный сквад и урезанный трафик вместо тарифных.
+        if restore_reserve_grace_if_active(subscription):
             await db.commit()
 
         # Обновляем пользователя в Remnawave
@@ -2855,6 +2850,11 @@ async def confirm_tariff_switch(
         await callback.answer('У вас нет активной подписки', show_alert=True)
         return
 
+    # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+    # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+    # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+    restore_reserve_grace_if_active(subscription)
+
     # Calculate price via PricingEngine (handles per-category discounts + extra devices)
     from app.services.pricing_engine import pricing_engine
 
@@ -2920,15 +2920,6 @@ async def confirm_tariff_switch(
             device_limit=effective_device_limit,
             connected_squads=squads,
         )
-
-        # ТЕСТОВАЯ ФИЧА: connected_squads уже корректно перезаписан выше, но
-        # guard-поля grace-периода нужно явно сбросить — иначе
-        # grant_reserve_squad_grace_if_test молча проигнорирует следующий
-        # grace-период для этого пользователя.
-        if getattr(subscription, 'reserve_access_granted_at', None):
-            subscription.reserve_access_granted_at = None
-            subscription.reserve_original_squads = None
-            await db.commit()
 
         # Обновляем пользователя в Remnawave
         try:
@@ -3096,6 +3087,11 @@ async def confirm_daily_tariff_switch(
         await callback.answer('У вас нет активной подписки', show_alert=True)
         return
 
+    # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+    # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+    # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+    restore_reserve_grace_if_active(subscription)
+
     texts = get_texts(db_user.language)
 
     try:
@@ -3136,9 +3132,6 @@ async def confirm_daily_tariff_switch(
             max_device_limit=getattr(tariff, 'max_device_limit', None),
         )
         subscription.connected_squads = squads
-        # ТЕСТОВАЯ ФИЧА: смена тарифа считается восстановлением после grace-периода
-        subscription.reserve_access_granted_at = None
-        subscription.reserve_original_squads = None
         subscription.status = 'active'
         subscription.is_trial = False  # Сбрасываем триальный статус
         subscription.is_daily_paused = False
@@ -3689,6 +3682,11 @@ async def confirm_instant_switch(
         await callback.answer('Подписка не найдена', show_alert=True)
         return
 
+    # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+    # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+    # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+    restore_reserve_grace_if_active(subscription)
+
     from app.database.crud.user import lock_user_for_pricing
 
     db_user = await lock_user_for_pricing(db, db_user.id)
@@ -3764,9 +3762,6 @@ async def confirm_instant_switch(
             max_device_limit=getattr(new_tariff, 'max_device_limit', None),
         )
         subscription.connected_squads = squads
-        # ТЕСТОВАЯ ФИЧА: смена тарифа считается восстановлением после grace-периода
-        subscription.reserve_access_granted_at = None
-        subscription.reserve_original_squads = None
 
         # Сбрасываем докупленный трафик при смене тарифа
         from sqlalchemy import delete as sql_delete

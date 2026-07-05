@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud.subscription import extend_subscription
+from app.database.crud.subscription import extend_subscription, restore_reserve_grace_if_active
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.models import Subscription, SubscriptionStatus, TransactionType, User
@@ -472,6 +472,12 @@ async def _auto_extend_subscription(
     was_trial = subscription.is_trial  # Запоминаем, была ли подписка триальной
     old_tariff_id = subscription.tariff_id  # Запоминаем старый тариф для определения смены
 
+    # ТЕСТОВАЯ ФИЧА: если во время просрочки юзер был переведён на резервный
+    # сквад (grace-период), автопродление считается восстановлением — вызываем
+    # ДО _apply_extension_updates()/extend_subscription(), чтобы при смене тарифа
+    # корректные новые сквады/трафик не были затёрты значениями резерва.
+    restore_reserve_squads = restore_reserve_grace_if_active(subscription)
+
     _apply_extension_updates(prepared)
 
     # Определяем, произошла ли смена тарифа
@@ -569,14 +575,6 @@ async def _auto_extend_subscription(
         should_reset_traffic = settings.RESET_TRAFFIC_ON_TARIFF_SWITCH
     else:
         should_reset_traffic = settings.RESET_TRAFFIC_ON_PAYMENT
-
-    # ТЕСТОВАЯ ФИЧА: если во время просрочки юзер был переведён на резервный
-    # сквад (grace-период), при автопродлении восстанавливаем исходные сквады.
-    restore_reserve_squads = bool(getattr(updated_subscription, 'reserve_access_granted_at', None))
-    if restore_reserve_squads:
-        updated_subscription.connected_squads = list(updated_subscription.reserve_original_squads or [])
-        updated_subscription.reserve_access_granted_at = None
-        updated_subscription.reserve_original_squads = None
 
     try:
         await subscription_service.update_remnawave_user(
@@ -1211,6 +1209,10 @@ async def _auto_purchase_daily_tariff(
             old_tariff = (
                 await _get_old_tariff(db, existing_subscription.tariff_id) if existing_subscription.tariff_id else None
             )
+            # ТЕСТОВАЯ ФИЧА: переход на суточный тариф считается восстановлением
+            # после grace-периода на резервном скваде — снимаем guard-поля, т.к.
+            # ниже сквады/трафик и так будут заменены значениями нового тарифа.
+            restore_reserve_grace_if_active(existing_subscription)
             existing_subscription.tariff_id = tariff.id
             existing_subscription.traffic_limit_gb = tariff.traffic_limit_gb
             existing_subscription.device_limit = calc_device_limit_on_tariff_switch(

@@ -17,6 +17,7 @@ from app.config import settings
 from app.database.crud.subscription import (
     add_subscription_servers,
     extend_subscription,
+    restore_reserve_grace_if_active,
 )
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
@@ -491,12 +492,8 @@ class SubscriptionRenewalService:
         subscription_service = SubscriptionService()
 
         # ТЕСТОВАЯ ФИЧА: если во время просрочки юзер был переведён на резервный
-        # сквад (grace-период), при продлении восстанавливаем исходные сквады.
-        restore_reserve_squads = bool(getattr(subscription_after, 'reserve_access_granted_at', None))
-        if restore_reserve_squads:
-            subscription_after.connected_squads = list(subscription_after.reserve_original_squads or [])
-            subscription_after.reserve_access_granted_at = None
-            subscription_after.reserve_original_squads = None
+        # сквад (grace-период), при продлении восстанавливаем исходные сквады и трафик.
+        restore_reserve_squads = restore_reserve_grace_if_active(subscription_after)
 
         try:
             await db.refresh(user)

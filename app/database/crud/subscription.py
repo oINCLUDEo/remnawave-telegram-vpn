@@ -36,6 +36,30 @@ async def generate_unique_short_id(db: AsyncSession, max_attempts: int = 10) -> 
     return secrets.token_hex(4)
 
 
+def restore_reserve_grace_if_active(subscription: Subscription) -> bool:
+    """ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+    восстанавливает исходные сквады и лимит трафика тарифа, снимая guard-поля.
+
+    Вызывается из ЛЮБОГО места, где подписка реально продлевается/меняется
+    (оплата, админка, вебхук, авто-платёж, мониторинг) — единая точка восстановления,
+    чтобы не дублировать логику по каждому обработчику отдельно.
+
+    Не делает commit — вызывающий код должен закоммитить сам вместе с остальными
+    изменениями подписки.
+    """
+    if not getattr(subscription, 'reserve_access_granted_at', None):
+        return False
+
+    subscription.connected_squads = list(subscription.reserve_original_squads or [])
+    if subscription.reserve_original_traffic_limit_gb is not None:
+        subscription.traffic_limit_gb = subscription.reserve_original_traffic_limit_gb
+
+    subscription.reserve_access_granted_at = None
+    subscription.reserve_original_squads = None
+    subscription.reserve_original_traffic_limit_gb = None
+    return True
+
+
 _WEBHOOK_GUARD_SECONDS = 60
 
 

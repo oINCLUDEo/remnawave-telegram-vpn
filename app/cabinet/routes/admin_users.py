@@ -12,6 +12,7 @@ from app.config import settings
 from app.database.crud.campaign import get_campaign_registration_by_user
 from app.database.crud.subscription import (
     extend_subscription,
+    restore_reserve_grace_if_active,
 )
 from app.database.crud.tariff import get_tariff_by_id
 from app.database.crud.user import (
@@ -248,12 +249,9 @@ async def _sync_subscription_to_panel(
 
         # ТЕСТОВАЯ ФИЧА: любая ручная синхронизация из админки (extend/activate/
         # set_end_date и т.д.) считается восстановлением после grace-периода —
-        # иначе панель продолжит получать резервный сквад вместо тарифного,
-        # т.к. этот путь не проходит через SubscriptionRenewalService.finalize().
-        if getattr(subscription, 'reserve_access_granted_at', None):
-            subscription.connected_squads = list(subscription.reserve_original_squads or [])
-            subscription.reserve_access_granted_at = None
-            subscription.reserve_original_squads = None
+        # иначе панель продолжит получать резервный сквад и урезанный трафик
+        # вместо тарифных, т.к. этот путь не проходит через SubscriptionRenewalService.finalize().
+        restore_reserve_grace_if_active(subscription)
 
         is_active = (
             subscription.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)

@@ -29,6 +29,7 @@ from app.database.crud.subscription import (
     get_subscription_by_user_id,
     is_recently_updated_by_webhook,
     reactivate_subscription,
+    restore_reserve_grace_if_active,
     update_subscription_usage,
 )
 from app.database.crud.user import get_user_by_id, get_user_by_remnawave_uuid, get_user_by_telegram_id
@@ -873,9 +874,7 @@ class RemnaWaveWebhookService:
         # уведомление и немедленная очистка guard-полей, вместо обычного "пополните трафик".
         if getattr(subscription, 'reserve_access_granted_at', None):
             self._stamp_webhook_update(subscription)
-            subscription.connected_squads = list(subscription.reserve_original_squads or [])
-            subscription.reserve_access_granted_at = None
-            subscription.reserve_original_squads = None
+            restore_reserve_grace_if_active(subscription)
             await db.commit()
             await db.refresh(subscription)
             logger.info(

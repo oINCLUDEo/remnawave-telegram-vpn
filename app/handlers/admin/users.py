@@ -4322,7 +4322,7 @@ async def _extend_subscription_by_days(
     db: AsyncSession, user_id: int, days: int, admin_id: int, subscription_id: int | None = None
 ) -> bool:
     try:
-        from app.database.crud.subscription import extend_subscription
+        from app.database.crud.subscription import extend_subscription, restore_reserve_grace_if_active
         from app.services.subscription_service import SubscriptionService
 
         subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
@@ -4336,12 +4336,10 @@ async def _extend_subscription_by_days(
 
         # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
         # ручное продление/сокращение из админки бота считается восстановлением —
-        # иначе панель продолжит получать резервный сквад вместо тарифного.
-        restore_reserve_squads = bool(getattr(subscription, 'reserve_access_granted_at', None))
+        # иначе панель продолжит получать резервный сквад и урезанный трафик
+        # вместо тарифных.
+        restore_reserve_squads = restore_reserve_grace_if_active(subscription)
         if restore_reserve_squads:
-            subscription.connected_squads = list(subscription.reserve_original_squads or [])
-            subscription.reserve_access_granted_at = None
-            subscription.reserve_original_squads = None
             await db.commit()
 
         await subscription_service.update_remnawave_user(db, subscription, sync_squads=restore_reserve_squads)

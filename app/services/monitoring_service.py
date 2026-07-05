@@ -27,6 +27,7 @@ from app.database.crud.subscription import (
     get_expiring_subscriptions,
     get_subscriptions_for_autopay,
     reactivate_subscription,
+    restore_reserve_grace_if_active,
 )
 from app.database.crud.user import (
     cleanup_expired_promo_offer_discounts,
@@ -315,9 +316,7 @@ class MonitoringService:
             if remnawave_uuid and subscription_service.is_configured:
                 await subscription_service.disable_remnawave_user(remnawave_uuid)
 
-            subscription.connected_squads = list(subscription.reserve_original_squads or [])
-            subscription.reserve_access_granted_at = None
-            subscription.reserve_original_squads = None
+            restore_reserve_grace_if_active(subscription)
             cleaned += 1
 
         await db.commit()
