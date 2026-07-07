@@ -5390,6 +5390,7 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
         from app.database.crud.subscription import (
             create_paid_subscription,
             extend_subscription,
+            restore_reserve_grace_if_active,
         )
         from app.database.crud.transaction import create_transaction
         from app.database.crud.user import subtract_user_balance
@@ -5415,6 +5416,11 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
         existing_subscription = await _resolve_admin_subscription(db, target_user.id, tariff_id=tariff_id)
 
         if existing_subscription:
+            # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+            # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+            # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+            restore_reserve_grace_if_active(existing_subscription)
+
             # Продлеваем существующую подписку
             subscription = await extend_subscription(
                 db,
@@ -5790,6 +5796,8 @@ async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: Us
         return
 
     try:
+        from app.database.crud.subscription import restore_reserve_grace_if_active
+
         old_tariff_id = subscription.tariff_id
 
         # Preserve extra purchased devices above the old tariff's base limit
@@ -5798,6 +5806,11 @@ async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: Us
             old_tariff = await get_tariff_by_id(db, subscription.tariff_id)
             if old_tariff and old_tariff.device_limit:
                 extra_devices = max(0, (subscription.device_limit or old_tariff.device_limit) - old_tariff.device_limit)
+
+        # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+        # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+        # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+        restore_reserve_grace_if_active(subscription)
 
         subscription.tariff_id = tariff.id
 

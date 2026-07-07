@@ -1221,6 +1221,12 @@ async def update_user_subscription(
 
         old_tariff = await get_tariff_by_id(db, subscription.tariff_id) if subscription.tariff_id else None
 
+        # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+        # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+        # иначе _sync_subscription_to_panel() восстановит устаревший резервный
+        # трафик/сквады поверх только что установленных тарифных значений.
+        restore_reserve_grace_if_active(subscription)
+
         subscription.tariff_id = request.tariff_id
         subscription.traffic_limit_gb = tariff.traffic_limit_gb
         subscription.device_limit = calc_device_limit_on_tariff_switch(
@@ -1286,6 +1292,11 @@ async def update_user_subscription(
         )
 
     if request.action == 'set_traffic':
+        # ТЕСТОВАЯ ФИЧА: см. комментарий в ветке change_tariff — иначе
+        # _sync_subscription_to_panel() восстановит устаревший резервный
+        # трафик поверх значения, только что заданного админом вручную.
+        restore_reserve_grace_if_active(subscription)
+
         if request.traffic_limit_gb is not None:
             subscription.traffic_limit_gb = request.traffic_limit_gb
 
@@ -1374,6 +1385,11 @@ async def update_user_subscription(
 
         from app.database.crud.subscription import add_subscription_traffic, reactivate_subscription
 
+        # ТЕСТОВАЯ ФИЧА: см. комментарий в ветке change_tariff — сбрасываем
+        # резервный snapshot до того, как добавляемый трафик посчитается
+        # от текущего (возможно урезанного grace-периодом) traffic_limit_gb.
+        restore_reserve_grace_if_active(subscription)
+
         await add_subscription_traffic(db, subscription, request.traffic_gb)
 
         # Реактивируем подписку если она была DISABLED/EXPIRED (например, после LIMITED/EXPIRED в RemnaWave)
@@ -1423,6 +1439,9 @@ async def update_user_subscription(
             )
 
         removed_gb = traffic_purchase.traffic_gb
+
+        # ТЕСТОВАЯ ФИЧА: см. комментарий в ветке change_tariff.
+        restore_reserve_grace_if_active(subscription)
 
         # Decrement counters
         subscription.traffic_limit_gb = max(0, subscription.traffic_limit_gb - removed_gb)
