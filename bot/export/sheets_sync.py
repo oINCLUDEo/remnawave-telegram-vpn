@@ -57,6 +57,8 @@ SHEET_BY_MONTHS = "По месяцам"
 SHEET_METRICS = "Метрики"
 SHEET_BY_TARIFFS = "По тарифам"
 SHEET_ANALYTICS = "Аналитика"
+# Когортные листы («Когорты», «Когорты по источникам», «Retention», «Доход по юзерам»)
+# приходят готовыми из app/services/cohort_export_service.py как {имя_листа: (headers, rows)}.
 
 # Payment methods that represent real external cash inflows.
 # Imported from existing crud to stay in sync with the rest of the codebase.
@@ -254,35 +256,35 @@ async def _count_new_paying(
     day_end_utc: datetime,
 ) -> int:
     """
-    New paying users this month =
-      trial→paid conversions + directly-paid subscriptions (is_trial=False, new this month).
+    New paying users this month = DISTINCT users in the union of
+      {users with a trial→paid conversion this month}
+      ∪ {users with a new non-trial subscription created this month}.
+
+    Counted as a set union (not a sum) because a trial converted in the same
+    month it was created appears in BOTH groups: conversion flips is_trial on
+    the existing Subscription row whose created_at stays within the month.
+    Summing the two counts double-counted such users.
     """
-    conversions = int(
-        (
-            await session.execute(
-                select(func.count(SubscriptionConversion.id)).where(
-                    SubscriptionConversion.converted_at >= month_start_utc,
-                    SubscriptionConversion.converted_at < day_end_utc,
-                )
-            )
-        ).scalar()
-        or 0
+    conversion_user_rows = await session.execute(
+        select(func.distinct(SubscriptionConversion.user_id)).where(
+            SubscriptionConversion.converted_at >= month_start_utc,
+            SubscriptionConversion.converted_at < day_end_utc,
+        )
     )
+    conversion_user_ids: set[int] = {row[0] for row in conversion_user_rows.all()}
+
     from sqlalchemy.sql import false
 
-    direct_new = int(
-        (
-            await session.execute(
-                select(func.count(Subscription.id)).where(
-                    Subscription.created_at >= month_start_utc,
-                    Subscription.created_at < day_end_utc,
-                    Subscription.is_trial == false(),
-                )
-            )
-        ).scalar()
-        or 0
+    direct_user_rows = await session.execute(
+        select(func.distinct(Subscription.user_id)).where(
+            Subscription.created_at >= month_start_utc,
+            Subscription.created_at < day_end_utc,
+            Subscription.is_trial == false(),
+        )
     )
-    return conversions + direct_new
+    direct_user_ids: set[int] = {row[0] for row in direct_user_rows.all()}
+
+    return len(conversion_user_ids | direct_user_ids)
 
 
 async def _count_churned(
@@ -422,6 +424,12 @@ async def _count_referral_stats(
 
     total_new_paying_referred — new paying users this month who were referred.
     Used for k-factor numerator.
+
+    active_referrers — COUNT(DISTINCT referred_by_id) among users registered this
+    month, i.e. the number of people who actually brought someone in.  Used as
+    the k-factor denominator (k = new referred users / active referrers).  The
+    previous denominator counted the INVITED paying users, not the inviters,
+    which made the ratio meaningless.
     """
     # Users who deposited BEFORE this month (exclude from "first deposit" count)
     deposited_before = select(func.distinct(Transaction.user_id)).where(
@@ -468,27 +476,18 @@ async def _count_referral_stats(
     )
     total_new_paying_referred = int(k_result.scalar() or 0)
 
-    # Paying users this month who have referred someone else (k-factor denominator)
+    # Active referrers this month = distinct inviters of users registered this month
+    # (k-factor denominator: how many people actually brought someone in)
     k_denom_result = await session.execute(
-        select(func.count(func.distinct(User.id))).where(
-            User.id.in_(
-                select(func.distinct(Transaction.user_id)).where(
-                    Transaction.type.in_([
-                        TransactionType.DEPOSIT.value,
-                        TransactionType.SUBSCRIPTION_PAYMENT.value,
-                    ]),
-                    Transaction.is_completed.is_(True),
-                    Transaction.payment_method.in_(list(_REAL_METHODS)),
-                    Transaction.created_at >= month_start_utc,
-                    Transaction.created_at < day_end_utc,
-                )
-            ),
+        select(func.count(func.distinct(User.referred_by_id))).where(
+            User.created_at >= month_start_utc,
+            User.created_at < day_end_utc,
             User.referred_by_id.isnot(None),
         )
     )
-    paying_with_referrer = int(k_denom_result.scalar() or 0)
+    active_referrers = int(k_denom_result.scalar() or 0)
 
-    return first_deposit_referred, total_new_paying_referred, paying_with_referrer
+    return first_deposit_referred, total_new_paying_referred, active_referrers
 
 
 async def _sum_manual_expenses(
@@ -530,10 +529,19 @@ async def _fetch_tariff_stats(
     session: AsyncSession,
     month_start_utc: datetime,
     day_end_utc: datetime,
+    txns: list[Transaction],
+    subs_by_user: dict[int, list[Subscription]],
 ) -> list[dict]:
     """
     Per-tariff breakdown for the current month.
     Returns list of dicts with tariff analytics.
+
+    Revenue per tariff is computed in Python from the already-fetched month
+    transactions: each SUBSCRIPTION_PAYMENT is matched to ONE subscription via
+    _best_subscription (no user_id JOIN fan-out that multiplied a transaction
+    across every subscription row of the user), and only REAL_PAYMENT_METHODS
+    are counted (balance debits excluded) so the total reconciles with
+    «Выручка ₽» on «По месяцам».
     """
     from sqlalchemy.sql import false as sql_false
 
@@ -569,25 +577,20 @@ async def _fetch_tariff_stats(
     )
     new_by_tariff = {row.name: row.new_count for row in new_result.all()}
 
-    # Revenue this month by tariff (SUBSCRIPTION_PAYMENT linked via description tariff name)
-    # We match via subscriptions created in same window (same user_id proximity)
-    rev_result = await session.execute(
-        select(
-            Tariff.name,
-            func.coalesce(func.sum(func.abs(Transaction.amount_kopeks)), 0).label("rev"),
-        )
-        .join(Subscription, Transaction.user_id == Subscription.user_id)
-        .join(Tariff, Subscription.tariff_id == Tariff.id)
-        .where(
-            Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
-            Transaction.is_completed.is_(True),
-            Transaction.created_at >= month_start_utc,
-            Transaction.created_at < day_end_utc,
-            Subscription.is_trial == sql_false(),
-        )
-        .group_by(Tariff.name)
-    )
-    rev_by_tariff = {row.name: int(row.rev) for row in rev_result.all()}
+    # Revenue this month by tariff — computed in Python from the month's
+    # transactions: one transaction → one subscription (via _best_subscription),
+    # real payment methods only (see docstring).
+    rev_by_tariff: dict[str, int] = {}
+    for txn in txns:
+        if txn.type != TransactionType.SUBSCRIPTION_PAYMENT.value:
+            continue
+        if txn.payment_method not in _REAL_METHODS:
+            continue
+        sub = _best_subscription(txn, subs_by_user)
+        if sub is None or sub.tariff is None:
+            continue
+        tariff_name = sub.tariff.name
+        rev_by_tariff[tariff_name] = rev_by_tariff.get(tariff_name, 0) + abs(txn.amount_kopeks or 0)
 
     # Per-tariff breakdown by subscription period
     # Approximate: <45 days ≈ 30-day plan, 45-75 ≈ 60-day, ≥75 ≈ 90-day+
@@ -1207,6 +1210,30 @@ def _open_spreadsheet():
     return gc.open_by_key(SPREADSHEET_ID)
 
 
+def _col_letter(n: int) -> str:
+    """1-based column number → A1-notation letter (supports up to 26 columns)."""
+    if not 1 <= n <= 26:
+        raise ValueError(f"Column number out of supported range: {n}")
+    return chr(ord("A") + n - 1)
+
+
+def _write_cohort_sheets(
+    spreadsheet: Any,
+    cohort_sheets: dict[str, tuple[list[str], list[list[Any]]]],
+) -> None:
+    """
+    Write cohort analytics sheets ({sheet_name: (headers, rows)}).
+    Same pattern as Метрики / По тарифам: ensure sheet with headers,
+    full overwrite from row 2 via batch_clear + append_rows.
+    """
+    for sheet_name, (headers, rows) in cohort_sheets.items():
+        ws = _retry_call(lambda: _ensure_sheet(spreadsheet, sheet_name, headers))
+        last_col = _col_letter(len(headers))
+        _retry_call(lambda: ws.batch_clear([f"A2:{last_col}10000"]))
+        if rows:
+            _retry_call(lambda: ws.append_rows(rows, value_input_option="USER_ENTERED"))
+
+
 def _write_to_sheets(
     transactions_rows: list[list[Any]],
     monthly_row: list[Any],
@@ -1216,6 +1243,7 @@ def _write_to_sheets(
     current_month: str,
     history_mode: bool = False,
     spreadsheet: Any = None,
+    cohort_sheets: Optional[dict[str, tuple[list[str], list[list[Any]]]]] = None,
 ) -> None:
     """
     Perform all Google Sheets writes synchronously.
@@ -1270,6 +1298,10 @@ def _write_to_sheets(
         _retry_call(lambda: ws_tar.batch_clear(["A2:H500"]))
         if tariff_rows:
             _retry_call(lambda: ws_tar.append_rows(tariff_rows, value_input_option="USER_ENTERED"))
+
+        # ---- Когорты / Retention / Доход по юзерам (current-state snapshots) ----
+        if cohort_sheets:
+            _write_cohort_sheets(spreadsheet, cohort_sheets)
 
         # ---- Formatting + Charts (best-effort) ----
         try:
@@ -1402,6 +1434,18 @@ async def run_daily_sync(
     tariff_rows = _build_tariff_rows(tariff_stats)
     analytics_row = _build_analytics_row(current_month, analytics_stats, new_paying)
 
+    # --- Cohort analytics (current-state snapshots, like Метрики / По тарифам) ---
+    # Skipped in history_mode: these sheets reflect "now", recomputing them for
+    # every backfilled month would only waste DB work and Sheets API quota.
+    cohort_sheets = None
+    if not history_mode:
+        from app.services.cohort_export_service import cohort_export_service  # noqa: PLC0415
+
+        try:
+            cohort_sheets = await cohort_export_service.generate_sheet_data(db_session)
+        except Exception as exc:
+            logger.error("Ошибка расчёта когортной аналитики", exc_info=exc)
+
     # --- Write to sheets (sync I/O → thread) ---
     try:
         await asyncio.to_thread(
@@ -1414,6 +1458,7 @@ async def run_daily_sync(
             current_month,
             history_mode,
             spreadsheet,
+            cohort_sheets,
         )
     except Exception as exc:
         logger.error("Ошибка записи в Google Sheets", exc_info=exc)

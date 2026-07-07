@@ -8,8 +8,7 @@ from zoneinfo import ZoneInfo
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from sqlalchemy import cast, func, not_, or_, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import func, not_, or_, select
 from sqlalchemy.sql import false, true
 
 from app.config import settings
@@ -240,6 +239,7 @@ class ReportingService:
             stats = await self._collect_period_stats(session, start_utc, end_utc)
             top_referrers = await self._get_top_referrers(session, start_utc, end_utc, limit=5)
             usage = await self._get_user_usage_stats(session)
+            weekly_conversion = await self._get_weekly_trial_conversion_stats(session, start_utc, end_utc)
 
         conversion_rate = (
             (stats['trial_to_paid_conversions'] / stats['new_trials'] * 100) if stats['new_trials'] > 0 else 0.0
@@ -261,6 +261,11 @@ class ReportingService:
             (
                 f'• Конверсий триал → платная: <b>{stats["trial_to_paid_conversions"]}</b> '
                 f'(<i>{conversion_rate:.1f}%</i>)'
+            ),
+            (
+                '• Конверсия триалов недельной давности (7 дней на оплату): '
+                f'<b>{weekly_conversion["weekly_trial_conversions"]}/{weekly_conversion["weekly_trial_cohort_size"]}</b> '
+                f'(<i>{weekly_conversion["weekly_conversion_rate"]:.1f}%</i>)'
             ),
             f'• Новых платных (всего): <b>{stats["new_paid_subscriptions"]}</b>',
             f'• Поступления всего (только пополнения): <b>{self._format_amount(stats["deposits_amount"])}</b>',
@@ -302,7 +307,7 @@ class ReportingService:
         lines += [
             '👤 <b>Активность пользователей</b>',
             f'• Пользователей с активной платной подпиской: {usage["active_paid_users"]}',
-            f'• Пользователей, ни разу не подключившихся: {usage["never_connected_users"]}',
+            f'• С подпиской, но без трафика (не подключались): {usage["never_connected_users"]}',
             '',
         ]
 
@@ -534,13 +539,20 @@ class ReportingService:
         )
         active_paid_users = int(active_paid_q.scalar() or 0)
 
+        # Пользователи, у которых есть хотя бы одна подписка и которые зарегистрированы
+        # более 24 часов назад, но так и не израсходовали ни байта трафика (не подключались).
+        registration_cutoff = now_utc - timedelta(hours=24)
+
         never_connected_q = await session.execute(
-            select(func.count(func.distinct(Subscription.user_id))).where(
+            select(func.count(func.distinct(User.id)))
+            .select_from(User)
+            .join(Subscription, Subscription.user_id == User.id)
+            .where(
+                User.created_at < registration_cutoff,
                 or_(
-                    Subscription.connected_squads.is_(None),
-                    cast(Subscription.connected_squads, JSONB) == cast('[]', JSONB),
-                    func.jsonb_typeof(cast(Subscription.connected_squads, JSONB)) != 'array',
-                )
+                    User.lifetime_used_traffic_bytes.is_(None),
+                    User.lifetime_used_traffic_bytes == 0,
+                ),
             )
         )
         never_connected_users = int(never_connected_q.scalar() or 0)
@@ -548,6 +560,78 @@ class ReportingService:
         return {
             'active_paid_users': active_paid_users,
             'never_connected_users': never_connected_users,
+        }
+
+    async def _get_weekly_trial_conversion_stats(
+        self,
+        session,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> dict[str, float | int]:
+        """
+        Когортная конверсия триалов недельной давности.
+
+        Берём триалы, созданные в окне [start-7д, end-7д) относительно текущего отчетного
+        периода, и считаем, у скольких из них есть SubscriptionConversion в пределах 7 дней
+        с момента создания триала. Это позволяет сравнивать триалы и их результат в рамках
+        одной и той же когорты (в отличие от сравнения абсолютных чисел за один и тот же
+        период, где триалы могли конвертироваться позже конца периода).
+        """
+        cohort_start = start_utc - timedelta(days=7)
+        cohort_end = end_utc - timedelta(days=7)
+
+        trial_rows = (
+            await session.execute(
+                select(Subscription.user_id, Subscription.created_at).where(
+                    Subscription.created_at >= cohort_start,
+                    Subscription.created_at < cohort_end,
+                    Subscription.is_trial == true(),
+                )
+            )
+        ).all()
+
+        if not trial_rows:
+            return {
+                'weekly_trial_cohort_size': 0,
+                'weekly_trial_conversions': 0,
+                'weekly_conversion_rate': 0.0,
+            }
+
+        trial_created_at: dict[int, datetime] = {}
+        for user_id, created_at in trial_rows:
+            existing = trial_created_at.get(user_id)
+            if existing is None or created_at < existing:
+                trial_created_at[user_id] = created_at
+
+        user_ids = list(trial_created_at.keys())
+
+        conversion_rows = (
+            await session.execute(
+                select(SubscriptionConversion.user_id, SubscriptionConversion.converted_at).where(
+                    SubscriptionConversion.user_id.in_(user_ids),
+                )
+            )
+        ).all()
+
+        converted_user_ids: set[int] = set()
+        for user_id, converted_at in conversion_rows:
+            trial_created = trial_created_at.get(user_id)
+            if trial_created is None:
+                continue
+            # Учитываем только конверсии в окне [создание триала, +7 дней].
+            # Конверсия РАНЬШЕ создания триала — это старая конверсия
+            # (повторный триал после давней оплаты), её засчитывать нельзя.
+            if trial_created <= converted_at <= trial_created + timedelta(days=7):
+                converted_user_ids.add(user_id)
+
+        cohort_size = len(user_ids)
+        conversions_count = len(converted_user_ids)
+        rate = (conversions_count / cohort_size * 100) if cohort_size else 0.0
+
+        return {
+            'weekly_trial_cohort_size': cohort_size,
+            'weekly_trial_conversions': conversions_count,
+            'weekly_conversion_rate': rate,
         }
 
     def _user_label(self, user: User) -> str:
