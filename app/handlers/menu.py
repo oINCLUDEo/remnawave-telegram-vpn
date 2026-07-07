@@ -1221,7 +1221,7 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
         if tariff_info_block:
             action_prompt_text = texts.t('MAIN_MENU_ACTION_PROMPT', 'Выберите действие:')
             if action_prompt_text in base_text:
-                base_text = base_text.replace(action_prompt_text, f'{tariff_info_block}\n\n{action_prompt_text}')
+                base_text = base_text.replace(action_prompt_text, f'{tariff_info_block}\n{action_prompt_text}')
     else:
         # Single-tariff mode: legacy behavior
         tariff = None
@@ -1236,7 +1236,10 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
                 tariff = await get_tariff_by_id(db, subscription.tariff_id)
                 if tariff:
                     is_daily_tariff = getattr(tariff, 'is_daily', False)
-                    tariff_info_block = f'\n📦 Тариф: {html.escape(tariff.name)}'
+                    tariff_info_block = (
+                        '\n<tg-emoji emoji-id="5854908544712707500">📦</tg-emoji> '
+                        f'Тариф: <b>{html.escape(tariff.name)}</b>'
+                    )
             except Exception as e:
                 logger.debug('Не удалось загрузить тариф для главного меню', error=e)
 
@@ -1248,7 +1251,7 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
         if tariff_info_block:
             action_prompt_text = texts.t('MAIN_MENU_ACTION_PROMPT', 'Выберите действие:')
             if action_prompt_text in base_text:
-                base_text = base_text.replace(action_prompt_text, f'{tariff_info_block}\n\n{action_prompt_text}')
+                base_text = base_text.replace(action_prompt_text, f'{tariff_info_block}\n{action_prompt_text}')
 
     action_prompt = texts.t('MAIN_MENU_ACTION_PROMPT', 'Выберите действие:')
 
