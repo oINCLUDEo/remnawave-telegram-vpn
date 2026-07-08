@@ -537,11 +537,13 @@ async def _fetch_tariff_stats(
     Returns list of dicts with tariff analytics.
 
     Revenue per tariff is computed in Python from the already-fetched month
-    transactions: each SUBSCRIPTION_PAYMENT is matched to ONE subscription via
+    transactions: each transaction is matched to ONE subscription via
     _best_subscription (no user_id JOIN fan-out that multiplied a transaction
-    across every subscription row of the user), and only REAL_PAYMENT_METHODS
-    are counted (balance debits excluded) so the total reconciles with
-    «Выручка ₽» on «По месяцам».
+    across every subscription row of the user). Counted are REAL money inflows:
+    DEPOSIT(real methods) — top-ups through payment providers — plus
+    SUBSCRIPTION_PAYMENT(real methods) — direct landing purchases. Balance
+    debits are excluded, so the same money is never counted twice and the
+    total reconciles with «Выручка ₽» on «По месяцам» (same filter).
     """
     from sqlalchemy.sql import false as sql_false
 
@@ -578,12 +580,11 @@ async def _fetch_tariff_stats(
     new_by_tariff = {row.name: row.new_count for row in new_result.all()}
 
     # Revenue this month by tariff — computed in Python from the month's
-    # transactions: one transaction → one subscription (via _best_subscription),
-    # real payment methods only (see docstring).
+    # transactions: one transaction → one subscription (via _best_subscription).
+    # Real payment methods only: DEPOSIT = пополнения, SUBSCRIPTION_PAYMENT(real) =
+    # прямые покупки с лендинга; балансовые списания исключены (see docstring).
     rev_by_tariff: dict[str, int] = {}
     for txn in txns:
-        if txn.type != TransactionType.SUBSCRIPTION_PAYMENT.value:
-            continue
         if txn.payment_method not in _REAL_METHODS:
             continue
         sub = _best_subscription(txn, subs_by_user)
@@ -1390,7 +1391,7 @@ async def run_daily_sync(
         db_session, month_start_utc, day_end_utc
     )
     tariff_stats = await _fetch_tariff_stats(
-        db_session, month_start_utc, day_end_utc
+        db_session, month_start_utc, day_end_utc, txns, subs_by_user
     )
     analytics_stats = await _fetch_analytics_stats(
         db_session, month_start_utc, day_end_utc,
