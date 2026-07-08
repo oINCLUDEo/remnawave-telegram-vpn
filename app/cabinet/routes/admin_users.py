@@ -247,7 +247,7 @@ async def _sync_subscription_to_panel(
             logger.warning('Remnawave not configured, skipping panel sync for user', user_id=user.id)
             return {'skipped': True, 'reason': 'Remnawave not configured'}
 
-        # ТЕСТОВАЯ ФИЧА: любая ручная синхронизация из админки (extend/activate/
+        # Любая ручная синхронизация из админки (extend/activate/
         # set_end_date и т.д.) считается восстановлением после grace-периода —
         # иначе панель продолжит получать резервный сквад и урезанный трафик
         # вместо тарифных, т.к. этот путь не проходит через SubscriptionRenewalService.finalize().
@@ -1144,14 +1144,13 @@ async def update_user_subscription(
             await db.commit()
             await db.refresh(subscription)
 
-            # ТЕСТОВАЯ ФИЧА: этот код сам выставляет EXPIRED в обход
-            # check_and_update_subscription_status, поэтому grace-хук
-            # нужно вызывать здесь явно, иначе фича не сработает при
-            # тестировании просрочки через админку.
+            # Этот код выставляет EXPIRED в обход
+            # check_and_update_subscription_status, поэтому grace-хук нужно вызывать
+            # здесь явно.
             if settings.is_reserve_access_enabled_for(user.telegram_id):
                 from app.services.subscription_service import SubscriptionService
 
-                await SubscriptionService().grant_reserve_squad_grace_if_test(db, user, subscription)
+                await SubscriptionService().grant_reserve_squad_grace(db, user, subscription)
 
         # Sync to Remnawave panel
         await _sync_subscription_to_panel(db, user, subscription)
@@ -1182,14 +1181,14 @@ async def update_user_subscription(
         await db.commit()
         await db.refresh(subscription)
 
-        # ТЕСТОВАЯ ФИЧА: та же причина, что и в 'shorten' — это прямой
-        # обход check_and_update_subscription_status, grace-хук вызываем явно.
+        # Та же причина, что и в 'shorten': прямой обход
+        # check_and_update_subscription_status, grace-хук вызываем явно.
         if subscription.status == SubscriptionStatus.EXPIRED.value and settings.is_reserve_access_enabled_for(
             user.telegram_id
         ):
             from app.services.subscription_service import SubscriptionService
 
-            await SubscriptionService().grant_reserve_squad_grace_if_test(db, user, subscription)
+            await SubscriptionService().grant_reserve_squad_grace(db, user, subscription)
 
         # Sync to Remnawave panel
         await _sync_subscription_to_panel(db, user, subscription)
@@ -1221,7 +1220,7 @@ async def update_user_subscription(
 
         old_tariff = await get_tariff_by_id(db, subscription.tariff_id) if subscription.tariff_id else None
 
-        # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+        # Если подписка была в grace-периоде на резервном скваде,
         # сбрасываем guard-поля до применения параметров нового тарифа ниже —
         # иначе _sync_subscription_to_panel() восстановит устаревший резервный
         # трафик/сквады поверх только что установленных тарифных значений.
@@ -1292,7 +1291,7 @@ async def update_user_subscription(
         )
 
     if request.action == 'set_traffic':
-        # ТЕСТОВАЯ ФИЧА: см. комментарий в ветке change_tariff — иначе
+        # См. комментарий в ветке change_tariff — иначе
         # _sync_subscription_to_panel() восстановит устаревший резервный
         # трафик поверх значения, только что заданного админом вручную.
         restore_reserve_grace_if_active(subscription)
@@ -1385,7 +1384,7 @@ async def update_user_subscription(
 
         from app.database.crud.subscription import add_subscription_traffic, reactivate_subscription
 
-        # ТЕСТОВАЯ ФИЧА: см. комментарий в ветке change_tariff — сбрасываем
+        # См. комментарий в ветке change_tariff — сбрасываем
         # резервный snapshot до того, как добавляемый трафик посчитается
         # от текущего (возможно урезанного grace-периодом) traffic_limit_gb.
         restore_reserve_grace_if_active(subscription)
@@ -1440,7 +1439,7 @@ async def update_user_subscription(
 
         removed_gb = traffic_purchase.traffic_gb
 
-        # ТЕСТОВАЯ ФИЧА: см. комментарий в ветке change_tariff.
+        # См. комментарий в ветке change_tariff.
         restore_reserve_grace_if_active(subscription)
 
         # Decrement counters

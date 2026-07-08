@@ -775,7 +775,7 @@ class RemnaWaveWebhookService:
         else:
             await db.commit()
 
-        await self._grant_reserve_access_if_test(db, user, subscription)
+        await self._grant_reserve_access_on_expiry(db, user, subscription)
 
         await self._notify_user(
             user,
@@ -784,17 +784,17 @@ class RemnaWaveWebhookService:
             subscription=subscription,
         )
 
-    async def _grant_reserve_access_if_test(
+    async def _grant_reserve_access_on_expiry(
         self, db: AsyncSession, user: User, subscription: Subscription
     ) -> None:
-        """ТЕСТОВАЯ ФИЧА: см. SubscriptionService.grant_reserve_squad_grace_if_test."""
+        """Выдача grace-доступа на резервный сквад при событии `user.expired`."""
         if not settings.is_reserve_access_enabled_for(user.telegram_id):
             return
 
         from app.services.subscription_service import SubscriptionService
 
         subscription_service = SubscriptionService()
-        await subscription_service.grant_reserve_squad_grace_if_test(db, user, subscription)
+        await subscription_service.grant_reserve_squad_grace(db, user, subscription)
 
     async def _handle_user_disabled(
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
@@ -869,7 +869,7 @@ class RemnaWaveWebhookService:
             logger.info('Webhook user.limited: подписка не найдена в БД (уже удалена), пропуск', user_id=user.id)
             return
 
-        # ТЕСТОВАЯ ФИЧА: если это исчерпание лимита трафика на резервном скваде
+        # Если это исчерпание лимита трафика на резервном скваде
         # grace-периода (а не обычный лимит трафика оплаченного тарифа) — отдельное
         # уведомление и немедленная очистка guard-полей, вместо обычного "пополните трафик".
         if getattr(subscription, 'reserve_access_granted_at', None):
@@ -878,7 +878,7 @@ class RemnaWaveWebhookService:
             await db.commit()
             await db.refresh(subscription)
             logger.info(
-                'Grace-доступ резервного сквада исчерпан по лимиту трафика (тест)',
+                'Grace-доступ резервного сквада исчерпан по лимиту трафика',
                 subscription_id=subscription.id,
                 user_id=user.id,
             )
@@ -902,7 +902,7 @@ class RemnaWaveWebhookService:
         )
 
     async def _notify_reserve_grace_traffic_exhausted(self, user: User, subscription: Subscription) -> None:
-        """ТЕСТОВАЯ ФИЧА: уведомление об исчерпании лимита трафика на резервном
+        """Уведомление об исчерпании лимита трафика на резервном
         скваде grace-периода. Использует прямую отправку через self.bot,
         т.к. это не обычное событие тарифа и не заведено в locale/NotificationType.
         """
@@ -943,7 +943,7 @@ class RemnaWaveWebhookService:
             await self.bot.send_message(chat_id=user.telegram_id, text=message, parse_mode='HTML', reply_markup=keyboard)
         except Exception as exc:
             logger.error(
-                'Не удалось отправить уведомление об исчерпании трафика grace-доступа (тест)',
+                'Не удалось отправить уведомление об исчерпании трафика grace-доступа',
                 user_id=user.id,
                 telegram_id=user.telegram_id,
                 exc=exc,

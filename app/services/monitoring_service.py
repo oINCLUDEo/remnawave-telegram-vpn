@@ -229,7 +229,7 @@ class MonitoringService:
                 cleaned_reserve_access = await self._cleanup_expired_reserve_access(db)
                 if cleaned_reserve_access:
                     logger.info(
-                        '🧹 Отозван истекший grace-доступ резервного сквада (тест)',
+                        '🧹 Отозван истекший grace-доступ резервного сквада',
                         cleaned_reserve_access=cleaned_reserve_access,
                     )
 
@@ -281,9 +281,8 @@ class MonitoringService:
                 await db.rollback()
 
     async def _cleanup_expired_reserve_access(self, db: AsyncSession) -> int:
-        """ТЕСТОВАЯ ФИЧА: по истечении grace-периода отзывает временный резервный
-        сквад у не продливших подписку пользователей (отключает в RemnaWave,
-        восстанавливает исходные сквады локально)."""
+        """По истечении grace-периода отзывает временный резервный сквад у пользователей,
+        не продливших подписку (отключает в RemnaWave и восстанавливает исходные сквады локально)."""
         if not settings.RESERVE_SQUAD_UUID:
             return 0
 
@@ -422,7 +421,7 @@ class MonitoringService:
                 user = await get_user_by_id(db, subscription.user_id)
 
                 if user and settings.is_reserve_access_enabled_for(user.telegram_id):
-                    await self.subscription_service.grant_reserve_squad_grace_if_test(db, user, subscription)
+                    await self.subscription_service.grant_reserve_squad_grace(db, user, subscription)
 
                 if user and self.bot:
                     await self._send_subscription_expired_notification(user, subscription, tariff_name=_tariff_name)

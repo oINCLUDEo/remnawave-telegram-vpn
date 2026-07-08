@@ -122,11 +122,11 @@ class Settings(BaseSettings):
     REMNAWAVE_WEBHOOK_NOTIFY_NODE_CONNECTION_STATUS: bool = True
 
     # Резервный сквад для grace-периода при просрочке (доступ к Telegram для продления).
-    # ТЕСТОВЫЙ РЕЖИМ: включается только для telegram_id из RESERVE_TEST_TELEGRAM_IDS.
+    # Включается в проде, когда задан `RESERVE_SQUAD_UUID`.
     RESERVE_SQUAD_UUID: str | None = None
     RESERVE_GRACE_DAYS: int = 3
     RESERVE_GRACE_TRAFFIC_GB: int = 3  # лимит трафика на резервном скваде во время grace-периода
-    RESERVE_TEST_TELEGRAM_IDS: str = ''  # comma-separated, пусто = фича выключена
+    RESERVE_TEST_TELEGRAM_IDS: str = ''  # legacy allowlist (depr.), больше не используется
 
     # Webhook user notification toggles (what Telegram messages users receive from webhook events)
     WEBHOOK_NOTIFY_USER_ENABLED: bool = True
@@ -1264,18 +1264,22 @@ class Settings(BaseSettings):
         return [n.strip() for n in value.split(',') if n.strip()]
 
     def get_reserve_test_telegram_ids(self) -> list[int]:
-        """Telegram ID, для которых включена тестовая фича резервного сквада при просрочке"""
+        """Legacy Telegram allowlist (depr.). Оставлено для обратной совместимости."""
         if not self.RESERVE_TEST_TELEGRAM_IDS:
             return []
-        result = []
+        result: list[int] = []
         for part in self.RESERVE_TEST_TELEGRAM_IDS.split(','):
             part = part.strip()
             if part.isdigit():
                 result.append(int(part))
         return result
 
-    def is_reserve_access_enabled_for(self, telegram_id: int) -> bool:
-        return bool(self.RESERVE_SQUAD_UUID) and telegram_id in self.get_reserve_test_telegram_ids()
+    def is_reserve_access_enabled_for(self, telegram_id: int | None) -> bool:
+        """Включает выдачу grace-доступа при просрочке для всех юзеров в проде.
+
+        Режим/стейджинг сейчас определяется только наличием `RESERVE_SQUAD_UUID`.
+        """
+        return bool(self.RESERVE_SQUAD_UUID) and bool(telegram_id)
 
     def get_traffic_excluded_user_uuids(self) -> list[str]:
         """Возвращает список UUID пользователей для исключения из мониторинга (например, тунельные/служебные)"""

@@ -570,12 +570,12 @@ class SubscriptionService:
                 '⚠️ Не удалось сбросить трафик RemnaWave для', _format_user_log=self._format_user_log(user), error=exc
             )
 
-    async def grant_reserve_squad_grace_if_test(self, db, user, subscription) -> bool:
-        """ТЕСТОВАЯ ФИЧА: временно переводит юзера на резервный сквад (доступ к Telegram)
-        на grace-период после просрочки, чтобы дать время продлить подписку.
-        Включена только для telegram_id из RESERVE_TEST_TELEGRAM_IDS.
-        Общий хелпер, вызывается и из вебхука user.expired, и из локальной
-        периодической проверки просроченных подписок в monitoring_service.
+    async def grant_reserve_squad_grace(self, db, user, subscription) -> bool:
+        """Выдаёт временный grace-доступ на резервный сквад при просрочке подписки.
+
+        Фича включается в проде через наличие `RESERVE_SQUAD_UUID` (см. `Settings.is_reserve_access_enabled_for`).
+        Общий хелпер, вызывается и из вебхука user.expired, и из периодической проверки просроченных подписок
+        в `monitoring_service`.
         """
         if not settings.is_reserve_access_enabled_for(user.telegram_id):
             return False
@@ -621,7 +621,7 @@ class SubscriptionService:
         await db.commit()
 
         logger.info(
-            'Grace-период резервного сквада активирован (тест)',
+            'Grace-период резервного сквада активирован',
             subscription_id=subscription.id,
             user_id=user.id,
             telegram_id=user.telegram_id,
@@ -633,8 +633,9 @@ class SubscriptionService:
         return True
 
     async def _notify_reserve_grace_granted(self, user, subscription, grace_expire_at) -> None:
-        """ТЕСТОВАЯ ФИЧА: уведомление о выдаче grace-доступа. Метод сам создаёт
-        и закрывает Bot, т.к. вызывается из мест без доступа к общему инстансу бота
+        """Уведомление о выдаче grace-доступа.
+
+        Метод сам создаёт и закрывает Bot, т.к. вызывается из мест без доступа к общему инстансу бота
         (crud-слой, вебхук, мониторинг).
         """
         if not user.telegram_id:
@@ -682,7 +683,7 @@ class SubscriptionService:
             await bot.send_message(chat_id=user.telegram_id, text=message, reply_markup=keyboard)
         except Exception as exc:
             logger.error(
-                'Не удалось отправить уведомление о grace-доступе (тест)',
+                'Не удалось отправить уведомление о grace-доступе',
                 user_id=user.id,
                 telegram_id=user.telegram_id,
                 exc=exc,
