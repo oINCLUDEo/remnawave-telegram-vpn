@@ -1056,6 +1056,7 @@ async def buy_tariff(
             from app.database.crud.subscription import (
                 create_paid_subscription,
                 extend_subscription,
+                restore_reserve_grace_if_active,
             )
             from app.database.crud.transaction import create_transaction
             from app.database.crud.user import subtract_user_balance
@@ -1085,7 +1086,9 @@ async def buy_tariff(
 
             traffic_limit_gb = tariff.traffic_limit_gb
 
+            restore_reserve_squads = False
             if existing_sub and existing_sub.tariff_id == tariff.id:
+                restore_reserve_squads = restore_reserve_grace_if_active(existing_sub)
                 subscription = await extend_subscription(
                     db=db,
                     subscription=existing_sub,
@@ -1117,7 +1120,9 @@ async def buy_tariff(
                 )
 
             try:
-                await SubscriptionService().update_remnawave_user(db, subscription)
+                await SubscriptionService().update_remnawave_user(
+                    db, subscription, sync_squads=restore_reserve_squads
+                )
             except Exception as sync_err:
                 logger.warning('mobile buy-tariff: remnawave sync failed', error=sync_err)
 

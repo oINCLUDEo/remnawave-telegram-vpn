@@ -475,7 +475,11 @@ async def handle_simple_subscription_pay_with_balance(
         )
 
         # Проверяем, есть ли у пользователя уже подписка
-        from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import (
+            extend_subscription,
+            get_subscription_by_user_id,
+            restore_reserve_grace_if_active,
+        )
 
         existing_subscription = await get_subscription_by_user_id(db, db_user.id)
 
@@ -483,6 +487,10 @@ async def handle_simple_subscription_pay_with_balance(
             # Если подписка уже существует (платная или тестовая), продлеваем её
             # Сохраняем информацию о текущей подписке, особенно является ли она пробной
             was_trial = getattr(existing_subscription, 'is_trial', False)
+
+            # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада
+            # до продления, иначе сквад/трафик/end_date останутся резервными.
+            restore_reserve_grace_if_active(existing_subscription)
 
             subscription = await extend_subscription(
                 db=db,
@@ -2215,7 +2223,11 @@ async def confirm_simple_subscription_purchase(
         )
 
         # Проверяем, есть ли у пользователя уже подписка
-        from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import (
+            extend_subscription,
+            get_subscription_by_user_id,
+            restore_reserve_grace_if_active,
+        )
 
         existing_subscription = await get_subscription_by_user_id(db, db_user.id)
 
@@ -2223,6 +2235,10 @@ async def confirm_simple_subscription_purchase(
             # Если подписка уже существует, продлеваем её
             # Сохраняем информацию о текущей подписке, особенно является ли она пробной
             was_trial = getattr(existing_subscription, 'is_trial', False)
+
+            # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада
+            # до продления, иначе сквад/трафик/end_date останутся резервными.
+            restore_reserve_grace_if_active(existing_subscription)
 
             subscription = await extend_subscription(
                 db=db,

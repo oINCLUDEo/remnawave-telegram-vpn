@@ -22,6 +22,7 @@ from app.database.crud.subscription import (
     reactivate_subscription,
     remove_subscription_squad,
     replace_subscription,
+    restore_reserve_grace_if_active,
 )
 from app.database.crud.user import get_user_by_id
 from app.database.models import Subscription, SubscriptionStatus
@@ -263,6 +264,7 @@ async def extend_subscription_endpoint(
     db: AsyncSession = Depends(get_db_session),
 ) -> SubscriptionResponse:
     subscription = await _get_subscription(db, subscription_id)
+    restore_reserve_grace_if_active(subscription)
     subscription = await extend_subscription(db, subscription, payload.days)
     subscription = await _get_subscription(db, subscription.id)
     return _serialize_subscription(subscription)

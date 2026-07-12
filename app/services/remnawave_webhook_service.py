@@ -775,7 +775,14 @@ class RemnaWaveWebhookService:
         else:
             await db.commit()
 
-        await self._grant_reserve_access_on_expiry(db, user, subscription)
+        reserve_grace_granted = await self._grant_reserve_access_on_expiry(db, user, subscription)
+
+        # Если только что выдали grace-доступ на резервный сквад — пользователь уже
+        # получил уведомление "🔌 Временный доступ" из grant_reserve_squad_grace.
+        # Отправлять следом "❌ Подписка истекла, доступ отключён" не нужно — это
+        # прямо противоречит только что показанному сообщению о временном доступе.
+        if reserve_grace_granted:
+            return
 
         await self._notify_user(
             user,
@@ -786,15 +793,15 @@ class RemnaWaveWebhookService:
 
     async def _grant_reserve_access_on_expiry(
         self, db: AsyncSession, user: User, subscription: Subscription
-    ) -> None:
+    ) -> bool:
         """Выдача grace-доступа на резервный сквад при событии `user.expired`."""
         if not settings.is_reserve_access_enabled_for(user.telegram_id):
-            return
+            return False
 
         from app.services.subscription_service import SubscriptionService
 
         subscription_service = SubscriptionService()
-        await subscription_service.grant_reserve_squad_grace(db, user, subscription)
+        return await subscription_service.grant_reserve_squad_grace(db, user, subscription)
 
     async def _handle_user_disabled(
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
@@ -882,6 +889,22 @@ class RemnaWaveWebhookService:
                 subscription_id=subscription.id,
                 user_id=user.id,
             )
+
+            # Локально guard-поля/сквады уже восстановлены, но панель всё ещё
+            # держит пользователя на резервном скваде — синхронизируем, иначе
+            # он там и останется до следующего продления (сквад не откатится сам).
+            from app.services.subscription_service import SubscriptionService
+
+            try:
+                await SubscriptionService().update_remnawave_user(db, subscription, sync_squads=True)
+            except Exception as exc:
+                logger.error(
+                    'Не удалось синхронизировать панель после исчерпания grace-трафика',
+                    subscription_id=subscription.id,
+                    user_id=user.id,
+                    exc=exc,
+                )
+
             await self._notify_reserve_grace_traffic_exhausted(user, subscription)
             return
 
@@ -1000,9 +1023,14 @@ class RemnaWaveWebhookService:
             except (ValueError, TypeError):
                 pass
 
-        # Sync expire date — panel is the source of truth for user.modified events
+        # Sync expire date — panel is the source of truth for user.modified events.
+        # ИСКЛЮЧЕНИЕ: во время reserve-grace периода panel expire_at — это временная
+        # дата резервного сквада (now + RESERVE_GRACE_DAYS), а не реальная дата
+        # окончания подписки. Синхронизировать её в end_date нельзя — иначе при
+        # последующем продлении новые дни сложатся поверх этой фиктивной даты.
+        in_reserve_grace = getattr(subscription, 'reserve_access_granted_at', None) is not None
         expire_at = data.get('expireAt')
-        if expire_at:
+        if expire_at and not in_reserve_grace:
             try:
                 parsed_dt = datetime.fromisoformat(expire_at.replace('Z', '+00:00'))
                 new_end_date = parsed_dt.astimezone(UTC)
@@ -1022,7 +1050,7 @@ class RemnaWaveWebhookService:
 
         # Sync status from panel
         panel_status = data.get('status')
-        if panel_status:
+        if panel_status and not in_reserve_grace:
             now = datetime.now(UTC)
             end_date = subscription.end_date
             if panel_status == 'ACTIVE' and end_date and end_date > now:

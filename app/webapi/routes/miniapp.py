@@ -37,6 +37,7 @@ from app.database.crud.subscription import (
     create_trial_subscription,
     extend_subscription,
     remove_subscription_servers,
+    restore_reserve_grace_if_active,
     update_subscription_autopay,
 )
 from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
@@ -6627,6 +6628,9 @@ async def purchase_tariff_endpoint(
             effective_device_limit = max(tariff.device_limit or 0, subscription.device_limit or 0)
         else:
             effective_device_limit = tariff.device_limit
+        # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада
+        restore_reserve_grace_if_active(subscription)
+
         # Смена/продление тарифа
         subscription = await extend_subscription(
             db=db,

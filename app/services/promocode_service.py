@@ -341,8 +341,11 @@ class PromoCodeService:
                     code=promocode.code,
                 )
 
+            from app.database.crud.subscription import restore_reserve_grace_if_active
+
+            restore_reserve_squads = restore_reserve_grace_if_active(target_sub)
             await extend_subscription(db, target_sub, promocode.subscription_days)
-            await self.subscription_service.update_remnawave_user(db, target_sub)
+            await self.subscription_service.update_remnawave_user(db, target_sub, sync_squads=restore_reserve_squads)
 
             tariff_label = ''
             if settings.is_multi_tariff_enabled() and getattr(target_sub, 'tariff', None):
@@ -418,8 +421,13 @@ class PromoCodeService:
 
             if existing_same_tariff_sub:
                 # User already has this tariff — extend it
+                from app.database.crud.subscription import restore_reserve_grace_if_active
+
+                restore_reserve_squads = restore_reserve_grace_if_active(existing_same_tariff_sub)
                 await extend_subscription(db, existing_same_tariff_sub, trial_days)
-                await self.subscription_service.update_remnawave_user(db, existing_same_tariff_sub)
+                await self.subscription_service.update_remnawave_user(
+                    db, existing_same_tariff_sub, sync_squads=restore_reserve_squads
+                )
 
                 effects.append(
                     f'⏰ Подписка «{trial_tariff.name if trial_tariff else ""}» продлена на {trial_days} дней'

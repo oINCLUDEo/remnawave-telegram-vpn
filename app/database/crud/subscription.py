@@ -53,10 +53,15 @@ def restore_reserve_grace_if_active(subscription: Subscription) -> bool:
     subscription.connected_squads = list(subscription.reserve_original_squads or [])
     if subscription.reserve_original_traffic_limit_gb is not None:
         subscription.traffic_limit_gb = subscription.reserve_original_traffic_limit_gb
+    if getattr(subscription, 'reserve_original_end_date', None) is not None:
+        # Панель могла прислать webhook с временным grace-expire_at, который синхронизатор
+        # ошибочно записал в end_date — откатываем на реальную дату окончания до grace.
+        subscription.end_date = subscription.reserve_original_end_date
 
     subscription.reserve_access_granted_at = None
     subscription.reserve_original_squads = None
     subscription.reserve_original_traffic_limit_gb = None
+    subscription.reserve_original_end_date = None
     return True
 
 

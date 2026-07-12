@@ -816,6 +816,13 @@ async def purchase_tariff(
             await db.flush()
 
         if subscription:
+            # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада до
+            # продления — иначе поля остаются "залипшими" и блокируют выдачу
+            # будущих grace-периодов, даже если сквады/трафик ниже перезаписываются явно.
+            from app.database.crud.subscription import restore_reserve_grace_if_active
+
+            restore_reserve_grace_if_active(subscription)
+
             # Extend/change tariff — сохраняем докупленные устройства при продлении того же тарифа
             subscription = await extend_subscription(
                 db=db,

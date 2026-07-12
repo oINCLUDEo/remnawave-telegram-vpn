@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.contest import create_attempt, get_attempt, update_attempt
-from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
+from app.database.crud.subscription import (
+    extend_subscription,
+    get_subscription_by_user_id,
+    restore_reserve_grace_if_active,
+)
 from app.database.crud.user import get_user_by_id
 from app.database.models import ContestAttempt, ContestRound, ContestTemplate
 from app.services.contests.enums import PrizeType
@@ -306,6 +310,7 @@ class ContestAttemptService:
             if not subscription:
                 return ''
             days = int(prize_value) if prize_value.isdigit() else 1
+            restore_reserve_grace_if_active(subscription)
             await extend_subscription(db, subscription, days)
             tariff_name = getattr(subscription.tariff, 'name', None) if subscription.tariff else None
             prize_text = texts.t('CONTEST_PRIZE_GRANTED', 'Бонус {days} дней зачислен!').format(days=days)

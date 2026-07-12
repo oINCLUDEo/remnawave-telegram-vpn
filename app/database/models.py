@@ -1396,6 +1396,7 @@ class Subscription(Base):
     reserve_access_granted_at = Column(AwareDateTime(), nullable=True)
     reserve_original_squads = Column(JSON, nullable=True)
     reserve_original_traffic_limit_gb = Column(Integer, nullable=True)
+    reserve_original_end_date = Column(AwareDateTime(), nullable=True)
 
     autopay_enabled = Column(Boolean, default=False)
     autopay_days_before = Column(Integer, default=3)

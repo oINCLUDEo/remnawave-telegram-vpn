@@ -617,6 +617,7 @@ class SubscriptionService:
         subscription.reserve_access_granted_at = datetime.now(UTC)
         subscription.reserve_original_squads = original_squads
         subscription.reserve_original_traffic_limit_gb = subscription.traffic_limit_gb
+        subscription.reserve_original_end_date = subscription.end_date
         subscription.connected_squads = [settings.RESERVE_SQUAD_UUID]
         await db.commit()
 

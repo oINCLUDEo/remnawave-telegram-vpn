@@ -173,11 +173,14 @@ class AdvertisingCampaignService:
 
         if existing_subscription:
             # Multi-tariff: extend the best existing subscription
-            from app.database.crud.subscription import extend_subscription
+            from app.database.crud.subscription import extend_subscription, restore_reserve_grace_if_active
 
+            restore_reserve_squads = restore_reserve_grace_if_active(existing_subscription)
             await extend_subscription(db, existing_subscription, duration_days)
             try:
-                await self.subscription_service.update_remnawave_user(db, existing_subscription)
+                await self.subscription_service.update_remnawave_user(
+                    db, existing_subscription, sync_squads=restore_reserve_squads
+                )
             except Exception as error:
                 logger.error(
                     '❌ Ошибка синхронизации RemnaWave при продлении кампании', campaign_id=campaign.id, error=error
@@ -319,11 +322,14 @@ class AdvertisingCampaignService:
 
         if existing_subscription:
             # Multi-tariff: extend the existing subscription for this tariff
-            from app.database.crud.subscription import extend_subscription
+            from app.database.crud.subscription import extend_subscription, restore_reserve_grace_if_active
 
+            restore_reserve_squads = restore_reserve_grace_if_active(existing_subscription)
             await extend_subscription(db, existing_subscription, duration_days, tariff_id=tariff.id)
             try:
-                await self.subscription_service.update_remnawave_user(db, existing_subscription)
+                await self.subscription_service.update_remnawave_user(
+                    db, existing_subscription, sync_squads=restore_reserve_squads
+                )
             except Exception as error:
                 logger.error(
                     '❌ Ошибка синхронизации RemnaWave при продлении тарифа кампании',

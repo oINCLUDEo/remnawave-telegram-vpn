@@ -420,10 +420,16 @@ class MonitoringService:
 
                 user = await get_user_by_id(db, subscription.user_id)
 
+                reserve_grace_granted = False
                 if user and settings.is_reserve_access_enabled_for(user.telegram_id):
-                    await self.subscription_service.grant_reserve_squad_grace(db, user, subscription)
+                    reserve_grace_granted = await self.subscription_service.grant_reserve_squad_grace(
+                        db, user, subscription
+                    )
 
-                if user and self.bot:
+                # Если только что выдали grace-доступ на резервный сквад, пользователь уже
+                # получил "🔌 Временный доступ" — не дублируем его сообщением о том, что
+                # доступ заблокирован, это противоречит только что показанному уведомлению.
+                if user and self.bot and not reserve_grace_granted:
                     await self._send_subscription_expired_notification(user, subscription, tariff_name=_tariff_name)
 
                 logger.info(

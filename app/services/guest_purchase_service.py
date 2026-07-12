@@ -20,6 +20,7 @@ from app.database.crud.subscription import (
     extend_subscription,
     get_subscription_by_user_id,
     replace_subscription,
+    restore_reserve_grace_if_active,
 )
 from app.database.crud.tariff import get_tariff_by_id
 from app.database.crud.transaction import create_transaction
@@ -1051,6 +1052,9 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
                 and _aware(existing_for_tariff.end_date) > datetime.now(UTC)
             )
             if existing_for_tariff and _has_time:
+                # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада
+                restore_reserve_grace_if_active(existing_for_tariff)
+
                 # Extend existing active/trial subscription instead of replacing (preserve remaining days)
                 subscription = await extend_subscription(
                     db,
@@ -1095,6 +1099,9 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
                 and _aware(existing_subscription.end_date) > datetime.now(UTC)
             )
             if existing_subscription is not None and _sub_has_time:
+                # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада
+                restore_reserve_grace_if_active(existing_subscription)
+
                 # Extend existing active subscription (preserve remaining days)
                 subscription = await extend_subscription(
                     db,
