@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import structlog
+from aiogram.exceptions import TelegramForbiddenError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -682,6 +683,12 @@ class SubscriptionService:
         bot = create_bot()
         try:
             await bot.send_message(chat_id=user.telegram_id, text=message, reply_markup=keyboard)
+        except TelegramForbiddenError:
+            logger.warning(
+                'Не удалось отправить уведомление о grace-доступе: бот заблокирован пользователем',
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+            )
         except Exception as exc:
             logger.error(
                 'Не удалось отправить уведомление о grace-доступе',

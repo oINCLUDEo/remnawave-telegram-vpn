@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import delete, inspect as sa_inspect
 from sqlalchemy.exc import PendingRollbackError
@@ -964,6 +965,12 @@ class RemnaWaveWebhookService:
 
         try:
             await self.bot.send_message(chat_id=user.telegram_id, text=message, parse_mode='HTML', reply_markup=keyboard)
+        except TelegramForbiddenError:
+            logger.warning(
+                'Не удалось отправить уведомление об исчерпании трафика grace-доступа: бот заблокирован пользователем',
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+            )
         except Exception as exc:
             logger.error(
                 'Не удалось отправить уведомление об исчерпании трафика grace-доступа',
