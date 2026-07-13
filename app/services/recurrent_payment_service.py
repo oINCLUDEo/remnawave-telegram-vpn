@@ -24,6 +24,7 @@ from app.database.models import (
     User,
     UserPromoGroup,
 )
+from app.utils.miniapp_buttons import strip_leading_emoji_if_custom_icon
 
 
 logger = structlog.get_logger(__name__)
@@ -57,12 +58,17 @@ def _build_extend_keyboard(texts, subscription_id: int | None = None) -> InlineK
     extend_callback = (
         f'se:{subscription_id}' if settings.is_multi_tariff_enabled() and subscription_id else 'subscription_extend'
     )
+    extend_icon = '5427168083074628963'
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                    text=strip_leading_emoji_if_custom_icon(
+                        texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), extend_icon
+                    ),
                     callback_data=extend_callback,
+                    style='success',
+                    icon_custom_emoji_id=extend_icon,
                 )
             ],
         ]

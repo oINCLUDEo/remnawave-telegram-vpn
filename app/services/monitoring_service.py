@@ -62,7 +62,7 @@ from app.services.subscription_service import SubscriptionService, get_traffic_r
 from app.utils.cache import cache
 from app.utils.pricing_utils import balance_covers_price
 from app.utils.message_patch import caption_exceeds_telegram_limit
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button
+from app.utils.miniapp_buttons import build_miniapp_or_callback_button, strip_leading_emoji_if_custom_icon
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
@@ -1771,8 +1771,12 @@ class MonitoringService:
                 inline_keyboard=[
                     [
                         build_miniapp_or_callback_button(
-                            text=texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                            text=strip_leading_emoji_if_custom_icon(
+                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                            ),
                             callback_data=extend_callback,
+                            style='success',
+                            icon_custom_emoji_id='5427168083074628963',
                         )
                     ],
                     [
@@ -1873,8 +1877,12 @@ class MonitoringService:
                     ],
                     [
                         build_miniapp_or_callback_button(
-                            text=texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                            text=strip_leading_emoji_if_custom_icon(
+                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                            ),
                             callback_data=extend_callback,
+                            style='success',
+                            icon_custom_emoji_id='5427168083074628963',
                         )
                     ],
                     [

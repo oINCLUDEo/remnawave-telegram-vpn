@@ -58,6 +58,7 @@ from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
 )
+from app.utils.miniapp_buttons import strip_leading_emoji_if_custom_icon
 
 
 logger = structlog.get_logger(__name__)
@@ -97,12 +98,17 @@ class UserService:
                 f'Спасибо за использование нашего сервиса! 🎉'
             )
             extend_callback = 'menu_subscription' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+            extend_icon = '5427168083074628963'
             keyboard = types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         types.InlineKeyboardButton(
-                            text=texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                            text=strip_leading_emoji_if_custom_icon(
+                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), extend_icon
+                            ),
                             callback_data=extend_callback,
+                            style='success',
+                            icon_custom_emoji_id=extend_icon,
                         )
                     ]
                 ]
@@ -119,10 +125,18 @@ class UserService:
                 f'👇 <b>Выберите действие:</b>'
             )
             extend_callback = 'menu_subscription' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+            extend_icon = '5427168083074628963'
             keyboard = types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text='🚀 АКТИВИРОВАТЬ ПОДПИСКУ', callback_data='subscription_buy')],
-                    [types.InlineKeyboardButton(text='💎 ПРОДЛИТЬ ПОДПИСКУ', callback_data=extend_callback)],
+                    [
+                        types.InlineKeyboardButton(
+                            text='ПРОДЛИТЬ ПОДПИСКУ',
+                            callback_data=extend_callback,
+                            style='success',
+                            icon_custom_emoji_id=extend_icon,
+                        )
+                    ],
                     [
                         types.InlineKeyboardButton(
                             text='📱 ДОБАВИТЬ УСТРОЙСТВА', callback_data='subscription_add_devices'
@@ -172,11 +186,16 @@ class UserService:
         has_extendable = any(sub.status in {'active', 'expired', 'trial'} for sub in subs)
         if has_extendable:
             extend_callback = 'menu_subscription' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+            extend_icon = '5427168083074628963'
             keyboard_rows.append(
                 [
                     types.InlineKeyboardButton(
-                        text=get_texts(user.language).t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                        text=strip_leading_emoji_if_custom_icon(
+                            get_texts(user.language).t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), extend_icon
+                        ),
                         callback_data=extend_callback,
+                        style='success',
+                        icon_custom_emoji_id=extend_icon,
                     )
                 ]
             )

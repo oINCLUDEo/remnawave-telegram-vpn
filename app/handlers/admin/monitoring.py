@@ -21,6 +21,7 @@ from app.services.traffic_monitoring_service import (
 )
 from app.states import AdminStates
 from app.utils.decorators import admin_required
+from app.utils.miniapp_buttons import strip_leading_emoji_if_custom_icon
 from app.utils.pagination import paginate_list
 
 
@@ -180,8 +181,12 @@ async def _build_notification_preview_message(language: str, notification_type: 
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                        text=strip_leading_emoji_if_custom_icon(
+                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                        ),
                         callback_data='subscription_extend',
+                        style='success',
+                        icon_custom_emoji_id='5427168083074628963',
                     )
                 ],
                 [
@@ -224,8 +229,12 @@ async def _build_notification_preview_message(language: str, notification_type: 
                 ],
                 [
                     InlineKeyboardButton(
-                        text=texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                        text=strip_leading_emoji_if_custom_icon(
+                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                        ),
                         callback_data='subscription_extend',
+                        style='success',
+                        icon_custom_emoji_id='5427168083074628963',
                     )
                 ],
                 [
@@ -269,8 +278,12 @@ async def _build_notification_preview_message(language: str, notification_type: 
                 ],
                 [
                     InlineKeyboardButton(
-                        text=texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'),
+                        text=strip_leading_emoji_if_custom_icon(
+                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                        ),
                         callback_data='subscription_extend',
+                        style='success',
+                        icon_custom_emoji_id='5427168083074628963',
                     )
                 ],
                 [
