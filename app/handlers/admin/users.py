@@ -4982,7 +4982,8 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                         update_kwargs = dict(
                             uuid=_uuid,
                             status=UserStatus.ACTIVE if subscription.is_active else UserStatus.DISABLED,
-                            expire_at=subscription.end_date,
+                            # Панель отклоняет expireAt в прошлом — минимальный зазор в будущее.
+                            expire_at=max(subscription.end_date, datetime.now(UTC) + timedelta(minutes=1)),
                             traffic_limit_bytes=subscription.traffic_limit_gb * (1024**3)
                             if subscription.traffic_limit_gb > 0
                             else 0,
@@ -5017,7 +5018,8 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                     async with remnawave_service.get_api_client() as api:
                         create_kwargs = dict(
                             username=username,
-                            expire_at=subscription.end_date,
+                            # Панель отклоняет expireAt в прошлом — минимальный зазор в будущее.
+                            expire_at=max(subscription.end_date, datetime.now(UTC) + timedelta(minutes=1)),
                             status=UserStatus.ACTIVE if subscription.is_active else UserStatus.DISABLED,
                             traffic_limit_bytes=subscription.traffic_limit_gb * (1024**3)
                             if subscription.traffic_limit_gb > 0

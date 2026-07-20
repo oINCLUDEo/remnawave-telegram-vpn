@@ -519,9 +519,9 @@ class MonitoringService:
                 update_kwargs = dict(
                     uuid=remnawave_uuid,
                     status=RemnaWaveUserStatus.ACTIVE if is_active else RemnaWaveUserStatus.DISABLED,
-                    expire_at=subscription.end_date
-                    if is_active
-                    else max(subscription.end_date, current_time + timedelta(minutes=1)),
+                    # Панель отклоняет expireAt в прошлом — подстраховываемся минимальным
+                    # зазором в будущее для обеих веток (см. subscription_service.py).
+                    expire_at=max(subscription.end_date, current_time + timedelta(minutes=1)),
                     traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
                     traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                     description=settings.format_remnawave_user_description(

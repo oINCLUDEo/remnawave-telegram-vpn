@@ -125,6 +125,13 @@ _ADMIN_TORRENT_BLOCKER_EVENTS: dict[str, str] = {
 
 _ADMIN_NODE_CONNECTION_EVENTS = frozenset({'node.connection_lost', 'node.connection_restored'})
 
+# Окно защиты от гонки user.modified-вебхука с локальным продлением подписки:
+# если подписка была изменена (updated_at) внутри этого окна, а вебхук пытается
+# откатить end_date назад или задисейблить ещё не истёкшую подписку — вебхук
+# почти наверняка несёт устаревший снапшот панели, обогнанный нашим же
+# продлением, и такое изменение игнорируется.
+_RENEWAL_RACE_GUARD_SECONDS = 120
+
 
 class RemnaWaveWebhookService:
     """Processes incoming webhooks from RemnaWave backend."""
@@ -1046,6 +1053,10 @@ class RemnaWaveWebhookService:
         # окончания подписки. Синхронизировать её в end_date нельзя — иначе при
         # последующем продлении новые дни сложатся поверх этой фиктивной даты.
         in_reserve_grace = getattr(subscription, 'reserve_access_granted_at', None) is not None
+        recently_touched_locally = (
+            subscription.updated_at is not None
+            and (datetime.now(UTC) - subscription.updated_at).total_seconds() < _RENEWAL_RACE_GUARD_SECONDS
+        )
         expire_at = data.get('expireAt')
         if expire_at and not in_reserve_grace:
             try:
@@ -1053,15 +1064,26 @@ class RemnaWaveWebhookService:
                 new_end_date = parsed_dt.astimezone(UTC)
                 if subscription.end_date != new_end_date:
                     old_end_date = subscription.end_date
-                    subscription.end_date = new_end_date
-                    changed = True
-                    if old_end_date and new_end_date < old_end_date:
-                        logger.info(
-                            'Webhook: end_date обновлена назад (панель авторитетна): → ',
+                    moves_backward = old_end_date and new_end_date < old_end_date
+                    if moves_backward and recently_touched_locally:
+                        # Гонка с продлением: подписку только что изменили локально,
+                        # а вебхук несёт более раннюю дату — не откатываем.
+                        logger.warning(
+                            'Webhook: игнорируем откат end_date назад — подписка недавно изменена локально (вероятная гонка с продлением)',
                             subscription_id=subscription.id,
                             old_end_date=old_end_date,
-                            new_end_date=new_end_date,
+                            stale_end_date=new_end_date,
                         )
+                    else:
+                        subscription.end_date = new_end_date
+                        changed = True
+                        if moves_backward:
+                            logger.info(
+                                'Webhook: end_date обновлена назад (панель авторитетна): → ',
+                                subscription_id=subscription.id,
+                                old_end_date=old_end_date,
+                                new_end_date=new_end_date,
+                            )
             except (ValueError, TypeError):
                 pass
 
@@ -1081,7 +1103,17 @@ class RemnaWaveWebhookService:
                         user_id=user.id,
                     )
             elif panel_status == 'DISABLED':
-                if subscription.status != SubscriptionStatus.DISABLED.value:
+                still_valid = end_date is not None and end_date > now
+                if recently_touched_locally and still_valid:
+                    # Гонка с продлением: подписку только что продлили локально
+                    # (end_date ещё не наступил), а вебхук несёт устаревший DISABLED
+                    # со старого снапшота панели — не применяем.
+                    logger.warning(
+                        'Webhook: игнорируем DISABLED от панели — подписка недавно продлена локально и ещё не истекла (вероятная гонка с продлением)',
+                        subscription_id=subscription.id,
+                        end_date=end_date,
+                    )
+                elif subscription.status != SubscriptionStatus.DISABLED.value:
                     subscription.status = SubscriptionStatus.DISABLED.value
                     changed = True
 

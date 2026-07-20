@@ -256,7 +256,9 @@ class SubscriptionService:
         )
         common_kwargs = dict(
             status=UserStatus.ACTIVE,
-            expire_at=subscription.end_date,
+            # Панель отклоняет expireAt в прошлом — подстраховываемся минимальным
+            # зазором в будущее на случай гонки с продлением/вебхуком.
+            expire_at=max(subscription.end_date, datetime.now(UTC) + timedelta(minutes=1)),
             traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
             traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
             telegram_id=user.telegram_id,
@@ -351,7 +353,9 @@ class SubscriptionService:
 
         common_kwargs = dict(
             status=UserStatus.ACTIVE,
-            expire_at=subscription.end_date,
+            # Панель отклоняет expireAt в прошлом — подстраховываемся минимальным
+            # зазором в будущее на случай гонки с продлением/вебхуком.
+            expire_at=max(subscription.end_date, datetime.now(UTC) + timedelta(minutes=1)),
             traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
             traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
             telegram_id=user.telegram_id,
@@ -465,9 +469,11 @@ class SubscriptionService:
                 update_kwargs = dict(
                     uuid=remnawave_uuid,
                     status=UserStatus.ACTIVE if is_actually_active else UserStatus.DISABLED,
-                    expire_at=subscription.end_date
-                    if is_actually_active
-                    else max(subscription.end_date, current_time + timedelta(minutes=1)),
+                    # Панель отклоняет expireAt в прошлом ("Expiration date cannot be in the
+                    # past"), а end_date может протухнуть за время сетевого round-trip до
+                    # панели, если синк случился прямо на границе истечения подписки —
+                    # подстраховываемся минимальным зазором в будущее для обеих веток.
+                    expire_at=max(subscription.end_date, current_time + timedelta(minutes=1)),
                     traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
                     traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                     telegram_id=user.telegram_id,
