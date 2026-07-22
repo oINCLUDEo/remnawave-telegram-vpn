@@ -2258,6 +2258,11 @@ async def try_auto_extend_expired_after_topup(
     old_end_date = subscription.end_date
     was_trial = subscription.is_trial
 
+    # Если подписка была в grace-периоде на резервном скваде, восстанавливаем
+    # реальные squads/трафик/end_date ДО продления — иначе restore перезапишет
+    # только что продлённую дату обратно на дату входа в grace.
+    restore_reserve_squads = restore_reserve_grace_if_active(subscription)
+
     # Extend subscription
     try:
         updated_subscription = await extend_subscription(db, subscription, period_days)
@@ -2337,6 +2342,7 @@ async def try_auto_extend_expired_after_topup(
             updated_subscription,
             reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
             reset_reason='автопродление истёкшей подписки',
+            sync_squads=restore_reserve_squads,
         )
     except Exception as error:
         logger.error(

@@ -1149,7 +1149,7 @@ class RemnaWaveWebhookService:
         self._stamp_webhook_update(subscription)
         if changed:
             subscription.updated_at = datetime.now(UTC)
-            logger.info(
+            logger.debug(
                 'Webhook: subscription modified (synced from panel) for user',
                 subscription_id=subscription.id,
                 user_id=user.id,

@@ -4330,15 +4330,16 @@ async def _extend_subscription_by_days(
             logger.error('Подписка не найдена для пользователя', user_id=user_id)
             return False
 
-        await extend_subscription(db, subscription, days)
-
         subscription_service = SubscriptionService()
 
-        # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
-        # ручное продление/сокращение из админки бота считается восстановлением —
-        # иначе панель продолжит получать резервный сквад и урезанный трафик
-        # вместо тарифных.
+        # Если подписка была в grace-периоде на резервном скваде, восстанавливаем
+        # реальные squads/трафик/end_date ДО применения продления — иначе
+        # restore_reserve_grace_if_active() откатит уже продлённую дату обратно
+        # на дату, зафиксированную в момент входа в grace.
         restore_reserve_squads = restore_reserve_grace_if_active(subscription)
+
+        await extend_subscription(db, subscription, days)
+
         if restore_reserve_squads:
             await db.commit()
 

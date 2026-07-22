@@ -125,7 +125,7 @@ def create_remnawave_webhook_router(bot: Bot) -> APIRouter:
         # RemnaWave sends event as full qualified name (e.g. "user.modified"),
         # so we use event directly instead of concatenating scope + event.
         event_name = event
-        logger.info('RemnaWave webhook received: scope event', scope=scope, event_name=event_name)
+        logger.debug('RemnaWave webhook received: scope event', scope=scope, event_name=event_name)
 
         # Process event — return 200 to prevent retries for application-level errors.
         # Only return non-200 for infrastructure failures (DB unavailable).
