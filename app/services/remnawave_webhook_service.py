@@ -1053,8 +1053,15 @@ class RemnaWaveWebhookService:
         # окончания подписки. Синхронизировать её в end_date нельзя — иначе при
         # последующем продлении новые дни сложатся поверх этой фиктивной даты.
         in_reserve_grace = getattr(subscription, 'reserve_access_granted_at', None) is not None
+        # updated_at has onupdate=func.now(), so SQLAlchemy may expire it in-memory
+        # after a flush in this session. Reading an expired attribute here would
+        # trigger an implicit sync lazy-load, which raises MissingGreenlet under
+        # the async driver — so only read it when it's actually loaded.
+        subscription_state = sa_inspect(subscription)
+        updated_at_loaded = 'updated_at' not in subscription_state.unloaded
         recently_touched_locally = (
-            subscription.updated_at is not None
+            updated_at_loaded
+            and subscription.updated_at is not None
             and (datetime.now(UTC) - subscription.updated_at).total_seconds() < _RENEWAL_RACE_GUARD_SECONDS
         )
         expire_at = data.get('expireAt')
