@@ -138,6 +138,15 @@ CATEGORY_GROUP_METADATA: dict[str, dict[str, object]] = {
         'icon': '📊',
         'categories': ('SERVER_STATUS', 'MONITORING'),
     },
+    'mobile': {
+        'title': '📲 Мобильное приложение',
+        'description': (
+            'Минимальная версия и принудительное обновление, техработы для '
+            'мобильного клиента, дефолтный список приложений вне VPN-туннеля.'
+        ),
+        'icon': '📲',
+        'categories': ('MOBILE',),
+    },
     'maintenance': {
         'title': '🔧 Обслуживание',
         'description': 'Режим техработ, бэкапы и проверка обновлений.',
@@ -169,6 +178,7 @@ CATEGORY_GROUP_ORDER: tuple[str, ...] = (
     'notifications',
     'interface',
     'server',
+    'mobile',
     'maintenance',
     'advanced',
 )
