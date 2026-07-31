@@ -988,6 +988,14 @@ class RemnaWaveWebhookService:
         if not user.telegram_id:
             return
 
+        if notification_delivery_service.should_skip_blocked_user(user.telegram_id):
+            logger.debug(
+                'Пропускаем уведомление об исчерпании grace-трафика — пользователь заблокировал бота',
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+            )
+            return
+
         message = (
             '⛔ <b>Временный доступ исчерпан</b>\n\n'
             f'Лимит трафика ({settings.RESERVE_GRACE_TRAFFIC_GB} ГБ) на временном резервном доступе '
@@ -1020,11 +1028,14 @@ class RemnaWaveWebhookService:
 
         try:
             await self.bot.send_message(chat_id=user.telegram_id, text=message, parse_mode='HTML', reply_markup=keyboard)
+            notification_delivery_service.mark_reachable(user.telegram_id)
         except TelegramForbiddenError:
+            attempts = notification_delivery_service.mark_blocked(user.telegram_id)
             logger.warning(
                 'Не удалось отправить уведомление об исчерпании трафика grace-доступа: бот заблокирован пользователем',
                 user_id=user.id,
                 telegram_id=user.telegram_id,
+                attempt=attempts,
             )
         except Exception as exc:
             logger.error(

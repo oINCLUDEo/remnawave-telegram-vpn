@@ -687,6 +687,16 @@ class SubscriptionService:
         if not user.telegram_id:
             return
 
+        from app.services.notification_delivery_service import notification_delivery_service
+
+        if notification_delivery_service.should_skip_blocked_user(user.telegram_id):
+            logger.debug(
+                'Пропускаем уведомление о grace-доступе — пользователь заблокировал бота',
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+            )
+            return
+
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
         from app.bot_factory import create_bot
@@ -727,11 +737,14 @@ class SubscriptionService:
         bot = create_bot()
         try:
             await bot.send_message(chat_id=user.telegram_id, text=message, reply_markup=keyboard)
+            notification_delivery_service.mark_reachable(user.telegram_id)
         except TelegramForbiddenError:
+            attempts = notification_delivery_service.mark_blocked(user.telegram_id)
             logger.warning(
                 'Не удалось отправить уведомление о grace-доступе: бот заблокирован пользователем',
                 user_id=user.id,
                 telegram_id=user.telegram_id,
+                attempt=attempts,
             )
         except Exception as exc:
             logger.error(
