@@ -787,6 +787,27 @@ class RemnaWaveWebhookService:
             return
 
         self._stamp_webhook_update(subscription)
+
+        # Панель шлёт user.expired по своему expireAt, который мог остаться от
+        # временного резерв-сквада или устареть после недавнего продления —
+        # если у нас реальный end_date ещё не наступил, это ложный сигнал:
+        # не экспайрим подписку и не выдаём grace, а перезаливаем актуальные
+        # squads/трафик/expireAt в панель, чтобы её собственный cron перестал
+        # присылать этот стейл-сигнал.
+        now = datetime.now(UTC)
+        if subscription.end_date and subscription.end_date > now:
+            logger.warning(
+                'Webhook user.expired: подписка ещё не истекла локально (устаревший сигнал от панели), ресинк вместо экспайра',
+                subscription_id=subscription.id,
+                user_id=user.id,
+                end_date=subscription.end_date,
+            )
+            await db.commit()
+            from app.services.subscription_service import SubscriptionService
+
+            await SubscriptionService().update_remnawave_user(db, subscription, sync_squads=True)
+            return
+
         if subscription.status != SubscriptionStatus.EXPIRED.value:
             await expire_subscription(db, subscription)
             logger.info('Webhook: subscription expired for user', subscription_id=subscription.id, user_id=user.id)
@@ -856,6 +877,23 @@ class RemnaWaveWebhookService:
             )
             self._stamp_webhook_update(subscription)
             await db.commit()
+            return
+
+        # Тот же устаревший сигнал от панели, что и в user.expired — если наш
+        # end_date реально ещё не наступил, не деактивируем, а ресинкаем панель.
+        now = datetime.now(UTC)
+        if subscription.end_date and subscription.end_date > now:
+            logger.warning(
+                'Webhook user.disabled: подписка ещё не истекла локально (устаревший сигнал от панели), ресинк вместо деактивации',
+                subscription_id=subscription.id,
+                user_id=user.id,
+                end_date=subscription.end_date,
+            )
+            self._stamp_webhook_update(subscription)
+            await db.commit()
+            from app.services.subscription_service import SubscriptionService
+
+            await SubscriptionService().update_remnawave_user(db, subscription, sync_squads=True)
             return
 
         self._stamp_webhook_update(subscription)
