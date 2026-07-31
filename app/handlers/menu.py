@@ -1070,6 +1070,19 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
     if not subscription:
         return texts.t('SUB_STATUS_NONE', '❌ Отсутствует')
 
+    # Reserve-squad grace: subscription.status/end_date are kept "active"
+    # internally only so the periodic status checker doesn't flap it back to
+    # expired every cycle (see grant_reserve_squad_grace) — the real picture
+    # is "your subscription expired, this is a small temporary window", and
+    # that's what the user should see, not "Активна".
+    if getattr(subscription, 'reserve_access_granted_at', None):
+        end_date = getattr(subscription, 'end_date', None)
+        end_date_text = format_local_datetime(end_date, '%d.%m.%Y %H:%M') if end_date else None
+        return texts.t(
+            'SUB_STATUS_RESERVE_GRACE',
+            '🔌 Временный доступ\n⚠️ Подписка истекла, доступ ограничен до {end_date}',
+        ).format(end_date=end_date_text or '—')
+
     current_time = datetime.now(UTC)
     actual_status = (subscription.actual_status or '').lower()
     end_date = getattr(subscription, 'end_date', None)
