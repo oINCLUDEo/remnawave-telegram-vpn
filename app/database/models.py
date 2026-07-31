@@ -1397,6 +1397,11 @@ class Subscription(Base):
     reserve_original_squads = Column(JSON, nullable=True)
     reserve_original_traffic_limit_gb = Column(Integer, nullable=True)
     reserve_original_end_date = Column(AwareDateTime(), nullable=True)
+    # Traffic actually used on the panel at the moment grace was granted — kept
+    # for audit only (RemnaWave's own usage counter gets reset so the small
+    # grace traffic limit isn't immediately exceeded by e.g. an unlimited
+    # tariff's leftover usage). See SubscriptionService.grant_reserve_squad_grace.
+    reserve_original_used_traffic_bytes = Column(BigInteger, nullable=True)
 
     autopay_enabled = Column(Boolean, default=False)
     autopay_days_before = Column(Integer, default=3)

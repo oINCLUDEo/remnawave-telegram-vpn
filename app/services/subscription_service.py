@@ -603,14 +603,40 @@ class SubscriptionService:
         original_squads = list(subscription.connected_squads or [])
         grace_expire_at = datetime.now(UTC) + timedelta(days=settings.RESERVE_GRACE_DAYS)
 
+        used_traffic_bytes: int | None = None
+
         try:
             async with self.get_api_client() as api:
+                # Snapshot how much traffic was actually used on the panel
+                # BEFORE we touch anything — this is the number worth keeping
+                # for support/audit (e.g. "was on an unlimited tariff, had
+                # already used 100 GB"), since we're about to reset it.
+                try:
+                    panel_user = await api.get_user_by_uuid(remnawave_uuid)
+                    used_traffic_bytes = panel_user.used_traffic_bytes if panel_user else None
+                except Exception as exc:
+                    logger.warning(
+                        'Не удалось получить использованный трафик перед grace-периодом',
+                        subscription_id=subscription.id,
+                        user_id=user.id,
+                        exc=exc,
+                    )
+
                 await api.update_user(
                     uuid=remnawave_uuid,
                     status=UserStatus.ACTIVE,
                     expire_at=grace_expire_at,
                     active_internal_squads=[settings.RESERVE_SQUAD_UUID],
                     traffic_limit_bytes=settings.RESERVE_GRACE_TRAFFIC_GB * 1024**3,
+                )
+
+                # The grace traffic limit is intentionally small (a few GB) —
+                # without resetting the panel's usage counter, a user coming
+                # from an unlimited tariff would already be over it (e.g.
+                # 100 GB used vs an 8 GB grace limit) and get blocked
+                # immediately instead of getting the grace access at all.
+                await self._reset_remnawave_traffic(
+                    api, remnawave_uuid, user, reset_reason='grace-период резервного сквада'
                 )
         except Exception as exc:
             logger.error(
@@ -625,7 +651,17 @@ class SubscriptionService:
         subscription.reserve_original_squads = original_squads
         subscription.reserve_original_traffic_limit_gb = subscription.traffic_limit_gb
         subscription.reserve_original_end_date = subscription.end_date
+        subscription.reserve_original_used_traffic_bytes = used_traffic_bytes
         subscription.connected_squads = [settings.RESERVE_SQUAD_UUID]
+        # Mirror what we just told the panel (ACTIVE until grace_expire_at) into the
+        # LOCAL record too — not just RemnaWave's. Without this, our own DB still
+        # thinks the subscription expired days ago while the panel thinks it's
+        # active for 3 more days; any webhook or the periodic status checker
+        # (which deactivates status==ACTIVE + end_date<=now) then works off
+        # contradictory state and flaps the subscription active/expired in a loop.
+        # restore_reserve_grace_if_active() reverses this from reserve_original_end_date.
+        subscription.end_date = grace_expire_at
+        subscription.status = SubscriptionStatus.ACTIVE.value
         await db.commit()
 
         logger.info(
@@ -634,6 +670,8 @@ class SubscriptionService:
             user_id=user.id,
             telegram_id=user.telegram_id,
             grace_expire_at=grace_expire_at.isoformat(),
+            used_traffic_bytes_before_reset=used_traffic_bytes,
+            grace_traffic_limit_gb=settings.RESERVE_GRACE_TRAFFIC_GB,
         )
 
         await self._notify_reserve_grace_granted(user, subscription, grace_expire_at)
