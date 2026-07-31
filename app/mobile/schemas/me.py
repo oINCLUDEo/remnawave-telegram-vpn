@@ -10,6 +10,15 @@ class MeSubscriptionInfo(BaseModel):
 
     status: str = Field(..., description='active | expired | trial | …')
     is_trial: bool = Field(False, description='True when this is a trial subscription')
+    is_reserve_grace: bool = Field(
+        False,
+        description=(
+            'True when the real subscription has expired and this is a small, '
+            'temporary reserve-squad allowance — status is reported as active '
+            'for backend bookkeeping reasons only; the client should show this '
+            'distinctly rather than as a normal active subscription.'
+        ),
+    )
     expire_at: int | None = Field(None, description='Unix timestamp of subscription expiry')
     traffic_limit_gb: int = Field(0, description='Total traffic quota in GB (0 = unlimited)')
     traffic_used_gb: float = Field(0.0, description='Traffic consumed in GB')

@@ -44,6 +44,7 @@ def _make_subscription(*, sub_status='active', is_trial=False, end_ts=9999999999
     sub.purchased_traffic_gb = 0
     sub.subscription_url = 'https://example.com/sub/abc'
     sub.device_limit = 3
+    sub.reserve_access_granted_at = None
     return sub
 
 
@@ -172,3 +173,29 @@ async def test_get_me_subscription_includes_purchased_traffic():
 
     # traffic_limit_gb should combine base + purchased
     assert result.subscription['traffic_limit_gb'] == 70
+
+
+@pytest.mark.asyncio
+async def test_get_me_reports_reserve_grace_distinctly():
+    """A subscription currently in reserve-squad grace must not look like a
+    normal active subscription to the client: status stays 'active' for
+    backend bookkeeping, but is_reserve_grace must be true and the reported
+    traffic limit must be the small grace cap, not the underlying tariff's."""
+    sub = _make_subscription()
+    sub.reserve_access_granted_at = datetime.now(UTC)
+    user = _make_user(subscription=sub)
+    mock_db, mock_session_class, mock_engine = _db_ctx(user)
+
+    with (
+        patch('app.mobile.routes.me.settings') as mock_settings,
+        patch('app.mobile.routes.me.create_async_engine', return_value=mock_engine),
+        patch('app.mobile.routes.me.sessionmaker', return_value=mock_session_class),
+        patch('app.mobile.routes.me.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
+    ):
+        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+        mock_settings.RESERVE_GRACE_TRAFFIC_GB = 3
+
+        result = await get_me(x_telegram_id=123456789)
+
+    assert result.subscription['is_reserve_grace'] is True
+    assert result.subscription['traffic_limit_gb'] == 3
