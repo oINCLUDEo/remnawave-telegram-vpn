@@ -635,7 +635,7 @@ class SubscriptionService:
                 # from an unlimited tariff would already be over it (e.g.
                 # 100 GB used vs an 8 GB grace limit) and get blocked
                 # immediately instead of getting the grace access at all.
-                await self._reset_remnawave_traffic(
+                await self._reset_user_traffic(
                     api, remnawave_uuid, user, reset_reason='grace-период резервного сквада'
                 )
         except Exception as exc:
