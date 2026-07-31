@@ -762,6 +762,23 @@ class Settings(BaseSettings):
     ENABLE_DEEP_LINKS: bool = True
     APP_CONFIG_CACHE_TTL: int = 3600
 
+    # Remote config served to the Flutter mobile client via GET /mobile/v1/config.
+    # Editable live from the admin API/panel (generic settings system) — no app
+    # store release needed to change these.
+    MOBILE_MIN_SUPPORTED_BUILD: int = 1
+    MOBILE_LATEST_BUILD: int = 1
+    MOBILE_FORCE_UPDATE: bool = False
+    MOBILE_UPDATE_URL_ANDROID: str = ''
+    MOBILE_UPDATE_URL_IOS: str = ''
+    MOBILE_MAINTENANCE_MODE: bool = False
+    MOBILE_MAINTENANCE_MESSAGE: str = '🔧 Ведутся технические работы. Попробуйте позже.'
+    # Comma-separated package/bundle IDs excluded from the VPN tunnel by default
+    # on first launch (split-tunneling seed list). Overrides the list compiled
+    # into the app binary.
+    MOBILE_BLOCKED_APPS_DEFAULT: str = (
+        'com.vk.vkvideo,com.vkontakte.android,ru.mail.mailapp,ru.rostel,ru.gosuslugi.mobile'
+    )
+
     VERSION_CHECK_ENABLED: bool = True
     VERSION_CHECK_REPO: str = 'fr1ngg/remnawave-bedolaga-telegram-bot'
     VERSION_CHECK_INTERVAL_HOURS: int = 1
@@ -2124,6 +2141,17 @@ class Settings(BaseSettings):
         }
         link = links.get(platform_key)
         return link or None
+
+    def get_mobile_blocked_apps_default(self) -> list[str]:
+        raw = (self.MOBILE_BLOCKED_APPS_DEFAULT or '').strip()
+        if not raw:
+            return []
+        return [item.strip() for item in raw.split(',') if item.strip()]
+
+    def get_mobile_update_url(self, platform: str) -> str | None:
+        platform_key = platform.strip().lower()
+        url = (self.MOBILE_UPDATE_URL_IOS if platform_key == 'ios' else self.MOBILE_UPDATE_URL_ANDROID).strip()
+        return url or None
 
     def is_maintenance_mode(self) -> bool:
         return self.MAINTENANCE_MODE

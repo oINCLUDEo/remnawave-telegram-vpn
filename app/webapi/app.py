@@ -8,6 +8,7 @@ from app.cabinet.routes import router as cabinet_router
 from app.config import settings
 from app.mobile.routes import (
     auth as mobile_auth,
+    config as mobile_config,
     me as mobile_me,
     notifications as mobile_notifications,
     servers as mobile_servers,
@@ -304,6 +305,7 @@ def create_web_api_app() -> FastAPI:
     )
 
     # Mobile API (Flutter client)
+    app.include_router(mobile_config.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_servers.router, prefix='/mobile/v1', tags=['mobile'])
     app.include_router(mobile_auth.router, prefix='/mobile/v1/auth', tags=['mobile'])
     app.include_router(mobile_me.router, prefix='/mobile/v1', tags=['mobile'])
