@@ -2440,6 +2440,16 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
         if existing_subscription:
             logger.info('Обновляем существующую подписку пользователя', telegram_id=db_user.telegram_id)
 
+            # Снимаем grace-guard поля перед тем, как ниже полностью перезапишем
+            # сквады/трафик/end_date. Сами сквады/трафик тут и так перезаписываются
+            # безусловно (в отличие от _extend_existing_subscription), но без этого
+            # reserve_access_granted_at остался бы висеть и молча блокировал бы
+            # выдачу grace в следующий раз, когда подписка снова просрочится
+            # (grant_reserve_squad_grace не выдаёт grace повторно, пока флаг уже стоит).
+            from app.database.crud.subscription import restore_reserve_grace_if_active
+
+            restore_reserve_grace_if_active(existing_subscription)
+
             bonus_period = timedelta()
 
             if existing_subscription.is_trial:
@@ -4513,6 +4523,22 @@ async def _extend_existing_subscription(
         return
 
     # Обновляем параметры подписки
+
+    # Если подписка сейчас на временном grace-доступе (резервный сквад после
+    # просрочки) — восстанавливаем настоящие сквады/лимит трафика/end_date
+    # ДО того как логика ниже начнёт их патчить. Иначе: (1) "traffic_limit_gb
+    # != 0" ниже не тронет поле, если у тарифа безлимит (0), и grace-лимit
+    # в 3 ГБ так и останется навсегда; (2) продление посчитается от
+    # временной grace-даты вместо настоящей, подарив пользователю лишние дни.
+    from app.database.crud.subscription import restore_reserve_grace_if_active
+
+    if restore_reserve_grace_if_active(current_subscription):
+        logger.info(
+            'Восстановлены исходные параметры подписки перед продлением (была на grace)',
+            subscription_id=current_subscription.id,
+            user_id=db_user.id,
+        )
+
     current_time = datetime.now(UTC)
     old_end_date = current_subscription.end_date
 
