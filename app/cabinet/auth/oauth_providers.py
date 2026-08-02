@@ -490,10 +490,16 @@ _PROVIDERS: dict[str, type[OAuthProvider]] = {
 }
 
 
-def get_provider(name: str) -> OAuthProvider | None:
+def get_provider(name: str, *, mobile: bool = False) -> OAuthProvider | None:
     """Get an OAuth provider instance if enabled.
 
-    Returns None if the provider is not enabled or not found.
+    Returns None if the provider is not enabled or not found. When
+    ``mobile=True``, the provider is built with the redirect_uri pointing at
+    this backend's own mobile-callback endpoint (see oauth.py) instead of the
+    web cabinet's callback page — that endpoint must be registered as an
+    additional Authorized redirect URI with the provider. Returns None (same
+    as "not found") if MOBILE_OAUTH_API_BASE_URL isn't configured, since a
+    broken redirect_uri would just fail the whole flow anyway.
     """
     providers_config: dict[str, OAuthProviderConfig] = settings.get_oauth_providers_config()
     config = providers_config.get(name)
@@ -504,7 +510,14 @@ def get_provider(name: str) -> OAuthProvider | None:
     if not provider_class:
         return None
 
-    redirect_uri = f'{settings.CABINET_URL}/auth/oauth/callback'
+    if mobile:
+        base = settings.get_mobile_oauth_api_base_url()
+        if not base:
+            logger.error('Mobile OAuth requested but MOBILE_OAUTH_API_BASE_URL is not configured')
+            return None
+        redirect_uri = f'{base}/cabinet/auth/oauth/{name}/mobile-callback'
+    else:
+        redirect_uri = f'{settings.CABINET_URL}/auth/oauth/callback'
 
     return provider_class(
         client_id=config['client_id'],

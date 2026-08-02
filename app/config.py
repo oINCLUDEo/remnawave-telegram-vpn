@@ -815,6 +815,11 @@ class Settings(BaseSettings):
     CABINET_EMAIL_CHANGE_CODE_EXPIRE_MINUTES: int = 15  # Email change verification code expiration
     CABINET_EMAIL_AUTH_ENABLED: bool = True  # Enable email registration/login in cabinet
     CABINET_URL: str = 'https://example.com/cabinet'  # Base URL for cabinet (used in verification emails)
+    MOBILE_OAUTH_API_BASE_URL: str = (
+        ''  # This backend's own public URL (e.g. https://api.ulya.space) — used as the
+        # redirect_uri for the mobile app's OAuth flow (see /cabinet/auth/oauth/{provider}/mobile-callback).
+        # Must be registered as an additional Authorized redirect URI in the provider's console.
+    )
     CABINET_TRUSTED_PROXIES: str = (
         ''  # Comma-separated IPs/CIDRs of trusted reverse proxies (e.g. '127.0.0.1,10.0.0.0/8')
     )
@@ -2756,6 +2761,9 @@ class Settings(BaseSettings):
             stacklevel=2,
         )
         return self.BOT_TOKEN
+
+    def get_mobile_oauth_api_base_url(self) -> str:
+        return self.MOBILE_OAUTH_API_BASE_URL.strip().rstrip('/')
 
     def get_cabinet_access_token_expire_minutes(self) -> int:
         return max(1, self.CABINET_ACCESS_TOKEN_EXPIRE_MINUTES)
