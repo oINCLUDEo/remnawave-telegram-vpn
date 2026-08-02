@@ -8,13 +8,12 @@ device limits, and optional description text.
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Header, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.cabinet.dependencies import get_cabinet_db, get_current_cabinet_user
 from app.database.crud.tariff import get_tariffs_for_user
-from app.database.crud.user import get_user_by_telegram_id
+from app.database.models import User
 from app.utils.pricing_utils import format_period_description
 
 
@@ -33,59 +32,46 @@ router = APIRouter()
     tags=['mobile'],
 )
 async def get_mobile_tariffs(
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id', description='Telegram user ID'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> dict:
     """Return tariff catalog for the authenticated mobile user."""
-    db_url = settings.get_database_url()
-    engine = create_async_engine(db_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
-
     try:
-        async with async_session() as db:
-            user = await get_user_by_telegram_id(db, x_telegram_id)
-
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail='Пользователь не найден',
-                )
-            if user.status != 'active':
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail='Учётная запись заблокирована',
-                )
-
-            # Resolve promo group for discount calculation and tariff filtering
-            promo_group = (
-                user.get_primary_promo_group()
-                if hasattr(user, 'get_primary_promo_group')
-                else None
+        if user.status != 'active':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Учётная запись заблокирована',
             )
-            if promo_group is None:
-                promo_group = getattr(user, 'promo_group', None)
-            promo_group_id = promo_group.id if promo_group else None
 
-            tariffs = await get_tariffs_for_user(db, promo_group_id=promo_group_id)
-            language = getattr(user, 'language', 'ru') or 'ru'
+        # Resolve promo group for discount calculation and tariff filtering
+        promo_group = (
+            user.get_primary_promo_group()
+            if hasattr(user, 'get_primary_promo_group')
+            else None
+        )
+        if promo_group is None:
+            promo_group = getattr(user, 'promo_group', None)
+        promo_group_id = promo_group.id if promo_group else None
 
-            logger.info(
-                'Mobile /tariffs: resolved',
-                telegram_id=x_telegram_id,
-                promo_group_id=promo_group_id,
-                tariffs_count=len(tariffs),
-                tariff_ids=[t.id for t in tariffs],
-            )
+        tariffs = await get_tariffs_for_user(db, promo_group_id=promo_group_id)
+        language = getattr(user, 'language', 'ru') or 'ru'
+
+        logger.info(
+            'Mobile /tariffs: resolved',
+            user_id=user.id,
+            promo_group_id=promo_group_id,
+            tariffs_count=len(tariffs),
+            tariff_ids=[t.id for t in tariffs],
+        )
 
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Mobile /tariffs DB error', telegram_id=x_telegram_id, error=exc)
+        logger.error('Mobile /tariffs DB error', user_id=user.id, error=exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при получении тарифов',
         ) from exc
-    finally:
-        await engine.dispose()
 
     # Build response outside the DB session
     from app.services.pricing_engine import pricing_engine
@@ -159,7 +145,7 @@ async def get_mobile_tariffs(
 
     logger.info(
         'Mobile /tariffs: response built',
-        telegram_id=x_telegram_id,
+        user_id=user.id,
         result_count=len(result),
     )
     return {'tariffs': result}

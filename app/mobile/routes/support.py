@@ -10,14 +10,12 @@ Allows authenticated mobile users to:
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Header, HTTPException, Path, status
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from fastapi import APIRouter, Depends, HTTPException, Path, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.cabinet.dependencies import get_cabinet_db, get_current_cabinet_user
 from app.database.crud.ticket import TicketCRUD, TicketMessageCRUD
-from app.database.crud.user import get_user_by_telegram_id
-from app.database.models import TicketStatus
+from app.database.models import TicketStatus, User
 from app.mobile.schemas.support import (
     MobileCreateTicketRequest,
     MobileReplyRequest,
@@ -44,19 +42,10 @@ _MAX_MESSAGE_LEN = 4000
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 
-async def _get_user_or_raise(db: AsyncSession, telegram_id: int):
-    user = await get_user_by_telegram_id(db, telegram_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Пользователь не найден')
+def _require_active(user: User) -> User:
     if getattr(user, 'status', 'active') != 'active':
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Учётная запись заблокирована')
     return user
-
-
-def _make_session_factory(db_url: str):
-    engine = create_async_engine(db_url, echo=False)
-    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
-    return engine, factory
 
 
 def _ticket_to_response(ticket) -> MobileTicketResponse:
@@ -104,22 +93,16 @@ def _upload_logs_as_document(logs_text: str) -> tuple[str, str, str]:
     tags=['mobile'],
 )
 async def list_tickets(
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> MobileTicketListResponse:
     """Return all tickets belonging to the authenticated user."""
-    db_url = settings.get_database_url()
-    engine, factory = _make_session_factory(db_url)
+    _require_active(user)
     try:
-        async with factory() as db:
-            user = await _get_user_or_raise(db, x_telegram_id)
-            tickets = await TicketCRUD.get_user_tickets(db, user.id, limit=50)
-    except HTTPException:
-        raise
+        tickets = await TicketCRUD.get_user_tickets(db, user.id, limit=50)
     except Exception as exc:
-        logger.error('Mobile GET /support/tickets error', telegram_id=x_telegram_id, error=exc)
+        logger.error('Mobile GET /support/tickets error', user_id=user.id, error=exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Ошибка базы данных') from exc
-    finally:
-        await engine.dispose()
 
     return MobileTicketListResponse(tickets=[_ticket_to_response(t) for t in tickets])
 
@@ -133,9 +116,11 @@ async def list_tickets(
 )
 async def create_ticket(
     body: MobileCreateTicketRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> MobileTicketResponse:
     """Create a new support ticket."""
+    _require_active(user)
     title = (body.title or '').strip()
     message_text = (body.message or '').strip()
 
@@ -157,38 +142,31 @@ async def create_ticket(
         if logs_text:
             logs_media_type, logs_media_file_id, logs_media_caption = _upload_logs_as_document(logs_text)
 
-    db_url = settings.get_database_url()
-    engine, factory = _make_session_factory(db_url)
     try:
-        async with factory() as db:
-            user = await _get_user_or_raise(db, x_telegram_id)
-
-            # Limit concurrent open tickets per user
-            open_count = await TicketCRUD.count_user_tickets_by_statuses(
-                db, user.id, [TicketStatus.OPEN.value, TicketStatus.ANSWERED.value, TicketStatus.PENDING.value]
+        # Limit concurrent open tickets per user
+        open_count = await TicketCRUD.count_user_tickets_by_statuses(
+            db, user.id, [TicketStatus.OPEN.value, TicketStatus.ANSWERED.value, TicketStatus.PENDING.value]
+        )
+        if open_count >= _MAX_OPEN_TICKETS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f'Максимальное количество открытых тикетов: {_MAX_OPEN_TICKETS}',
             )
-            if open_count >= _MAX_OPEN_TICKETS:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail=f'Максимальное количество открытых тикетов: {_MAX_OPEN_TICKETS}',
-                )
 
-            ticket = await TicketCRUD.create_ticket(
-                db,
-                user_id=user.id,
-                title=title,
-                message_text=message_text,
-                media_type=logs_media_type,
-                media_file_id=logs_media_file_id,
-                media_caption=logs_media_caption,
-            )
+        ticket = await TicketCRUD.create_ticket(
+            db,
+            user_id=user.id,
+            title=title,
+            message_text=message_text,
+            media_type=logs_media_type,
+            media_file_id=logs_media_file_id,
+            media_caption=logs_media_caption,
+        )
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Mobile POST /support/tickets error', telegram_id=x_telegram_id, error=exc)
+        logger.error('Mobile POST /support/tickets error', user_id=user.id, error=exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Ошибка базы данных') from exc
-    finally:
-        await engine.dispose()
 
     return _ticket_to_response(ticket)
 
@@ -201,25 +179,21 @@ async def create_ticket(
 )
 async def get_ticket(
     ticket_id: int = Path(..., gt=0),
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> MobileTicketDetailResponse:
     """Return a ticket with its messages."""
-    db_url = settings.get_database_url()
-    engine, factory = _make_session_factory(db_url)
+    _require_active(user)
     try:
-        async with factory() as db:
-            user = await _get_user_or_raise(db, x_telegram_id)
-            ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=True)
-            if not ticket or ticket.user_id != user.id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
-            messages = await TicketMessageCRUD.get_ticket_messages(db, ticket_id)
+        ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=True)
+        if not ticket or ticket.user_id != user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
+        messages = await TicketMessageCRUD.get_ticket_messages(db, ticket_id)
     except HTTPException:
         raise
     except Exception as exc:
         logger.error('Mobile GET /support/tickets/{id} error', ticket_id=ticket_id, error=exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Ошибка базы данных') from exc
-    finally:
-        await engine.dispose()
 
     return MobileTicketDetailResponse(
         **_ticket_to_response(ticket).model_dump(),
@@ -237,41 +211,37 @@ async def get_ticket(
 async def reply_to_ticket(
     body: MobileReplyRequest,
     ticket_id: int = Path(..., gt=0),
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> MobileTicketMessageResponse:
     """Add a user reply to an existing ticket."""
+    _require_active(user)
     message_text = (body.message or '').strip()
     if not message_text:
         raise HTTPException(status_code=422, detail='Укажите текст сообщения')
     if len(message_text) > _MAX_MESSAGE_LEN:
         raise HTTPException(status_code=422, detail='Сообщение слишком длинное')
 
-    db_url = settings.get_database_url()
-    engine, factory = _make_session_factory(db_url)
     try:
-        async with factory() as db:
-            user = await _get_user_or_raise(db, x_telegram_id)
-            ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False)
-            if not ticket or ticket.user_id != user.id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
-            if ticket.status == TicketStatus.CLOSED.value:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT, detail='Тикет закрыт. Создайте новое обращение.'
-                )
-            if ticket.is_user_reply_blocked:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail='Ответы в этот тикет заблокированы'
-                )
-            msg = await TicketMessageCRUD.add_message(
-                db, ticket_id=ticket_id, user_id=user.id, message_text=message_text
+        ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False)
+        if not ticket or ticket.user_id != user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
+        if ticket.status == TicketStatus.CLOSED.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail='Тикет закрыт. Создайте новое обращение.'
             )
+        if ticket.is_user_reply_blocked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail='Ответы в этот тикет заблокированы'
+            )
+        msg = await TicketMessageCRUD.add_message(
+            db, ticket_id=ticket_id, user_id=user.id, message_text=message_text
+        )
     except HTTPException:
         raise
     except Exception as exc:
         logger.error('Mobile POST /support/tickets/{id}/messages error', ticket_id=ticket_id, error=exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Ошибка базы данных') from exc
-    finally:
-        await engine.dispose()
 
     return _message_to_response(msg)
 
@@ -284,31 +254,27 @@ async def reply_to_ticket(
 )
 async def close_ticket(
     ticket_id: int = Path(..., gt=0),
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> MobileTicketResponse:
     """Close an open support ticket. Only the ticket owner can close it."""
-    db_url = settings.get_database_url()
-    engine, factory = _make_session_factory(db_url)
+    _require_active(user)
     try:
-        async with factory() as db:
-            user = await _get_user_or_raise(db, x_telegram_id)
-            ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False)
-            if not ticket or ticket.user_id != user.id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
-            if ticket.status == TicketStatus.CLOSED.value:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT, detail='Тикет уже закрыт'
-                )
-            closed = await TicketCRUD.close_ticket(db, ticket_id)
-            if not closed:
-                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Не удалось закрыть тикет')
-            await db.refresh(ticket)
+        ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False)
+        if not ticket or ticket.user_id != user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Тикет не найден')
+        if ticket.status == TicketStatus.CLOSED.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail='Тикет уже закрыт'
+            )
+        closed = await TicketCRUD.close_ticket(db, ticket_id)
+        if not closed:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Не удалось закрыть тикет')
+        await db.refresh(ticket)
     except HTTPException:
         raise
     except Exception as exc:
         logger.error('Mobile POST /support/tickets/{id}/close error', ticket_id=ticket_id, error=exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Ошибка базы данных') from exc
-    finally:
-        await engine.dispose()
 
     return _ticket_to_response(ticket)

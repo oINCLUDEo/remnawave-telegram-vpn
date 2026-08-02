@@ -62,14 +62,11 @@ def _make_subscription(*, sub_status='active', is_trial=False):
     return sub
 
 
-def _db_patch(user):
+def _mock_db():
     mock_db = AsyncMock()
     mock_db.refresh = AsyncMock(side_effect=lambda u, attrs=None: None)
-    mock_db.close = AsyncMock()
-    mock_session_class = MagicMock(return_value=mock_db)
-    mock_engine = AsyncMock()
-    mock_engine.dispose = AsyncMock()
-    return mock_db, mock_session_class, mock_engine
+    mock_db.commit = AsyncMock()
+    return mock_db
 
 
 # ---------------------------------------------------------------------------
@@ -80,39 +77,12 @@ def _db_patch(user):
 @pytest.mark.asyncio
 async def test_get_balance_returns_balance():
     user = _make_user(balance_kopeks=12500)
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
-    with (
-        patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-        result = await get_balance(x_telegram_id=123456789)
+    result = await get_balance(user=user)
 
     assert result.balance_kopeks == 12500
     assert result.balance_rub == 125.0
     assert result.currency == 'RUB'
-
-
-@pytest.mark.asyncio
-async def test_get_balance_unknown_user_raises_404():
-    from fastapi import HTTPException
-
-    mock_db, mock_session_class, mock_engine = _db_patch(None)
-
-    with (
-        patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=None),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-        with pytest.raises(HTTPException) as exc_info:
-            await get_balance(x_telegram_id=9999)
-
-    assert exc_info.value.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -124,22 +94,14 @@ async def test_get_balance_unknown_user_raises_404():
 async def test_set_autopay_enables_autopay():
     sub = _make_subscription()
     user = _make_user(subscription=sub)
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
-    mock_db.commit = AsyncMock()
 
     from app.mobile.schemas.subscription import AutopayRequest
 
-    with (
-        patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-        result = await set_autopay(
-            payload=AutopayRequest(enabled=True),
-            x_telegram_id=123456789,
-        )
+    result = await set_autopay(
+        payload=AutopayRequest(enabled=True),
+        user=user,
+        db=_mock_db(),
+    )
 
     assert result.autopay_enabled is True
 
@@ -149,22 +111,15 @@ async def test_set_autopay_no_subscription_raises_404():
     from fastapi import HTTPException
 
     user = _make_user(subscription=None)
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
     from app.mobile.schemas.subscription import AutopayRequest
 
-    with (
-        patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-        with pytest.raises(HTTPException) as exc_info:
-            await set_autopay(
-                payload=AutopayRequest(enabled=True),
-                x_telegram_id=123456789,
-            )
+    with pytest.raises(HTTPException) as exc_info:
+        await set_autopay(
+            payload=AutopayRequest(enabled=True),
+            user=user,
+            db=_mock_db(),
+        )
 
     assert exc_info.value.status_code == 404
 
@@ -177,7 +132,6 @@ async def test_set_autopay_no_subscription_raises_404():
 @pytest.mark.asyncio
 async def test_get_subscription_options_returns_context():
     user = _make_user()
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
     # Build a minimal mock context
     mock_period = MagicMock()
@@ -190,18 +144,11 @@ async def test_get_subscription_options_returns_context():
     mock_service = MagicMock()
     mock_service.build_options = AsyncMock(return_value=mock_context)
 
-    with (
-        patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-        patch(
-            'app.services.subscription_purchase_service.MiniAppSubscriptionPurchaseService',
-            return_value=mock_service,
-        ),
+    with patch(
+        'app.services.subscription_purchase_service.MiniAppSubscriptionPurchaseService',
+        return_value=mock_service,
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-        result = await get_subscription_options(x_telegram_id=123456789)
+        result = await get_subscription_options(user=user, db=_mock_db())
 
     assert result.has_subscription is False
     assert 'periods' in result.context
@@ -216,7 +163,6 @@ async def test_get_subscription_options_returns_context():
 @pytest.mark.asyncio
 async def test_calc_subscription_price_returns_total():
     user = _make_user()
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
     mock_period = MagicMock()
     mock_period.to_payload.return_value = {'id': 'days:30', 'label': '1 месяц'}
@@ -237,20 +183,14 @@ async def test_calc_subscription_price_returns_total():
 
     from app.mobile.schemas.subscription import SubscriptionSelectionRequest
 
-    with (
-        patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-        patch(
-            'app.services.subscription_purchase_service.MiniAppSubscriptionPurchaseService',
-            return_value=mock_service,
-        ),
+    with patch(
+        'app.services.subscription_purchase_service.MiniAppSubscriptionPurchaseService',
+        return_value=mock_service,
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         result = await calc_subscription_price(
             payload=SubscriptionSelectionRequest(period_id='days:30', traffic_value=50, devices=2),
-            x_telegram_id=123456789,
+            user=user,
+            db=_mock_db(),
         )
 
     assert result.total_kopeks == 39900
@@ -267,23 +207,17 @@ async def test_topup_balance_when_yookassa_disabled_raises_402():
     from fastapi import HTTPException
 
     user = _make_user(balance_kopeks=0)
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
     from app.mobile.schemas.subscription import BalanceTopupRequest
 
-    with (
-        patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.subscription.settings') as mock_settings:
         mock_settings.is_yookassa_enabled.return_value = False
 
         with pytest.raises(HTTPException) as exc_info:
             await topup_balance(
                 payload=BalanceTopupRequest(amount_kopeks=30000),
-                x_telegram_id=123456789,
+                user=user,
+                db=_mock_db(),
             )
 
     assert exc_info.value.status_code == 402
@@ -292,7 +226,6 @@ async def test_topup_balance_when_yookassa_disabled_raises_402():
 @pytest.mark.asyncio
 async def test_topup_balance_creates_payment_url():
     user = _make_user(balance_kopeks=0)
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
     from app.mobile.schemas.subscription import BalanceTopupRequest
 
@@ -304,17 +237,14 @@ async def test_topup_balance_creates_payment_url():
 
     with (
         patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
         patch.dict('sys.modules', {'app.services.payment_service': MagicMock(PaymentService=mock_ps_class)}),
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_settings.is_yookassa_enabled.return_value = True
 
         result = await topup_balance(
             payload=BalanceTopupRequest(amount_kopeks=30000),
-            x_telegram_id=123456789,
+            user=user,
+            db=_mock_db(),
         )
 
     assert result.status == 'payment_required'
@@ -359,6 +289,14 @@ def test_metadata_is_balance_recognises_mobile_subscription_upgrade_topup():
     assert _metadata_is_balance(payment) is True
 
 
+def test_metadata_is_balance_recognises_mobile_tariff_purchase():
+    from app.services.payment_verification_service import _metadata_is_balance
+
+    payment = MagicMock()
+    payment.metadata_json = {'type': 'mobile_tariff_purchase'}
+    assert _metadata_is_balance(payment) is True
+
+
 def test_metadata_is_balance_rejects_unknown_type():
     from app.services.payment_verification_service import _metadata_is_balance
 
@@ -384,7 +322,6 @@ def test_metadata_is_balance_empty_metadata():
 async def test_buy_subscription_saves_cart_on_insufficient_balance():
     """When balance is insufficient, a cart must be saved in Redis."""
     user = _make_user(balance_kopeks=0)
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
     # Mock the purchase service
     mock_period = MagicMock()
@@ -420,9 +357,6 @@ async def test_buy_subscription_saves_cart_on_insufficient_balance():
 
     with (
         patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
         patch.dict(
             'sys.modules',
             {
@@ -436,12 +370,12 @@ async def test_buy_subscription_saves_cart_on_insufficient_balance():
             },
         ),
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_settings.is_yookassa_enabled.return_value = True
 
         result = await buy_subscription(
             payload=SubscriptionBuyRequest(period_id='days:30'),
-            x_telegram_id=123456789,
+            user=user,
+            db=_mock_db(),
         )
 
     assert result.status == 'payment_required'
@@ -464,21 +398,16 @@ async def test_calc_upgrade_price_returns_amount():
     sub = _make_subscription()  # device_limit=2
     sub.tariff_id = None
     user.subscription = sub
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
 
     from app.mobile.schemas.subscription import SubscriptionUpgradeRequest
 
     with (
         patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
         patch(
             'app.utils.pricing_utils.calculate_prorated_price',
             return_value=(3000, 1),
         ),
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_settings.PRICE_PER_DEVICE = 3000
         mock_settings.DEFAULT_DEVICE_LIMIT = 1
         mock_settings.MAX_DEVICES_LIMIT = 20
@@ -486,7 +415,8 @@ async def test_calc_upgrade_price_returns_amount():
         mock_settings.is_tariffs_mode.return_value = False
         result = await calc_upgrade_price(
             payload=SubscriptionUpgradeRequest(devices_add=1),
-            x_telegram_id=123456789,
+            user=user,
+            db=_mock_db(),
         )
 
     assert result.amount_kopeks == 3000
@@ -501,24 +431,17 @@ async def test_calc_upgrade_price_returns_amount():
 @pytest.mark.asyncio
 async def test_upgrade_subscription_traffic_only_does_not_extend_period():
     """Traffic-only upgrade must NOT extend the subscription end_date."""
-    from datetime import UTC, datetime
-
     user = _make_user(balance_kopeks=50000)
     sub = _make_subscription()  # traffic_limit_gb=100
     sub.tariff_id = None
     original_end_date = sub.end_date
     user.subscription = sub
-    mock_db, mock_session_class, mock_engine = _db_patch(user)
-    mock_db.commit = AsyncMock()
-    mock_db.refresh = AsyncMock(side_effect=lambda obj, attrs=None: None)
+    mock_db = _mock_db()
 
     from app.mobile.schemas.subscription import SubscriptionUpgradeRequest
 
     with (
         patch('app.mobile.routes.subscription.settings') as mock_settings,
-        patch('app.mobile.routes.subscription.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.subscription.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.subscription.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
         patch(
             'app.database.crud.user.subtract_user_balance',
             new_callable=AsyncMock,
@@ -538,13 +461,13 @@ async def test_upgrade_subscription_traffic_only_does_not_extend_period():
             return_value=(5000, 1),
         ),
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_settings.is_traffic_topup_blocked.return_value = False
         mock_settings.get_traffic_topup_price.return_value = 5000
         mock_settings.is_tariffs_mode.return_value = False
         result = await upgrade_subscription(
             payload=SubscriptionUpgradeRequest(traffic_add=50),
-            x_telegram_id=123456789,
+            user=user,
+            db=mock_db,
         )
 
     assert result.status == 'success'

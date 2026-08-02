@@ -54,14 +54,11 @@ def _make_message(msg_id: int = 10, ticket_id: int = 1, is_from_admin: bool = Fa
     return msg
 
 
-def _db_ctx():
-    mock_db = AsyncMock()
-    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_db.__aexit__ = AsyncMock(return_value=False)
-    mock_session_class = MagicMock(return_value=mock_db)
-    mock_engine = AsyncMock()
-    mock_engine.dispose = AsyncMock()
-    return mock_db, mock_session_class, mock_engine
+def _mock_db():
+    """Opaque placeholder — TicketCRUD/TicketMessageCRUD are mocked wholesale
+    in every test below, so this is never actually touched, just passed
+    through as the first positional arg."""
+    return AsyncMock()
 
 
 # ---------------------------------------------------------------------------
@@ -73,20 +70,9 @@ def _db_ctx():
 async def test_list_tickets_returns_empty_list():
     from app.mobile.routes.support import list_tickets
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
-
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.get_user_tickets = AsyncMock(return_value=[])
-
-        result = await list_tickets(x_telegram_id=111222333)
+        result = await list_tickets(user=_make_user(), db=_mock_db())
 
     assert result.tickets == []
 
@@ -95,21 +81,11 @@ async def test_list_tickets_returns_empty_list():
 async def test_list_tickets_returns_tickets():
     from app.mobile.routes.support import list_tickets
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket()
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.get_user_tickets = AsyncMock(return_value=[ticket])
-
-        result = await list_tickets(x_telegram_id=111222333)
+        result = await list_tickets(user=_make_user(), db=_mock_db())
 
     assert len(result.tickets) == 1
     assert result.tickets[0].id == 1
@@ -125,23 +101,14 @@ async def test_list_tickets_returns_tickets():
 async def test_create_ticket_success():
     from app.mobile.routes.support import MobileCreateTicketRequest, create_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket()
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.count_user_tickets_by_statuses = AsyncMock(return_value=0)
         mock_crud.create_ticket = AsyncMock(return_value=ticket)
 
         body = MobileCreateTicketRequest(title='My issue', message='Details here')
-        result = await create_ticket(body=body, x_telegram_id=111222333)
+        result = await create_ticket(body=body, user=_make_user(), db=_mock_db())
 
     assert result.id == ticket.id
     assert result.status == 'open'
@@ -156,7 +123,7 @@ async def test_create_ticket_rejects_empty_title():
     body = MobileCreateTicketRequest(title='', message='Some text')
 
     with pytest.raises(HTTPException) as exc_info:
-        await create_ticket(body=body, x_telegram_id=111222333)
+        await create_ticket(body=body, user=_make_user(), db=_mock_db())
 
     assert exc_info.value.status_code == 422
 
@@ -170,7 +137,7 @@ async def test_create_ticket_rejects_empty_message():
     body = MobileCreateTicketRequest(title='Valid title', message='')
 
     with pytest.raises(HTTPException) as exc_info:
-        await create_ticket(body=body, x_telegram_id=111222333)
+        await create_ticket(body=body, user=_make_user(), db=_mock_db())
 
     assert exc_info.value.status_code == 422
 
@@ -181,22 +148,12 @@ async def test_create_ticket_limits_open_tickets():
 
     from app.mobile.routes.support import MobileCreateTicketRequest, create_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
-
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.count_user_tickets_by_statuses = AsyncMock(return_value=5)
 
         body = MobileCreateTicketRequest(title='Another issue', message='Text')
         with pytest.raises(HTTPException) as exc_info:
-            await create_ticket(body=body, x_telegram_id=111222333)
+            await create_ticket(body=body, user=_make_user(), db=_mock_db())
 
     assert exc_info.value.status_code == 429
 
@@ -209,20 +166,11 @@ async def test_create_ticket_with_long_logs_does_not_return_422():
     """
     from app.mobile.routes.support import MobileCreateTicketRequest, create_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket()
     # Build a log payload that would previously exceed _MAX_MESSAGE_LEN when combined
     long_logs = 'LOG LINE\n' * 1000  # ~9 000 chars
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.count_user_tickets_by_statuses = AsyncMock(return_value=0)
         mock_crud.create_ticket = AsyncMock(return_value=ticket)
 
@@ -231,7 +179,7 @@ async def test_create_ticket_with_long_logs_does_not_return_422():
             message='Short user message',
             logs=long_logs,
         )
-        result = await create_ticket(body=body, x_telegram_id=111222333)
+        result = await create_ticket(body=body, user=_make_user(), db=_mock_db())
 
     assert result.id == ticket.id
 
@@ -245,24 +193,17 @@ async def test_create_ticket_with_long_logs_does_not_return_422():
 async def test_get_ticket_returns_detail():
     from app.mobile.routes.support import get_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket()
     msg = _make_message()
 
     with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
         patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
         patch('app.mobile.routes.support.TicketMessageCRUD') as mock_msg_crud,
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
         mock_msg_crud.get_ticket_messages = AsyncMock(return_value=[msg])
 
-        result = await get_ticket(ticket_id=1, x_telegram_id=111222333)
+        result = await get_ticket(ticket_id=1, user=_make_user(), db=_mock_db())
 
     assert result.id == 1
     assert len(result.messages) == 1
@@ -275,23 +216,14 @@ async def test_get_ticket_returns_404_wrong_owner():
 
     from app.mobile.routes.support import get_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     # ticket belongs to user_id=99, but logged in as user_id=42
     ticket = _make_ticket(user_id=99)
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user(user_id=42)),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_ticket(ticket_id=1, x_telegram_id=111222333)
+            await get_ticket(ticket_id=1, user=_make_user(user_id=42), db=_mock_db())
 
     assert exc_info.value.status_code == 404
 
@@ -305,25 +237,18 @@ async def test_get_ticket_returns_404_wrong_owner():
 async def test_reply_to_ticket_success():
     from app.mobile.routes.support import MobileReplyRequest, reply_to_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket()
     msg = _make_message()
 
     with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
         patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
         patch('app.mobile.routes.support.TicketMessageCRUD') as mock_msg_crud,
     ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
         mock_msg_crud.add_message = AsyncMock(return_value=msg)
 
         body = MobileReplyRequest(message='My reply')
-        result = await reply_to_ticket(body=body, ticket_id=1, x_telegram_id=111222333)
+        result = await reply_to_ticket(body=body, ticket_id=1, user=_make_user(), db=_mock_db())
 
     assert result.id == msg.id
     assert result.is_from_admin is False
@@ -335,23 +260,14 @@ async def test_reply_to_closed_ticket_returns_409():
 
     from app.mobile.routes.support import MobileReplyRequest, reply_to_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket(status='closed')
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
 
         body = MobileReplyRequest(message='Response text')
         with pytest.raises(HTTPException) as exc_info:
-            await reply_to_ticket(body=body, ticket_id=1, x_telegram_id=111222333)
+            await reply_to_ticket(body=body, ticket_id=1, user=_make_user(), db=_mock_db())
 
     assert exc_info.value.status_code == 409
 
@@ -365,26 +281,17 @@ async def test_reply_to_closed_ticket_returns_409():
 async def test_close_ticket_success():
     from app.mobile.routes.support import close_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket(status='open')
 
     async def _fake_close(db, tid):
         ticket.status = 'closed'
         return True
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
         mock_crud.close_ticket = AsyncMock(side_effect=_fake_close)
 
-        result = await close_ticket(ticket_id=1, x_telegram_id=111222333)
+        result = await close_ticket(ticket_id=1, user=_make_user(), db=_mock_db())
 
     assert result.id == ticket.id
     assert result.status == 'closed'
@@ -396,22 +303,13 @@ async def test_close_ticket_already_closed_returns_409():
 
     from app.mobile.routes.support import close_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     ticket = _make_ticket(status='closed')
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
 
         with pytest.raises(HTTPException) as exc_info:
-            await close_ticket(ticket_id=1, x_telegram_id=111222333)
+            await close_ticket(ticket_id=1, user=_make_user(), db=_mock_db())
 
     assert exc_info.value.status_code == 409
 
@@ -422,22 +320,13 @@ async def test_close_ticket_wrong_owner_returns_404():
 
     from app.mobile.routes.support import close_ticket
 
-    mock_db, mock_session_class, mock_engine = _db_ctx()
     # Ticket belongs to user_id=99, not user_id=42
     ticket = _make_ticket(ticket_id=1, user_id=99, status='open')
 
-    with (
-        patch('app.mobile.routes.support.settings') as mock_settings,
-        patch('app.mobile.routes.support.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.support.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.support.get_user_by_telegram_id',
-              new_callable=AsyncMock, return_value=_make_user()),
-        patch('app.mobile.routes.support.TicketCRUD') as mock_crud,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.support.TicketCRUD') as mock_crud:
         mock_crud.get_ticket_by_id = AsyncMock(return_value=ticket)
 
         with pytest.raises(HTTPException) as exc_info:
-            await close_ticket(ticket_id=1, x_telegram_id=111222333)
+            await close_ticket(ticket_id=1, user=_make_user(user_id=42), db=_mock_db())
 
     assert exc_info.value.status_code == 404

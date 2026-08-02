@@ -5,14 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Header, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cabinet.dependencies import get_cabinet_db, get_current_cabinet_user
 from app.config import settings
-from app.database.crud.user import get_user_by_telegram_id
 from app.database.crud.tariff import get_tariff_by_id
-from app.utils.pricing_utils import balance_covers_price
+from app.database.models import User
 from app.mobile.schemas.subscription import (
     AutopayRequest,
     AutopayResponse,
@@ -36,6 +35,7 @@ from app.mobile.schemas.subscription import (
     UpgradeResponse,
 )
 from app.services.pricing_engine import pricing_engine
+from app.utils.pricing_utils import balance_covers_price
 
 
 logger = structlog.get_logger(__name__)
@@ -128,33 +128,6 @@ async def _notify_mobile_upgrade(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-async def _get_db_user(x_telegram_id: int) -> tuple[Any, Any, Any]:
-    """Return (user, db, engine).  Caller must dispose the engine."""
-    db_url = settings.get_database_url()
-    engine = create_async_engine(db_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
-
-    db = async_session()
-    try:
-        user = await get_user_by_telegram_id(db, x_telegram_id)
-    except Exception as exc:
-        await db.close()
-        await engine.dispose()
-        raise exc
-
-    if not user:
-        await db.close()
-        await engine.dispose()
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Пользователь не найден')
-
-    if user.status != 'active':
-        await db.close()
-        await engine.dispose()
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Учётная запись заблокирована')
-
-    return user, db, engine
 
 
 def _serialize_subscription(sub: Any) -> dict[str, Any] | None:
@@ -327,11 +300,10 @@ async def _build_topup_info(db: AsyncSession, subscription: Any, user: Any) -> d
     tags=['mobile'],
 )
 async def get_subscription_options(
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> SubscriptionOptionsResponse:
     """Return available subscription builder options for the current user."""
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         await db.refresh(user, ['subscriptions'])
 
@@ -363,14 +335,11 @@ async def get_subscription_options(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error building subscription options', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error building subscription options', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при получении параметров подписки',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
     return SubscriptionOptionsResponse(
         has_subscription=subscription is not None,
@@ -391,11 +360,10 @@ async def get_subscription_options(
 )
 async def calc_subscription_price(
     payload: SubscriptionSelectionRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> CalcResponse:
     """Calculate the price for the given subscription configuration."""
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         await db.refresh(user, ['subscriptions'])
 
@@ -419,14 +387,11 @@ async def calc_subscription_price(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error calculating subscription price', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error calculating subscription price', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
     return CalcResponse(
         total_kopeks=pricing.final_total,
@@ -449,7 +414,8 @@ async def calc_subscription_price(
 )
 async def buy_subscription(
     payload: SubscriptionBuyRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> BuyResponse:
     """
     Purchase a subscription.
@@ -458,8 +424,6 @@ async def buy_subscription(
     * If the balance is insufficient, a YooKassa payment is created and the
       confirmation URL is returned so the app can open it in a browser.
     """
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         await db.refresh(user, ['subscriptions'])
 
@@ -566,14 +530,11 @@ async def buy_subscription(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error buying subscription', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error buying subscription', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при покупке подписки',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +550,8 @@ async def buy_subscription(
 )
 async def upgrade_subscription(
     payload: SubscriptionUpgradeRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> UpgradeResponse:
     """
     Upgrade an existing subscription by adding devices or traffic.
@@ -599,8 +561,6 @@ async def upgrade_subscription(
     Subscription duration is NEVER extended here — only the requested parameter changes.
     Deducts cost from balance; returns payment_required if balance is insufficient.
     """
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         await db.refresh(user, ['subscriptions'])
         subscription = getattr(user, 'subscription', None)
@@ -847,14 +807,11 @@ async def upgrade_subscription(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error upgrading subscription', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error upgrading subscription', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при улучшении подписки',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -870,15 +827,14 @@ async def upgrade_subscription(
 )
 async def calc_upgrade_price(
     payload: SubscriptionUpgradeRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> UpgradeCalcResponse:
     """
     Calculate the incremental cost of adding devices or traffic to an existing
     subscription.  Uses the same pricing as the bot (prorated, not a full reprice).
     Returns amount_kopeks and amount_rub without making any changes.
     """
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         await db.refresh(user, ['subscriptions'])
         subscription = getattr(user, 'subscription', None)
@@ -940,14 +896,11 @@ async def calc_upgrade_price(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error calculating upgrade price', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error calculating upgrade price', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -963,7 +916,8 @@ async def calc_upgrade_price(
 )
 async def buy_tariff(
     payload: TariffBuyRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> BuyResponse:
     """
     Purchase a specific tariff for the given number of days.
@@ -976,8 +930,6 @@ async def buy_tariff(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Tariffs mode is not enabled. Use /subscription/buy instead.',
         )
-
-    user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
         from app.database.crud.tariff import get_tariff_by_id
@@ -1195,14 +1147,11 @@ async def buy_tariff(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error in buy-tariff', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error in buy-tariff', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при покупке тарифа',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -1217,17 +1166,11 @@ async def buy_tariff(
     tags=['mobile'],
 )
 async def get_balance(
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
 ) -> BalanceResponse:
     """Return the current account balance for the authenticated user."""
-    user, db, engine = await _get_db_user(x_telegram_id)
-
-    try:
-        balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
-        currency = (getattr(user, 'balance_currency', None) or 'RUB').upper()
-    finally:
-        await db.close()
-        await engine.dispose()
+    balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
+    currency = (getattr(user, 'balance_currency', None) or 'RUB').upper()
 
     return BalanceResponse(
         balance_kopeks=balance_kopeks,
@@ -1249,7 +1192,8 @@ async def get_balance(
 )
 async def topup_balance(
     payload: BalanceTopupRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> BalanceTopupResponse:
     """
     Create a YooKassa payment to top up the user's account balance.
@@ -1257,8 +1201,6 @@ async def topup_balance(
     Returns a confirmation URL that the app should open in an external browser.
     After a successful payment, the backend webhook will credit the balance.
     """
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         if not settings.is_yookassa_enabled():
             raise HTTPException(
@@ -1279,7 +1221,7 @@ async def topup_balance(
             description=description,
             metadata={
                 'type': 'mobile_balance_topup',
-                'telegram_id': str(x_telegram_id),
+                'telegram_id': str(user.telegram_id),
             },
         )
 
@@ -1299,14 +1241,11 @@ async def topup_balance(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error creating balance topup payment', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error creating balance topup payment', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при создании платежа',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -1322,11 +1261,10 @@ async def topup_balance(
 )
 async def set_autopay(
     payload: AutopayRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> AutopayResponse:
     """Enable or disable automatic subscription renewal from account balance."""
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         await db.refresh(user, ['subscriptions'])
         subscription = getattr(user, 'subscription', None)
@@ -1346,14 +1284,11 @@ async def set_autopay(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error updating autopay', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error updating autopay', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при обновлении настроек автопродления',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
     return AutopayResponse(autopay_enabled=enabled, message=message)
 
@@ -1371,12 +1306,11 @@ async def set_autopay(
 )
 async def preview_tariff_switch_mobile(
     payload: TariffSwitchRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> TariffSwitchPreviewResponse:
     """Calculate the cost of switching to a different tariff without committing."""
     from datetime import UTC, datetime
-
-    user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
         if not settings.is_tariffs_mode():
@@ -1501,14 +1435,11 @@ async def preview_tariff_switch_mobile(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error previewing tariff switch', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error previewing tariff switch', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при расчёте стоимости смены тарифа',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -1524,7 +1455,8 @@ async def preview_tariff_switch_mobile(
 )
 async def switch_tariff_mobile(
     payload: TariffSwitchRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ) -> TariffSwitchResponse:
     """Switch to a different tariff. Keeps existing end_date; charges difference for upgrades."""
     from datetime import UTC, datetime, timedelta
@@ -1535,8 +1467,6 @@ async def switch_tariff_mobile(
     from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
     from app.database.crud.user import lock_user_for_pricing, subtract_user_balance
     from app.database.models import PaymentMethod, Subscription, TrafficPurchase, TransactionType
-
-    user, db, engine = await _get_db_user(x_telegram_id)
 
     try:
         if not settings.is_tariffs_mode():
@@ -1852,14 +1782,11 @@ async def switch_tariff_mobile(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error switching tariff', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error switching tariff', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при смене тарифа',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -1874,11 +1801,9 @@ async def switch_tariff_mobile(
     tags=['mobile'],
 )
 async def list_devices_mobile(
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
 ) -> DevicesListResponse:
     """Return HWID devices registered for the current user."""
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         _uuid = user.remnawave_uuid
         if not _uuid:
@@ -1922,14 +1847,11 @@ async def list_devices_mobile(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error listing devices', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error listing devices', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при получении списка устройств',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -1944,11 +1866,9 @@ async def list_devices_mobile(
     tags=['mobile'],
 )
 async def reset_devices_mobile(
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
 ) -> DevicesResetResponse:
     """Reset (delete) all HWID devices for the current user."""
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         _uuid = user.remnawave_uuid
         if not _uuid:
@@ -1965,14 +1885,11 @@ async def reset_devices_mobile(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error resetting devices', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error resetting devices', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при сбросе устройств',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -1988,11 +1905,9 @@ async def reset_devices_mobile(
 )
 async def delete_device_mobile(
     payload: DeviceDeleteRequest,
-    x_telegram_id: int = Header(..., alias='X-Telegram-Id'),
+    user: User = Depends(get_current_cabinet_user),
 ) -> DevicesResetResponse:
     """Remove a single HWID device by its fingerprint."""
-    user, db, engine = await _get_db_user(x_telegram_id)
-
     try:
         _uuid = user.remnawave_uuid
         if not _uuid:
@@ -2017,11 +1932,8 @@ async def delete_device_mobile(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error('Error deleting device', telegram_id=x_telegram_id, error=exc, exc_info=True)
+        logger.error('Error deleting device', user_id=user.id, error=exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='Ошибка при удалении устройства',
         ) from exc
-    finally:
-        await db.close()
-        await engine.dispose()

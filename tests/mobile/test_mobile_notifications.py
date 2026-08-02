@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -27,39 +27,21 @@ def _make_user(status: str = 'active'):
     return user
 
 
-def _db_ctx(user):
-    mock_db = AsyncMock()
-    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_db.__aexit__ = AsyncMock(return_value=False)
-    mock_session_class = MagicMock(return_value=mock_db)
-    mock_engine = AsyncMock()
-    mock_engine.dispose = AsyncMock()
-    return mock_db, mock_session_class, mock_engine
-
-
 # ---------------------------------------------------------------------------
 # Tests — /notifications
 # ---------------------------------------------------------------------------
+# Note: user lookup / "unknown user" now lives entirely in
+# get_current_cabinet_user (Bearer JWT dependency) — get_notifications itself
+# only ever receives an already-resolved User, so there's no 404 case here.
 
 
 @pytest.mark.asyncio
 async def test_get_notifications_empty_store():
     from app.mobile.routes.notifications import get_notifications
 
-    mock_db, mock_session_class, mock_engine = _db_ctx(_make_user())
-
-    with (
-        patch('app.mobile.routes.notifications.settings') as mock_settings,
-        patch('app.mobile.routes.notifications.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.notifications.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.notifications.get_user_by_telegram_id', new_callable=AsyncMock,
-              return_value=_make_user()),
-        patch('app.mobile.routes.notifications.mobile_notification_store') as mock_store,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.notifications.mobile_notification_store') as mock_store:
         mock_store.get_active.return_value = []
-
-        result = await get_notifications(x_telegram_id=111222333)
+        result = await get_notifications(user=_make_user())
 
     assert result.notifications == []
 
@@ -67,8 +49,6 @@ async def test_get_notifications_empty_store():
 @pytest.mark.asyncio
 async def test_get_notifications_returns_items():
     from app.mobile.routes.notifications import get_notifications
-
-    mock_db, mock_session_class, mock_engine = _db_ctx(_make_user())
 
     pending_notifs = [
         {
@@ -81,18 +61,9 @@ async def test_get_notifications_returns_items():
         }
     ]
 
-    with (
-        patch('app.mobile.routes.notifications.settings') as mock_settings,
-        patch('app.mobile.routes.notifications.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.notifications.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.notifications.get_user_by_telegram_id', new_callable=AsyncMock,
-              return_value=_make_user()),
-        patch('app.mobile.routes.notifications.mobile_notification_store') as mock_store,
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
+    with patch('app.mobile.routes.notifications.mobile_notification_store') as mock_store:
         mock_store.get_active.return_value = pending_notifs
-
-        result = await get_notifications(x_telegram_id=111222333)
+        result = await get_notifications(user=_make_user())
 
     assert len(result.notifications) == 1
     n = result.notifications[0]
@@ -100,26 +71,3 @@ async def test_get_notifications_returns_items():
     assert n.title == 'Технические работы'
     assert n.severity == 'warning'
     assert n.type == 'persistent'
-
-
-@pytest.mark.asyncio
-async def test_get_notifications_returns_404_for_unknown_user():
-    from fastapi import HTTPException
-
-    from app.mobile.routes.notifications import get_notifications
-
-    mock_db, mock_session_class, mock_engine = _db_ctx(None)
-
-    with (
-        patch('app.mobile.routes.notifications.settings') as mock_settings,
-        patch('app.mobile.routes.notifications.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.notifications.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.notifications.get_user_by_telegram_id', new_callable=AsyncMock,
-              return_value=None),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-
-        with pytest.raises(HTTPException) as exc_info:
-            await get_notifications(x_telegram_id=999)
-
-    assert exc_info.value.status_code == 404
