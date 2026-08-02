@@ -24,12 +24,19 @@ class SubscriptionSelectionRequest(BaseModel):
 class SubscriptionBuyRequest(SubscriptionSelectionRequest):
     """Request body for POST /mobile/v1/subscription/buy."""
 
+    use_balance: bool = Field(
+        True, description='If false, skip paying from balance even when it covers the price — always pay via YooKassa'
+    )
+
 
 class TariffBuyRequest(BaseModel):
     """Request body for POST /mobile/v1/subscription/buy-tariff."""
 
     tariff_id: int = Field(..., description='Tariff ID to purchase')
     period_days: int = Field(..., gt=0, description='Subscription duration in days')
+    use_balance: bool = Field(
+        True, description='If false, skip paying from balance even when it covers the price — always pay via YooKassa'
+    )
 
 
 
@@ -40,6 +47,9 @@ class SubscriptionUpgradeRequest(BaseModel):
     traffic_add: int | None = Field(None, description='Extra traffic GB to add')
     devices_add: int | None = Field(None, description='Extra device slots to add')
     servers: list[str] | None = Field(None, description='Replacement server UUIDs')
+    use_balance: bool = Field(
+        True, description='If false, skip paying from balance even when it covers the price — always pay via YooKassa'
+    )
 
 
 class AutopayRequest(BaseModel):
@@ -140,6 +150,9 @@ class TariffSwitchRequest(BaseModel):
         ge=1,
         description='Requested device count for Family tariff (optional, must be >= tariff base device_limit)',
     )
+    use_balance: bool = Field(
+        True, description='If false, skip paying from balance even when it covers the price — always pay via YooKassa'
+    )
 
 
 class TariffSwitchPreviewResponse(BaseModel):
@@ -181,6 +194,10 @@ class TariffSwitchResponse(BaseModel):
     balance_kopeks: int
     balance_label: str
     subscription: dict[str, Any] | None = None
+    # Set when balance can't (or, per use_balance=false, shouldn't) cover the
+    # cost — success is False and the app should open payment_url instead.
+    payment_required: bool = False
+    payment_url: str | None = None
     # Optional discount info
     discount_percent: int | None = None
     discount_kopeks: int | None = None

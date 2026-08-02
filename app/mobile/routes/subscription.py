@@ -449,7 +449,7 @@ async def buy_subscription(
 
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
-        if balance_covers_price(balance_kopeks, pricing.final_total):
+        if payload.use_balance and balance_covers_price(balance_kopeks, pricing.final_total):
             # Sufficient balance – purchase immediately
             result = await service.submit_purchase(db, context, pricing)
             subscription = result.get('subscription')
@@ -672,7 +672,7 @@ async def upgrade_subscription(
 
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
-        if balance_covers_price(balance_kopeks, price):
+        if payload.use_balance and balance_covers_price(balance_kopeks, price):
             # Deduct balance
             success = await subtract_user_balance(db, user, price, description)
             if not success:
@@ -1004,7 +1004,7 @@ async def buy_tariff(
         balance_kopeks = int(getattr(user, 'balance_kopeks', 0) or 0)
 
         # ── Sufficient balance — activate immediately ─────────────────────────
-        if balance_covers_price(balance_kopeks, price_kopeks):
+        if payload.use_balance and balance_covers_price(balance_kopeks, price_kopeks):
             from app.database.crud.subscription import (
                 create_paid_subscription,
                 extend_subscription,
@@ -1588,15 +1588,58 @@ async def switch_tariff_mobile(
         old_tariff_name = current_tariff.name if current_tariff else 'Unknown'
 
         if upgrade_cost > 0:
-            if not balance_covers_price(user.balance_kopeks, upgrade_cost):
-                missing = upgrade_cost - user.balance_kopeks
-                raise HTTPException(
-                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail={
-                        'code': 'insufficient_funds',
-                        'message': f'Недостаточно средств. Не хватает {settings.format_price(missing)}',
-                        'missing_amount': missing,
-                    },
+            if not payload.use_balance or not balance_covers_price(user.balance_kopeks, upgrade_cost):
+                if not settings.is_yookassa_enabled():
+                    missing = max(0, upgrade_cost - user.balance_kopeks)
+                    raise HTTPException(
+                        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                        detail={
+                            'code': 'insufficient_funds',
+                            'message': f'Недостаточно средств. Не хватает {settings.format_price(missing)}',
+                            'missing_amount': missing,
+                        },
+                    )
+
+                from app.services.payment_service import PaymentService
+                from app.services.user_cart_service import user_cart_service
+
+                payment_service = PaymentService()
+                payment_result = await payment_service.create_yookassa_payment(
+                    db=db,
+                    user_id=user.id,
+                    amount_kopeks=upgrade_cost,
+                    description=f"Переход на тариф '{new_tariff.name}'",
+                    metadata={'type': 'mobile_tariff_purchase'},
+                )
+                if not payment_result or not payment_result.get('confirmation_url'):
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail='Не удалось создать платёж',
+                    )
+
+                try:
+                    await user_cart_service.save_user_cart(user.id, {
+                        'cart_mode': 'tariff_switch',
+                        'subscription_id': subscription.id,
+                        'tariff_id': new_tariff.id,
+                        'devices': requested_devices,
+                        'total_price': upgrade_cost,
+                        'source': 'mobile',
+                    })
+                except Exception as cart_err:
+                    logger.warning('mobile tariff switch: failed to save cart', error=cart_err)
+
+                return TariffSwitchResponse(
+                    success=False,
+                    payment_required=True,
+                    payment_url=payment_result['confirmation_url'],
+                    message='Пополните баланс для смены тарифа',
+                    old_tariff_name=old_tariff_name,
+                    new_tariff_id=new_tariff.id,
+                    new_tariff_name=new_tariff.name,
+                    charged_kopeks=upgrade_cost,
+                    balance_kopeks=user.balance_kopeks,
+                    balance_label=settings.format_price(user.balance_kopeks),
                 )
 
             if switching_to_daily:

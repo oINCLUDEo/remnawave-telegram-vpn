@@ -1070,6 +1070,310 @@ async def _auto_purchase_tariff(
     return True
 
 
+async def _auto_switch_tariff(
+    db: AsyncSession,
+    user: User,
+    cart_data: dict,
+    *,
+    bot: Bot | None = None,
+) -> bool:
+    """Применяем смену тарифа из сохранённой корзины после оплаты доплаты."""
+    from sqlalchemy import delete as sql_delete
+
+    from app.cabinet.routes.websocket import notify_user_subscription_renewed
+    from app.database.crud.subscription import (
+        calc_device_limit_on_tariff_switch,
+        get_subscription_by_id_for_user,
+    )
+    from app.database.crud.tariff import get_tariff_by_id
+    from app.database.crud.transaction import emit_transaction_side_effects
+    from app.database.models import PaymentMethod, TrafficPurchase
+
+    subscription_id = _safe_int(cart_data.get('subscription_id'))
+    new_tariff_id = _safe_int(cart_data.get('tariff_id'))
+    total_price = _safe_int(cart_data.get('total_price'))
+    requested_devices = cart_data.get('devices')
+
+    if not subscription_id or not new_tariff_id:
+        logger.warning(
+            '🔁 Автосмена тарифа: некорректные данные корзины',
+            format_user_id=_format_user_id(user),
+            subscription_id=subscription_id,
+            new_tariff_id=new_tariff_id,
+        )
+        return False
+
+    subscription = await get_subscription_by_id_for_user(db, subscription_id, user.id)
+    if not subscription or not subscription.tariff_id:
+        logger.warning(
+            '🔁 Автосмена тарифа: подписка не найдена',
+            format_user_id=_format_user_id(user),
+            subscription_id=subscription_id,
+        )
+        return False
+
+    new_tariff = await get_tariff_by_id(db, new_tariff_id)
+    if not new_tariff or not new_tariff.is_active:
+        logger.warning(
+            '🔁 Автосмена тарифа: тариф недоступен',
+            format_user_id=_format_user_id(user),
+            tariff_id=new_tariff_id,
+        )
+        return False
+
+    if subscription.tariff_id == new_tariff.id:
+        logger.info(
+            '🔁 Автосмена тарифа: пользователь уже на этом тарифе, пропускаем',
+            format_user_id=_format_user_id(user),
+        )
+        return False
+
+    current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
+    old_tariff_name = current_tariff.name if current_tariff else 'Unknown'
+
+    if total_price > 0 and not balance_covers_price(user.balance_kopeks, total_price):
+        logger.info(
+            '🔁 Автосмена тарифа: у пользователя недостаточно средств после пополнения',
+            format_user_id=_format_user_id(user),
+            balance_kopeks=user.balance_kopeks,
+            total_price=total_price,
+        )
+        return False
+
+    remaining_days = 0
+    if subscription.end_date and subscription.end_date > datetime.now(UTC):
+        delta = subscription.end_date - datetime.now(UTC)
+        remaining_days = max(0, delta.days)
+
+    switch_result = pricing_engine.calculate_tariff_switch_cost(
+        current_tariff,
+        new_tariff,
+        remaining_days,
+        user=user,
+    )
+    new_period_days = switch_result.new_period_days
+
+    new_is_daily = getattr(new_tariff, 'is_daily', False)
+    current_is_daily = getattr(current_tariff, 'is_daily', False) if current_tariff else False
+    switching_to_daily = not current_is_daily and new_is_daily
+    switching_from_daily = current_is_daily and not new_is_daily
+
+    description = f"Переход на тариф '{new_tariff.name}'"
+    switch_transaction = None
+
+    if total_price > 0:
+        try:
+            success = await subtract_user_balance(
+                db,
+                user,
+                total_price,
+                description,
+                mark_as_paid_subscription=True,
+                commit=False,
+            )
+            if not success:
+                logger.warning(
+                    '❌ Автосмена тарифа: не удалось списать баланс пользователя',
+                    format_user_id=_format_user_id(user),
+                )
+                return False
+        except Exception as error:
+            logger.error(
+                '❌ Автосмена тарифа: ошибка списания баланса пользователя',
+                format_user_id=_format_user_id(user),
+                error=error,
+                exc_info=True,
+            )
+            return False
+
+        switch_transaction = await create_transaction(
+            db=db,
+            user_id=user.id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            amount_kopeks=total_price,
+            description=description,
+            payment_method=PaymentMethod.BALANCE,
+            commit=False,
+        )
+
+    # Re-load subscription to avoid MissingGreenlet after subtract_user_balance
+    await db.refresh(subscription)
+
+    subscription.tariff_id = new_tariff.id
+    subscription.traffic_limit_gb = new_tariff.traffic_limit_gb
+    if requested_devices is not None:
+        subscription.device_limit = _safe_int(requested_devices) or new_tariff.device_limit
+    else:
+        subscription.device_limit = calc_device_limit_on_tariff_switch(
+            current_device_limit=subscription.device_limit,
+            old_tariff_device_limit=current_tariff.device_limit if current_tariff else None,
+            new_tariff_device_limit=new_tariff.device_limit,
+            max_device_limit=new_tariff.max_device_limit,
+        )
+    subscription.connected_squads = new_tariff.allowed_squads or []
+
+    await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
+    subscription.purchased_traffic_gb = 0
+    subscription.traffic_reset_at = None
+
+    if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:
+        subscription.traffic_used_gb = 0.0
+
+    if switching_to_daily:
+        subscription.end_date = datetime.now(UTC) + timedelta(days=1)
+        subscription.last_daily_charge_at = datetime.now(UTC)
+        subscription.is_daily_paused = False
+    elif switching_from_daily:
+        subscription.end_date = datetime.now(UTC) + timedelta(days=new_period_days)
+        subscription.is_daily_paused = False
+
+    subscription.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    if total_price > 0 and switch_transaction:
+        await emit_transaction_side_effects(
+            db,
+            switch_transaction,
+            amount_kopeks=total_price,
+            user_id=user.id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            payment_method=PaymentMethod.BALANCE,
+        )
+
+    should_reset_traffic = settings.RESET_TRAFFIC_ON_TARIFF_SWITCH
+    await db.refresh(subscription)
+
+    try:
+        subscription_service = SubscriptionService()
+        if getattr(user, 'remnawave_uuid', None):
+            await subscription_service.update_remnawave_user(
+                db,
+                subscription,
+                reset_traffic=should_reset_traffic,
+                reset_reason='смена тарифа',
+                sync_squads=True,
+            )
+        else:
+            await subscription_service.create_remnawave_user(
+                db,
+                subscription,
+                reset_traffic=should_reset_traffic,
+                reset_reason='смена тарифа',
+            )
+    except Exception as error:
+        logger.warning(
+            '⚠️ Автосмена тарифа: не удалось синхронизировать с RemnaWave',
+            format_user_id=_format_user_id(user),
+            error=error,
+        )
+
+    _uuid = user.remnawave_uuid
+    if _uuid:
+        try:
+            from app.services.remnawave_service import RemnaWaveService
+
+            service = RemnaWaveService()
+            async with service.get_api_client() as api:
+                await api.reset_user_devices(_uuid)
+        except Exception as error:
+            logger.warning(
+                '⚠️ Автосмена тарифа: не удалось сбросить устройства',
+                format_user_id=_format_user_id(user),
+                error=error,
+            )
+
+    await _delete_cart_for_subscription(user.id, cart_data)
+    await clear_subscription_checkout_draft(user.id)
+
+    try:
+        from app.services.subscription_renewal_service import with_admin_notification_service
+
+        await with_admin_notification_service(
+            lambda svc: svc.send_subscription_purchase_notification(
+                db,
+                user,
+                subscription,
+                switch_transaction,
+                remaining_days if remaining_days > 0 else new_period_days,
+                False,
+                purchase_type='tariff_switch',
+            )
+        )
+    except Exception as error:
+        logger.warning(
+            '⚠️ Автосмена тарифа: не удалось уведомить админов о смене тарифа',
+            format_user_id=_format_user_id(user),
+            error=error,
+        )
+
+    if bot and user.telegram_id:
+        try:
+            texts = get_texts(getattr(user, 'language', 'ru'))
+
+            message = texts.t(
+                'AUTO_SWITCH_TARIFF_SUCCESS',
+                '✅ Тариф автоматически изменён с «{old}» на «{new}» после пополнения баланса.',
+            ).format(old=old_tariff_name, new=new_tariff.name)
+
+            hint = texts.t(
+                'AUTO_PURCHASE_SUBSCRIPTION_HINT',
+                'Перейдите в раздел «Моя подписка», чтобы получить ссылку.',
+            )
+
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
+                            callback_data='menu_subscription',
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '🏠 Главное меню'),
+                            callback_data='back_to_menu',
+                        )
+                    ],
+                ]
+            )
+
+            await bot.send_message(
+                chat_id=user.telegram_id,
+                text=f'{message}\n\n{hint}',
+                reply_markup=keyboard,
+                parse_mode='HTML',
+            )
+        except Exception as error:
+            logger.warning(
+                '⚠️ Автосмена тарифа: не удалось уведомить пользователя',
+                telegram_id=user.telegram_id or user.id,
+                error=error,
+            )
+
+    logger.info(
+        '✅ Автосмена тарифа: тариф изменён для пользователя',
+        old_tariff=old_tariff_name,
+        new_tariff=new_tariff.name,
+        format_user_id=_format_user_id(user),
+    )
+
+    try:
+        await notify_user_subscription_renewed(
+            user_id=user.id,
+            subscription_id=subscription.id,
+            new_expires_at=subscription.end_date.isoformat() if subscription.end_date else '',
+            amount_kopeks=total_price,
+        )
+    except Exception as ws_error:
+        logger.warning(
+            '⚠️ Автосмена тарифа: не удалось отправить WS уведомление',
+            format_user_id=_format_user_id(user),
+            ws_error=ws_error,
+        )
+
+    return True
+
+
 async def _auto_purchase_daily_tariff(
     db: AsyncSession,
     user: User,
@@ -2891,7 +3195,7 @@ async def _process_single_cart(
     # modified in the last 60 seconds (indicates a concurrent purchase just landed).
     # When cart_sub_id is available we check the specific subscription's updated_at;
     # otherwise fall back to the user-global last transaction check.
-    if cart_mode in ('extend', 'tariff_purchase', 'daily_tariff_purchase'):
+    if cart_mode in ('extend', 'tariff_purchase', 'daily_tariff_purchase', 'tariff_switch'):
         try:
             if cart_sub_id:
                 from app.database.crud.subscription import get_subscription_by_id_for_user
@@ -2941,6 +3245,8 @@ async def _process_single_cart(
         return await _auto_add_devices(db, user, cart_data, bot=bot)
     if cart_mode == 'add_traffic':
         return await _auto_add_traffic(db, user, cart_data, bot=bot)
+    if cart_mode == 'tariff_switch':
+        return await _auto_switch_tariff(db, user, cart_data, bot=bot)
 
     logger.warning(
         'Автопокупка: неизвестный cart_mode, пропускаем',
