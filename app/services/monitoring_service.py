@@ -2039,6 +2039,9 @@ class MonitoringService:
 
     async def _cleanup_inactive_users(self, db: AsyncSession):
         try:
+            if not settings.INACTIVE_USER_AUTO_CLEANUP_ENABLED:
+                return
+
             now = datetime.now(UTC)
             if now.hour != 3:
                 return

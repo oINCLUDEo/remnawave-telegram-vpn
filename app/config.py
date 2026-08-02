@@ -333,6 +333,13 @@ class Settings(BaseSettings):
 
     MONITORING_INTERVAL: int = 60
     INACTIVE_USER_DELETE_MONTHS: int = 3
+    INACTIVE_USER_AUTO_CLEANUP_ENABLED: bool = (
+        False  # Automatic daily deletion of long-inactive, never-paid users. Off by
+        # default — deletion wipes the account's history and makes it un-loginable
+        # (OAuth/mobile login has no reactivation flow), which is worse than just
+        # leaving dormant free accounts in place. The manual admin button
+        # (admin_cleanup_inactive) still works regardless of this setting.
+    )
 
     MAINTENANCE_MODE: bool = False
     MAINTENANCE_CHECK_INTERVAL: int = 30

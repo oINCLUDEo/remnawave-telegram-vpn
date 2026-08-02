@@ -1574,14 +1574,12 @@ async def auto_login(
             detail='User not found',
         )
 
-    if user.status != UserStatus.ACTIVE.value:
-        logger.warning(
-            'auto_login rejected: account not active', user_id=user.id, actual_status=user.status
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail='Account is deactivated',
-        )
+    # No status check here on purpose — matches oauth_callback/_finalize_oauth_login
+    # (the web cabinet's OAuth login), which never checked status either. A
+    # user auto-deleted for inactivity (status=deleted) has no reactivation
+    # flow anywhere in the API surface, so blocking them here just strands
+    # them with no way back in; keep this consistent with the web flow
+    # instead of half-blocking only the mobile path.
 
     response = await _create_auth_response(user, db)
     await _store_refresh_token(db, user.id, response.refresh_token)
