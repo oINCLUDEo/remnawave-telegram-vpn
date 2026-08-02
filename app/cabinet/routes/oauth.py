@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from urllib.parse import quote
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,14 +108,22 @@ async def get_oauth_providers():
 
 
 @router.get('/{provider}/authorize', response_model=OAuthAuthorizeResponse)
-async def get_oauth_authorize_url(provider: OAuthProviderName, mobile: bool = False):
+async def get_oauth_authorize_url(
+    provider: OAuthProviderName,
+    mobile: bool = False,
+    referral_code: str | None = Query(
+        None, max_length=32, pattern=r'^[a-zA-Z0-9_-]+$', description='Referral code of inviter'
+    ),
+):
     """Get authorization URL for an OAuth provider.
 
     ``mobile=1`` is used by the Flutter app: the provider is built with a
     redirect_uri pointing at this backend's own mobile-callback endpoint
     (see oauth_mobile_callback below) instead of the web cabinet's callback
     page, and the state is tagged so that endpoint can tell it apart from a
-    web-flow or account-linking state.
+    web-flow or account-linking state. ``referral_code`` (mobile only) rides
+    along in the same state blob so the mobile-callback can attribute a new
+    user's referral after the redirect round-trip.
     """
     oauth_provider = get_provider(provider, mobile=mobile)
     if not oauth_provider:
@@ -129,6 +137,8 @@ async def get_oauth_authorize_url(provider: OAuthProviderName, mobile: bool = Fa
     state_extra: dict[str, str] = dict(auth_extra) if auth_extra else {}
     if mobile:
         state_extra['mobile'] = 'true'
+        if referral_code:
+            state_extra['referral_code'] = referral_code
     state = await generate_oauth_state(provider, extra_data=state_extra or None)
     # Only pass URL-safe params (prefixed with _) to authorize URL; exclude secrets like code_verifier
     url_params = {k: v for k, v in auth_extra.items() if k.startswith('_')} if auth_extra else {}
@@ -342,13 +352,21 @@ async def oauth_mobile_callback(
         logger.error('Mobile OAuth exchange failed', provider=provider, exc_info=True)
         return RedirectResponse(_mobile_deeplink(error='exchange_failed'))
 
+    referral_code = state_data.get('referral_code')
+
     try:
-        user, is_new_user = await _resolve_or_create_oauth_user(db, provider, user_info, referral_code=None)
+        user, is_new_user = await _resolve_or_create_oauth_user(db, provider, user_info, referral_code)
         user.cabinet_last_login = datetime.now(UTC)
         await db.commit()
     except Exception:
         logger.error('Mobile OAuth user resolution failed', provider=provider, exc_info=True)
         return RedirectResponse(_mobile_deeplink(error='user_resolution_failed'))
+
+    # _resolve_or_create_oauth_user only sets referred_by_id on the new user row —
+    # this actually fires the referral bonus/registration event (never raises).
+    from .auth import _process_referral_code
+
+    await _process_referral_code(db, user, referral_code, is_new_user=is_new_user)
 
     token = create_auto_login_token(user.id)
     logger.info('Mobile OAuth login resolved, handing off to app', provider=provider, user_id=user.id, is_new_user=is_new_user)

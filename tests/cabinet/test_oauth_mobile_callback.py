@@ -136,3 +136,39 @@ async def test_successful_login_redirects_with_token():
     assert isinstance(response, RedirectResponse)
     assert response.headers['location'] == 'ulyavpn://oauth/done?token=short-lived-jwt'
     db.commit.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_referral_code_from_state_is_forwarded_and_processed():
+    """referral_code stashed in the OAuth state by /authorize must reach both
+    _resolve_or_create_oauth_user (sets referred_by_id at creation time) and
+    _process_referral_code (fires the actual bonus/registration event)."""
+    from fastapi.responses import RedirectResponse
+
+    state_data = {'provider': 'google', 'mobile': 'true', 'referral_code': 'FRIEND1'}
+    mock_provider = MagicMock()
+    mock_provider.exchange_code = AsyncMock(return_value={'access_token': 'gtok'})
+    mock_provider.get_user_info = AsyncMock(return_value=MagicMock(
+        provider_id='g-999', email='new@user.com', email_verified=True,
+        first_name='New', last_name='User', username='newuser',
+    ))
+
+    mock_user = MagicMock()
+    mock_user.id = 99
+
+    resolve_mock = AsyncMock(return_value=(mock_user, True))
+    process_referral_mock = AsyncMock()
+
+    with (
+        patch('app.cabinet.routes.oauth.validate_oauth_state', new_callable=AsyncMock, return_value=state_data),
+        patch('app.cabinet.routes.oauth.get_provider', return_value=mock_provider),
+        patch('app.cabinet.routes.oauth._resolve_or_create_oauth_user', resolve_mock),
+        patch('app.cabinet.routes.auth._process_referral_code', process_referral_mock),
+        patch('app.cabinet.routes.oauth.create_auto_login_token', return_value='short-lived-jwt'),
+    ):
+        db = _mock_db()
+        response = await oauth_mobile_callback(provider='google', code='abc', state='mobile-state', db=db)
+
+    assert isinstance(response, RedirectResponse)
+    resolve_mock.assert_awaited_once_with(db, 'google', mock_provider.get_user_info.return_value, 'FRIEND1')
+    process_referral_mock.assert_awaited_once_with(db, mock_user, 'FRIEND1', is_new_user=True)
