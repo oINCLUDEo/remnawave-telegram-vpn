@@ -1547,8 +1547,11 @@ async def auto_login(
             headers={'Retry-After': '60'},
         )
 
+    logger.info('auto_login request received', client_ip=client_ip)
+
     payload = get_token_payload(request.token, expected_type='auto_login')
     if not payload:
+        logger.warning('auto_login rejected: invalid or expired token', client_ip=client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid or expired auto-login token',
@@ -1557,6 +1560,7 @@ async def auto_login(
     try:
         user_id = int(payload['sub'])
     except (KeyError, ValueError, TypeError) as e:
+        logger.warning('auto_login rejected: invalid token payload', client_ip=client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid token payload',
@@ -1564,12 +1568,16 @@ async def auto_login(
 
     user = await get_user_by_id(db, user_id)
     if not user:
+        logger.warning('auto_login rejected: user not found', user_id=user_id)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='User not found',
         )
 
     if user.status != UserStatus.ACTIVE.value:
+        logger.warning(
+            'auto_login rejected: account not active', user_id=user.id, actual_status=user.status
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='Account is deactivated',
