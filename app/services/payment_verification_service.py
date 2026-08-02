@@ -420,6 +420,7 @@ _MOBILE_PAYMENT_TYPES: frozenset[str] = frozenset(
         'mobile_balance_topup',
         'mobile_subscription_topup',
         'mobile_subscription_upgrade_topup',
+        'mobile_tariff_purchase',
     }
 )
 
