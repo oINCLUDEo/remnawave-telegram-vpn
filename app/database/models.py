@@ -2413,6 +2413,32 @@ class ServerSquad(Base):
         return 'Доступен'
 
 
+class PublicCatalogHiddenHost(Base):
+    """RemnaWave panel hosts explicitly hidden from the guest/no-subscription
+    server catalog preview (GET /mobile/v1/servers) by an admin.
+
+    Deliberately NOT tied to ServerSquad — panel hosts (individual proxy
+    endpoints, e.g. per-country VLESS entries) are a different, lower-level
+    concept than squads (groups of hosts bundled for tariff access control),
+    and aren't stored in our own DB anywhere else. Raw panel hosts include
+    special-purpose entries (e.g. the reserve-grace squad's hosts, or
+    per-client-app config variants) that should never show up as a regular
+    pick-a-country server to someone who hasn't subscribed yet.
+    """
+
+    __tablename__ = 'public_catalog_hidden_hosts'
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    host_uuid = Column(String(255), unique=True, nullable=False, index=True)
+
+    # Snapshot of the host's name at the time it was hidden — purely for
+    # display in the admin list; the live panel name is the source of truth.
+    host_name = Column(String(255), nullable=True)
+
+    created_at = Column(AwareDateTime(), default=func.now())
+
+
 class SubscriptionServer(Base):
     __tablename__ = 'subscription_servers'
 

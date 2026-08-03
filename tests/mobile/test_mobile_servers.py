@@ -61,15 +61,26 @@ def _make_service(hosts: list[RemnaWaveHost], is_configured: bool = True) -> Mag
     return service
 
 
+async def _call(
+    hosts: list[RemnaWaveHost], *, is_configured: bool = True, hidden_uuids: set[str] | None = None
+) -> MobileServerListResponse:
+    service = _make_service(hosts, is_configured=is_configured)
+    with (
+        patch('app.mobile.routes.servers.RemnaWaveService', return_value=service),
+        patch(
+            'app.mobile.routes.servers.get_hidden_host_uuids',
+            AsyncMock(return_value=hidden_uuids or set()),
+        ),
+    ):
+        return await list_mobile_servers(db=object())
+
+
 async def test_list_mobile_servers_returns_visible_servers():
     visible = _make_host(uuid='vis-1', name='Visible', is_disabled=False, is_hidden=False)
     hidden = _make_host(uuid='hid-1', name='Hidden', is_hidden=True)
     disabled = _make_host(uuid='dis-1', name='Disabled', is_disabled=True)
 
-    service = _make_service([visible, hidden, disabled])
-
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
-        result = await list_mobile_servers()
+    result = await _call([visible, hidden, disabled])
 
     assert isinstance(result, MobileServerListResponse)
     assert result.total == 1
@@ -78,32 +89,17 @@ async def test_list_mobile_servers_returns_visible_servers():
 
 
 async def test_list_mobile_servers_link_is_always_null():
-    host = _make_host()
-    service = _make_service([host])
-
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
-        result = await list_mobile_servers()
-
+    result = await _call([_make_host()])
     assert result.servers[0].link is None
 
 
 async def test_list_mobile_servers_is_disabled_always_true():
-    host = _make_host(is_disabled=False)
-    service = _make_service([host])
-
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
-        result = await list_mobile_servers()
-
+    result = await _call([_make_host(is_disabled=False)])
     assert result.servers[0].isDisabled is True
 
 
 async def test_list_mobile_servers_is_connected_always_false():
-    host = _make_host(is_connected=True)
-    service = _make_service([host])
-
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
-        result = await list_mobile_servers()
-
+    result = await _call([_make_host(is_connected=True)])
     assert result.servers[0].isConnected is False
 
 
@@ -117,10 +113,8 @@ async def test_list_mobile_servers_maps_fields_correctly():
         protocol='trojan',
         description='Fast server',
     )
-    service = _make_service([host])
 
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
-        result = await list_mobile_servers()
+    result = await _call([host])
 
     server = result.servers[0]
     assert server.uuid == 'u-1'
@@ -138,24 +132,31 @@ async def test_list_mobile_servers_empty_when_all_filtered():
         _make_host(uuid='h2', is_disabled=True),
         _make_host(uuid='h3', is_hidden=True, is_disabled=True),
     ]
-    service = _make_service(hosts)
 
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
-        result = await list_mobile_servers()
+    result = await _call(hosts)
 
     assert result.total == 0
     assert result.servers == []
 
 
+async def test_list_mobile_servers_excludes_admin_hidden_hosts():
+    """Hosts explicitly hidden from the public catalog by an admin (e.g. the
+    reserve-grace squad's hosts) must not appear, even though they're not
+    hidden/disabled in the panel itself — real subscribers still see them."""
+    regular = _make_host(uuid='vis-1', name='Regular Server')
+    reserve = _make_host(uuid='reserve-1', name='Бесплатный доступ Telegram')
+
+    result = await _call([regular, reserve], hidden_uuids={'reserve-1'})
+
+    assert result.total == 1
+    assert result.servers[0].uuid == 'vis-1'
+
+
 async def test_list_mobile_servers_returns_503_when_not_configured():
     from fastapi import HTTPException
 
-    service = _make_service([], is_configured=False)
-    service.configuration_error = 'Missing API key'
-
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
-        with pytest.raises(HTTPException) as exc_info:
-            await list_mobile_servers()
+    with pytest.raises(HTTPException) as exc_info:
+        await _call([], is_configured=False)
 
     assert exc_info.value.status_code == 503
 
@@ -175,9 +176,12 @@ async def test_list_mobile_servers_returns_502_on_api_error():
     service.configuration_error = None
     service.get_api_client = _get_api_client
 
-    with patch('app.mobile.routes.servers.RemnaWaveService', return_value=service):
+    with (
+        patch('app.mobile.routes.servers.RemnaWaveService', return_value=service),
+        patch('app.mobile.routes.servers.get_hidden_host_uuids', AsyncMock(return_value=set())),
+    ):
         with pytest.raises(HTTPException) as exc_info:
-            await list_mobile_servers()
+            await list_mobile_servers(db=object())
 
     assert exc_info.value.status_code == 502
 
