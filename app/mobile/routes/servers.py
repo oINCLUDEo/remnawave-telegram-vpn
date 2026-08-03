@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, status
 
-from app.cabinet.dependencies import get_cabinet_db
-from app.database.crud.server_squad import get_available_server_squads
 from app.mobile.schemas.servers import MobileServerListResponse, MobileServerResponse
+
+
+try:  # pragma: no cover - импорт может не работать без optional-зависимостей
+    from app.services.remnawave_service import (  # type: ignore
+        RemnaWaveConfigurationError,
+        RemnaWaveService,
+    )
+except Exception:  # pragma: no cover - при ошибке импорта скрываем функционал
+    RemnaWaveConfigurationError = None  # type: ignore[assignment]
+    RemnaWaveService = None  # type: ignore[assignment]
 
 
 logger = structlog.get_logger(__name__)
@@ -24,29 +31,47 @@ router = APIRouter()
     ),
     tags=['mobile'],
 )
-async def list_mobile_servers(db: AsyncSession = Depends(get_cabinet_db)) -> MobileServerListResponse:
-    # Sourced from our own curated ServerSquad catalog (same one real subscribers'
-    # tariffs are built from), NOT the RemnaWave panel's raw host list — the panel
-    # exposes every host including internal/reserve ones (e.g. "4G · Резерв 1")
-    # that were never meant to appear in a public preview, and its host.description
-    # is unrelated to the admin-authored ServerSquad.description the app's category
-    # matcher (bypass/unlimited/other) actually looks at.
-    squads = await get_available_server_squads(db)
+async def list_mobile_servers() -> MobileServerListResponse:
+    if RemnaWaveService is None:  # pragma: no cover
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='RemnaWave сервис недоступен',
+        )
+
+    service = RemnaWaveService()
+
+    if not service.is_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=service.configuration_error or 'RemnaWave API не настроен',
+        )
+
+    try:
+        async with service.get_api_client() as api:
+            hosts = await api.get_hosts()
+    except Exception as exc:
+        logger.error('Ошибка при получении хостов RemnaWave', error=exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Не удалось получить список серверов',
+        ) from exc
+
+    visible_hosts = [h for h in hosts if not h.is_hidden and not h.is_disabled]
 
     servers = [
         MobileServerResponse(
-            uuid=squad.squad_uuid,
-            name=squad.display_name,
-            address=squad.squad_uuid,
-            countryCode=squad.country_code or '',
+            uuid=host.uuid,
+            name=host.name,
+            address=host.address,
+            countryCode=host.country_code,
             isConnected=False,
             isDisabled=True,
-            usersOnline=squad.current_users or 0,
+            usersOnline=host.users_online,
             link=None,
-            protocol='vless',
-            description=squad.description,
+            protocol=host.protocol,
+            description=host.description,
         )
-        for squad in squads
+        for host in visible_hosts
     ]
 
     return MobileServerListResponse(servers=servers, total=len(servers))
