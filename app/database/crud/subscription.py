@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import and_, case, delete, func, select
+from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import StaleDataError
@@ -1428,6 +1428,29 @@ async def check_and_update_subscription_status(db: AsyncSession, subscription: S
         return subscription
 
     if subscription.status == SubscriptionStatus.ACTIVE.value and subscription.end_date <= current_time:
+        # subscription в памяти могла быть загружена ДО недавнего конкурентного
+        # продления (частая ситуация при пачке вебхуков вокруг момента оплаты) —
+        # прежде чем экспайрить и выдавать grace на основе устаревшего снапшота,
+        # атомарно проверяем актуальное состояние строки условным UPDATE.
+        # Если её уже продлили конкурентно, WHERE не совпадёт и rowcount будет 0.
+        cas_result = await db.execute(
+            update(Subscription)
+            .where(
+                Subscription.id == subscription.id,
+                Subscription.status == SubscriptionStatus.ACTIVE.value,
+                Subscription.end_date <= current_time,
+            )
+            .values(status=SubscriptionStatus.EXPIRED.value, updated_at=current_time)
+        )
+        if cas_result.rowcount == 0:
+            await db.rollback()
+            await db.refresh(subscription)
+            logger.info(
+                '⏩ Пропуск деактивации: подписка конкурентно продлена (устаревший снапшот в памяти)',
+                subscription_id=subscription.id,
+            )
+            return subscription
+
         # Детальное логирование для отладки проблемы с деактивацией
         time_diff = current_time - subscription.end_date
         logger.warning(
@@ -1438,9 +1461,6 @@ async def check_and_update_subscription_status(db: AsyncSession, subscription: S
             current_time=current_time,
             time_diff=time_diff,
         )
-
-        subscription.status = SubscriptionStatus.EXPIRED.value
-        subscription.updated_at = current_time
 
         await db.commit()
         await db.refresh(subscription)
