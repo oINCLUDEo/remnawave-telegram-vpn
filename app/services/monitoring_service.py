@@ -451,6 +451,16 @@ class MonitoringService:
         try:
             from app.database.crud.subscription import is_recently_updated_by_webhook
 
+            # Пока активен grace резервного сквада, панель держит временное состояние,
+            # которого нет в локальной строке — рутинный sync задисейблил бы доступ
+            # (см. тот же guard в SubscriptionService.update_remnawave_user).
+            if getattr(subscription, 'reserve_access_granted_at', None):
+                logger.debug(
+                    'Пропуск RemnaWave обновления подписки : активен grace резервного сквада',
+                    subscription_id=subscription.id,
+                )
+                return None
+
             if is_recently_updated_by_webhook(subscription):
                 logger.debug(
                     'Пропуск RemnaWave обновления подписки : обновлена вебхуком недавно',
@@ -1323,12 +1333,17 @@ class MonitoringService:
                                 user_id=user.id,
                             )
                         old_end_date = subscription.end_date
+                        # Подписка могла стоять на резервном скваде grace-периода —
+                        # снимаем его, иначе панель так и оставит временный сквад
+                        # и урезанный трафик поверх оплаченного продления.
+                        restore_reserve_squads = restore_reserve_grace_if_active(subscription)
                         await extend_subscription(db, subscription, autopay_period)
                         await self.subscription_service.update_remnawave_user(
                             db,
                             subscription,
                             reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
                             reset_reason='автопродление подписки',
+                            sync_squads=restore_reserve_squads,
                         )
 
                         # Создаём транзакцию, чтобы автопродление было видно в статистике и карточке пользователя

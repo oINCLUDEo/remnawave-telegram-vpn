@@ -1,5 +1,5 @@
 import html
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import structlog
@@ -1070,14 +1070,14 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
     if not subscription:
         return texts.t('SUB_STATUS_NONE', '❌ Отсутствует')
 
-    # Reserve-squad grace: subscription.status/end_date are kept "active"
-    # internally only so the periodic status checker doesn't flap it back to
-    # expired every cycle (see grant_reserve_squad_grace) — the real picture
-    # is "your subscription expired, this is a small temporary window", and
-    # that's what the user should see, not "Активна".
-    if getattr(subscription, 'reserve_access_granted_at', None):
-        end_date = getattr(subscription, 'end_date', None)
-        end_date_text = format_local_datetime(end_date, '%d.%m.%Y %H:%M') if end_date else None
+    # Reserve-squad grace: подписка локально уже истекла (её status/end_date не
+    # подменяются — grace живёт только в панели, см. grant_reserve_squad_grace),
+    # поэтому показываем не "Активна", а временный доступ. Дедлайн считаем от
+    # момента выдачи: end_date здесь — это реальная прошедшая дата окончания.
+    granted_at = getattr(subscription, 'reserve_access_granted_at', None)
+    if granted_at:
+        grace_expire_at = granted_at + timedelta(days=settings.RESERVE_GRACE_DAYS)
+        end_date_text = format_local_datetime(grace_expire_at, '%d.%m.%Y %H:%M')
         return texts.t(
             'SUB_STATUS_RESERVE_GRACE',
             '🔌 Временный доступ\n⚠️ Подписка истекла, доступ ограничен до {end_date}',

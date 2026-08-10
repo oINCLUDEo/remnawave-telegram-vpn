@@ -37,25 +37,33 @@ async def generate_unique_short_id(db: AsyncSession, max_attempts: int = 10) -> 
 
 
 def restore_reserve_grace_if_active(subscription: Subscription) -> bool:
-    """ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
-    восстанавливает исходные сквады и лимит трафика тарифа, снимая guard-поля.
+    """Снимает grace-доступ на резервном скваде, если он активен.
 
-    Вызывается из ЛЮБОГО места, где подписка реально продлевается/меняется
-    (оплата, админка, вебхук, авто-платёж, мониторинг) — единая точка восстановления,
-    чтобы не дублировать логику по каждому обработчику отдельно.
+    Возвращает True, если grace был активен — вызывающий код использует это как
+    `sync_squads`, чтобы протолкнуть в панель реальные сквады/трафик тарифа взамен
+    резервного (панель сама не откатится).
 
-    Не делает commit — вызывающий код должен закоммитить сам вместе с остальными
-    изменениями подписки.
+    Grace больше не подменяет поля подписки (см. `grant_reserve_squad_grace`), поэтому
+    здесь достаточно снять флаг: порядок вызова относительно `extend_subscription()`
+    и прочих изменений подписки больше не имеет значения.
+
+    Блок `reserve_original_*` оставлен для строк, записанных прежней реализацией
+    (она складывала туда исходные значения и подменяла рабочие поля) — такие подписки
+    долечиваются здесь при первом же продлении. Для новых grace-выдач эти поля пустые.
+
+    Не делает commit — вызывающий код коммитит сам вместе с остальными изменениями.
     """
     if not getattr(subscription, 'reserve_access_granted_at', None):
         return False
 
-    subscription.connected_squads = list(subscription.reserve_original_squads or [])
-    if subscription.reserve_original_traffic_limit_gb is not None:
+    if getattr(subscription, 'reserve_original_squads', None):
+        subscription.connected_squads = list(subscription.reserve_original_squads)
+    if getattr(subscription, 'reserve_original_traffic_limit_gb', None) is not None:
         subscription.traffic_limit_gb = subscription.reserve_original_traffic_limit_gb
     if getattr(subscription, 'reserve_original_end_date', None) is not None:
-        # Панель могла прислать webhook с временным grace-expire_at, который синхронизатор
-        # ошибочно записал в end_date — откатываем на реальную дату окончания до grace.
+        # Legacy-строка: end_date был подменён на дату окончания grace — возвращаем
+        # реальную дату. Вызывать до extend_subscription() уже не обязательно, т.к.
+        # у новых выдач это поле пустое и ветка не срабатывает.
         subscription.end_date = subscription.reserve_original_end_date
 
     subscription.reserve_access_granted_at = None

@@ -855,6 +855,11 @@ async def _auto_purchase_tariff(
 
     try:
         if existing_subscription:
+            # Снимаем grace резервного сквада, если он был активен — иначе флаг
+            # останется висеть на оплаченной подписке (статус "временный доступ"
+            # в меню/приложении) и заблокирует последующие sync'и панели.
+            restore_reserve_grace_if_active(existing_subscription)
+
             # Продлеваем существующую подписку
             # Сохраняем докупленные устройства при продлении того же тарифа
             if existing_subscription.tariff_id == tariff.id:

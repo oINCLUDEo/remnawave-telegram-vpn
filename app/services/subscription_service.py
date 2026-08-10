@@ -411,6 +411,20 @@ class SubscriptionService:
         sync_squads: bool = False,
     ) -> RemnaWaveUser | None:
         try:
+            # Во время grace панель намеренно держит состояние, которого нет в локальной
+            # строке (резервный сквад, урезанный трафик, срок до конца grace). Рутинный
+            # sync посчитал бы подписку истёкшей и задисейблил бы пользователя, убив
+            # временный доступ. Пропускаем — снятие grace идёт через
+            # restore_reserve_grace_if_active() (продление) либо через
+            # _cleanup_expired_reserve_access() (истечение grace), и оба сначала
+            # снимают флаг, поэтому этот guard их не блокирует.
+            if getattr(subscription, 'reserve_access_granted_at', None):
+                logger.debug(
+                    'Пропуск sync панели: активен grace резервного сквада',
+                    subscription_id=subscription.id,
+                )
+                return None
+
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
                 logger.error('Пользователь не найден', user_id=subscription.user_id)
@@ -600,7 +614,6 @@ class SubscriptionService:
 
         from datetime import UTC, datetime, timedelta
 
-        original_squads = list(subscription.connected_squads or [])
         grace_expire_at = datetime.now(UTC) + timedelta(days=settings.RESERVE_GRACE_DAYS)
 
         used_traffic_bytes: int | None = None
@@ -647,21 +660,19 @@ class SubscriptionService:
             )
             return False
 
+        # Grace живёт ТОЛЬКО в панели. Локальная строка подписки не трогается:
+        # end_date/status/connected_squads/traffic_limit_gb остаются такими, какими
+        # их оставила реальная (истёкшая) подписка, и продление считает дни от них.
+        # Единственное, что пишем — флаг с меткой времени: по нему рисуется статус
+        # в меню/приложении и по нему же monitoring снимает доступ через
+        # RESERVE_GRACE_DAYS. Плюс снапшот трафика до сброса — для поддержки/аудита.
+        #
+        # Раньше сюда зеркалились ACTIVE + grace_expire_at, а исходные значения
+        # складывались в reserve_original_*; восстановление этих полей при продлении
+        # (restore_reserve_grace_if_active) конфликтовало с самим продлением и
+        # регулярно затирало только что оплаченные дни и сквады.
         subscription.reserve_access_granted_at = datetime.now(UTC)
-        subscription.reserve_original_squads = original_squads
-        subscription.reserve_original_traffic_limit_gb = subscription.traffic_limit_gb
-        subscription.reserve_original_end_date = subscription.end_date
         subscription.reserve_original_used_traffic_bytes = used_traffic_bytes
-        subscription.connected_squads = [settings.RESERVE_SQUAD_UUID]
-        # Mirror what we just told the panel (ACTIVE until grace_expire_at) into the
-        # LOCAL record too — not just RemnaWave's. Without this, our own DB still
-        # thinks the subscription expired days ago while the panel thinks it's
-        # active for 3 more days; any webhook or the periodic status checker
-        # (which deactivates status==ACTIVE + end_date<=now) then works off
-        # contradictory state and flaps the subscription active/expired in a loop.
-        # restore_reserve_grace_if_active() reverses this from reserve_original_end_date.
-        subscription.end_date = grace_expire_at
-        subscription.status = SubscriptionStatus.ACTIVE.value
         await db.commit()
 
         logger.info(

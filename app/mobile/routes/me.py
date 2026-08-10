@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, timedelta
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -80,13 +80,18 @@ async def get_me(
         tariff = getattr(subscription, 'tariff', None)
         plan_name: str | None = getattr(tariff, 'name', None) or None
 
-        # Reserve-squad grace: status/end_date are kept ACTIVE internally so the
-        # periodic status checker doesn't flap the record back to expired every
-        # cycle (see grant_reserve_squad_grace) — but the app must not show this
-        # as a normal active subscription. Surface the real picture instead, and
-        # report the actual small grace traffic cap rather than the underlying
-        # tariff's limit (which is not what's enforced on the panel right now).
-        is_reserve_grace = getattr(subscription, 'reserve_access_granted_at', None) is not None
+        # Reserve-squad grace: локально подписка уже истекла (grace живёт только в
+        # панели, см. grant_reserve_squad_grace), поэтому отдаём флаг отдельно и
+        # подменяем два поля на то, что реально действует прямо сейчас: срок —
+        # дедлайн grace, а не прошедшая дата окончания, и урезанный grace-лимит
+        # трафика вместо тарифного (панель енфорсит именно его).
+        granted_at = getattr(subscription, 'reserve_access_granted_at', None)
+        is_reserve_grace = granted_at is not None
+        if is_reserve_grace:
+            try:
+                expire_ts = int((granted_at + timedelta(days=settings.RESERVE_GRACE_DAYS)).timestamp())
+            except (AttributeError, TypeError, ValueError, OSError):
+                pass
 
         sub_data = {
             'status': getattr(subscription, 'status', 'unknown'),
