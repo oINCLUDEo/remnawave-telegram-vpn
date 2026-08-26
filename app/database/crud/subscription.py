@@ -527,7 +527,7 @@ async def extend_subscription(
         device_limit: Лимит устройств (опционально, для режима тарифов)
         connected_squads: Список UUID сквадов (опционально, для режима тарифов)
     """
-    from app.database.models import TrafficPurchase
+    from app.database.models import Tariff, TrafficPurchase
 
     current_time = datetime.now(UTC)
 
@@ -693,6 +693,30 @@ async def extend_subscription(
                 subscription_id=subscription.id,
                 current_squads=subscription.connected_squads,
             )
+
+    # Подписка на тарифе: базовый лимит трафика всегда задаётся тарифом, даже если
+    # вызывающий код не передал traffic_limit_gb (обычное продление вызывает нас как
+    # extend_subscription(db, sub, days)). Без этого любое искажение строки переживало
+    # бы продление — так тарифный лимит терялся после протечки grace-капа
+    # (RESERVE_GRACE_TRAFFIC_GB) из вебхука панели, см. f98a6820.
+    #
+    # Докупленный трафик прибавляется поверх тарифного, а не затирается: выше, для
+    # истёкших подписок и смены тарифа, purchased_traffic_gb уже обнулён, поэтому
+    # формула верна в обоих случаях. Использованный трафик и is_trial не трогаем —
+    # этим управляют ветки выше по своим настройкам.
+    if traffic_limit_gb is None and subscription.tariff_id is not None:
+        tariff_row = await db.get(Tariff, subscription.tariff_id)
+        if tariff_row is not None:
+            expected_limit = (tariff_row.traffic_limit_gb or 0) + (subscription.purchased_traffic_gb or 0)
+            if subscription.traffic_limit_gb != expected_limit:
+                logger.info(
+                    '📊 Лимит трафика приведён к тарифному при продлении: ГБ → ГБ',
+                    subscription_id=subscription.id,
+                    old_traffic=subscription.traffic_limit_gb,
+                    traffic_limit_gb=expected_limit,
+                    tariff_id=subscription.tariff_id,
+                )
+                subscription.traffic_limit_gb = expected_limit
 
     # Обработка daily полей при смене тарифа
     if is_tariff_change and tariff_id is not None:
