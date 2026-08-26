@@ -1075,9 +1075,18 @@ class RemnaWaveWebhookService:
 
         changed = False
 
+        # Во время reserve-grace панель держит ВРЕМЕННЫЕ значения (резервный сквад,
+        # урезанный трафик, срок до конца grace), а не параметры оплаченного тарифа.
+        # Ни одно из них нельзя затягивать обратно в подписку — см. guard'ы ниже
+        # для expire_at и status.
+        in_reserve_grace = getattr(subscription, 'reserve_access_granted_at', None) is not None
+
         # Sync traffic limit
+        # ИСКЛЮЧЕНИЕ: во время grace panel trafficLimitBytes — это RESERVE_GRACE_TRAFFIC_GB,
+        # а не лимит тарифа. Выдача grace сама вызывает user.modified, поэтому без этого
+        # guard'а grace-лимит немедленно протекал в подписку и оставался в ней навсегда.
         traffic_limit_bytes = data.get('trafficLimitBytes')
-        if traffic_limit_bytes is not None:
+        if traffic_limit_bytes is not None and not in_reserve_grace:
             try:
                 new_limit_gb = int(traffic_limit_bytes) // (1024**3)
                 if subscription.traffic_limit_gb != new_limit_gb:
@@ -1101,7 +1110,6 @@ class RemnaWaveWebhookService:
         # дата резервного сквада (now + RESERVE_GRACE_DAYS), а не реальная дата
         # окончания подписки. Синхронизировать её в end_date нельзя — иначе при
         # последующем продлении новые дни сложатся поверх этой фиктивной даты.
-        in_reserve_grace = getattr(subscription, 'reserve_access_granted_at', None) is not None
         # updated_at has onupdate=func.now(), so SQLAlchemy may expire it in-memory
         # after a flush in this session. Reading an expired attribute here would
         # trigger an implicit sync lazy-load, which raises MissingGreenlet under
