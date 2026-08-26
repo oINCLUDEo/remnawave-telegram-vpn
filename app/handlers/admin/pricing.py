@@ -181,6 +181,13 @@ CORE_PRICING_ENTRIES: tuple[SettingEntry, ...] = (
         action='toggle',
     ),
     SettingEntry(
+        key='RESET_TRAFFIC_ON_TARIFF_SWITCH',
+        section='core',
+        label_ru='🔄 Сбрасывать трафик при смене тарифа',
+        label_en='🔄 Reset traffic on tariff switch',
+        action='toggle',
+    ),
+    SettingEntry(
         key='DEFAULT_TRAFFIC_RESET_STRATEGY',
         section='core',
         label_ru='🗓 Стратегия сброса трафика',
@@ -356,7 +363,7 @@ def _format_core_summary(lang_code: str) -> str:
     else:
         traffic_mode = '⚙️ selectable'
     traffic_label = _format_traffic_label(traffic_limit, lang_code, short=True)
-    return f'{base_price}, {device_limit}📱, {traffic_label}, {traffic_mode}'
+    return f'{base_price}, {device_limit} 📱, {traffic_label}, {traffic_mode}'
 
 
 def _get_period_items(lang_code: str) -> list[PriceItem]:

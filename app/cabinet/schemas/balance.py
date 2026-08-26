@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BalanceResponse(BaseModel):
@@ -26,8 +26,7 @@ class TransactionResponse(BaseModel):
     created_at: datetime
     completed_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TransactionListResponse(BaseModel):
@@ -63,7 +62,7 @@ class PaymentMethodResponse(BaseModel):
 class TopUpRequest(BaseModel):
     """Request to create payment for balance top-up."""
 
-    amount_kopeks: int = Field(..., ge=1000, description='Amount in kopeks (min 10 rubles)')
+    amount_kopeks: int = Field(..., ge=1000, le=2_000_000_000, description='Amount in kopeks (min 10 rubles)')
     payment_method: str = Field(..., description='Payment method ID')
     payment_option: str | None = Field(None, description='Payment option (e.g. Platega method code)')
 
@@ -82,7 +81,7 @@ class TopUpResponse(BaseModel):
 class StarsInvoiceRequest(BaseModel):
     """Request to create Telegram Stars invoice for balance top-up."""
 
-    amount_kopeks: int = Field(..., ge=100, description='Amount in kopeks (min 1 ruble)')
+    amount_kopeks: int = Field(..., ge=100, le=2_000_000_000, description='Amount in kopeks (min 1 ruble)')
 
 
 class StarsInvoiceResponse(BaseModel):
@@ -114,8 +113,7 @@ class PendingPaymentResponse(BaseModel):
     user_telegram_id: int | None = None
     user_username: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PendingPaymentListResponse(BaseModel):
@@ -137,3 +135,23 @@ class ManualCheckResponse(BaseModel):
     status_changed: bool = False
     old_status: str | None = None
     new_status: str | None = None
+
+
+class SavedCardResponse(BaseModel):
+    """Saved payment method (card) for recurrent payments."""
+
+    id: int
+    method_type: str
+    card_last4: str | None = None
+    card_type: str | None = None
+    title: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SavedCardsListResponse(BaseModel):
+    """List of saved payment methods."""
+
+    cards: list[SavedCardResponse]
+    recurrent_enabled: bool = False

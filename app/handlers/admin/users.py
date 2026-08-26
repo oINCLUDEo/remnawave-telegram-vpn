@@ -1,3 +1,4 @@
+import html
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,13 +20,13 @@ from app.database.crud.campaign import (
 from app.database.crud.promo_group import get_promo_groups_with_counts
 from app.database.crud.server_squad import (
     get_all_server_squads,
-    get_server_ids_by_uuids,
     get_server_squad_by_id,
     get_server_squad_by_uuid,
 )
 from app.database.crud.tariff import get_all_tariffs, get_tariff_by_id
 from app.database.crud.user import (
     get_referrals,
+    get_user_by_email,
     get_user_by_id,
     get_user_by_telegram_id,
     get_user_by_username,
@@ -47,6 +48,7 @@ from app.services.user_service import UserService
 from app.states import AdminStates
 from app.utils.decorators import admin_required, error_handler
 from app.utils.formatters import format_datetime, format_time_ago
+from app.utils.formatting import user_html_link
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
@@ -117,13 +119,17 @@ def _get_user_status_emoji(user: User) -> str:
 
 def _get_subscription_emoji(user: User) -> str:
     """Возвращает эмодзи подписки пользователя."""
-    if not user.subscription:
+    subscriptions = getattr(user, 'subscriptions', None) or []
+    if not subscriptions:
         return '❌'
-    if user.subscription.is_trial:
+    # Check if any subscription is active
+    active = [s for s in subscriptions if s.is_active]
+    if not active:
+        return '⏰'
+    # Check if any is trial
+    if any(s.is_trial for s in active):
         return '🎁'
-    if user.subscription.is_active:
-        return '💎'
-    return '⏰'
+    return '💎'
 
 
 def _build_user_button_text(
@@ -145,8 +151,10 @@ def _build_user_button_text(
         button_text = f'{status_emoji} {sub_emoji} {user.full_name}'
         if user.balance_kopeks > 0:
             button_text += f' | 💰 {settings.format_price(user.balance_kopeks)}'
-        if user.subscription and user.subscription.end_date:
-            days_left = (user.subscription.end_date - datetime.now(UTC)).days
+        # Use first active subscription from subscriptions list
+        first_sub = next((s for s in (getattr(user, 'subscriptions', None) or []) if s.is_active), None)
+        if first_sub and first_sub.end_date:
+            days_left = (first_sub.end_date - datetime.now(UTC)).days
             button_text += f' | 📅 {days_left}д'
 
     elif filter_type == UserFilterType.CAMPAIGN:
@@ -319,10 +327,12 @@ async def show_users_list(
             status_emoji = '🗑️'
 
         subscription_emoji = ''
-        if user.subscription:
-            if user.subscription.is_trial:
+        subs = getattr(user, 'subscriptions', None) or []
+        subscription = next((s for s in subs if s.is_active), subs[0] if subs else None)
+        if subscription:
+            if subscription.is_trial:
                 subscription_emoji = '🎁'
-            elif user.subscription.is_active:
+            elif subscription.is_active:
                 subscription_emoji = '💎'
             else:
                 subscription_emoji = '⏰'
@@ -428,7 +438,7 @@ async def show_users_ready_to_renew(
     current_time = datetime.now(UTC)
 
     for user in users_data['users']:
-        subscription = user.subscription
+        subscription = user.subscription  # Uses primary subscription (multi-tariff compatible via property)
         status_emoji = '✅' if user.status == UserStatus.ACTIVE.value else '🚫'
         subscription_emoji = '❌'
         expired_days = '?'
@@ -555,7 +565,7 @@ async def show_potential_customers(
     keyboard = []
 
     for user in users_data['users']:
-        subscription = user.subscription
+        subscription = user.subscription  # Uses primary subscription (multi-tariff compatible via property)
         status_emoji = '✅' if user.status == UserStatus.ACTIVE.value else '🚫'
         subscription_emoji = '❌'
 
@@ -810,7 +820,9 @@ async def show_users_statistics(callback: types.CallbackQuery, db_user: User, db
     await callback.answer()
 
 
-async def _render_user_subscription_overview(callback: types.CallbackQuery, db: AsyncSession, user_id: int) -> bool:
+async def _render_user_subscription_overview(
+    callback: types.CallbackQuery, db: AsyncSession, user_id: int, subscription_id: int | None = None
+) -> bool:
     user_service = UserService()
     profile = await user_service.get_user_profile(db, user_id)
 
@@ -819,15 +831,66 @@ async def _render_user_subscription_overview(callback: types.CallbackQuery, db: 
         return False
 
     user = profile['user']
-    subscription = profile['subscription']
+
+    # Multi-tariff: show subscription picker if multiple subscriptions and no explicit choice
+    if settings.is_multi_tariff_enabled() and not subscription_id:
+        from app.database.crud.subscription import get_active_subscriptions_by_user_id
+
+        all_subs = await get_active_subscriptions_by_user_id(db, user_id)
+        await db.refresh(user, ['subscriptions'])
+        all_user_subs = getattr(user, 'subscriptions', []) or []
+        subs_list = all_user_subs if len(all_user_subs) > len(all_subs) else all_subs
+
+        if len(subs_list) > 1:
+            user_link = user_html_link(user)
+            user_id_display = user.telegram_id or user.email or f'#{user.id}'
+            text = '📱 <b>Выберите подписку для управления</b>\n\n'
+            text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n\n'
+            text += f'У пользователя <b>{len(subs_list)}</b> подписок:\n\n'
+
+            picker_keyboard = []
+            for sub in sorted(subs_list, key=lambda s: s.id):
+                status_emoji = '✅' if sub.is_active else ('⏸' if sub.status == 'disabled' else '❌')
+                tariff_name = ''
+                if sub.tariff_id:
+                    tariff = await get_tariff_by_id(db, sub.tariff_id)
+                    tariff_name = f' • {html.escape(tariff.name)}' if tariff else ''
+
+                days_left = max(0, (sub.end_date - datetime.now(UTC)).days) if sub.end_date else 0
+                btn_text = f'{status_emoji} #{sub.id}{tariff_name} ({days_left}д.)'
+                picker_keyboard.append(
+                    [
+                        types.InlineKeyboardButton(
+                            text=btn_text,
+                            callback_data=f'admin_user_sub_select_{user_id}_{sub.id}',
+                        )
+                    ]
+                )
+
+            picker_keyboard.append(
+                [types.InlineKeyboardButton(text='⬅️ К пользователю', callback_data=f'admin_user_manage_{user_id}')]
+            )
+            await callback.message.edit_text(
+                text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=picker_keyboard)
+            )
+            return True
+        if len(subs_list) == 1:
+            subscription_id = subs_list[0].id
+
+    # Fetch specific subscription if subscription_id provided
+    if subscription_id and settings.is_multi_tariff_enabled():
+        from app.database.crud.subscription import get_subscription_by_id_for_user
+
+        subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+    else:
+        subscription = profile['subscription']
+
+    # Suffix used to route back to this exact subscription in multi-tariff mode
+    _sid = f'_s{subscription.id}' if settings.is_multi_tariff_enabled() and subscription else ''
 
     text = '📱 <b>Подписка и настройки пользователя</b>\n\n'
-    if user.telegram_id:
-        user_link = f'<a href="tg://user?id={user.telegram_id}">{user.full_name}</a>'
-        user_id_display = user.telegram_id
-    else:
-        user_link = f'<b>{user.full_name}</b>'
-        user_id_display = user.email or f'#{user.id}'
+    user_link = user_html_link(user)
+    user_id_display = user.telegram_id or user.email or f'#{user.id}'
     text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n\n'
 
     keyboard = []
@@ -849,7 +912,7 @@ async def _render_user_subscription_overview(callback: types.CallbackQuery, db: 
         if subscription.tariff_id:
             tariff = await get_tariff_by_id(db, subscription.tariff_id)
             if tariff:
-                text += f'<b>Тариф:</b> 📦 {tariff.name}\n'
+                text += f'<b>Тариф:</b> 📦 {html.escape(tariff.name)}\n'
             else:
                 text += f'<b>Тариф:</b> ID {subscription.tariff_id} (удалён)\n'
 
@@ -869,7 +932,7 @@ async def _render_user_subscription_overview(callback: types.CallbackQuery, db: 
                 try:
                     server = await get_server_squad_by_uuid(db, squad_uuid)
                     if server:
-                        text += f'• {server.display_name}\n'
+                        text += f'• {html.escape(server.display_name)}\n'
                     else:
                         text += f'• {squad_uuid[:8]}... (неизвестный)\n'
                 except Exception as e:
@@ -880,23 +943,27 @@ async def _render_user_subscription_overview(callback: types.CallbackQuery, db: 
 
         keyboard = [
             [
-                types.InlineKeyboardButton(text='⏰ Продлить', callback_data=f'admin_sub_extend_{user_id}'),
-                types.InlineKeyboardButton(text='💳 Купить подписку', callback_data=f'admin_sub_buy_{user_id}'),
-            ],
-            [
-                types.InlineKeyboardButton(text='🔄 Тип подписки', callback_data=f'admin_sub_change_type_{user_id}'),
-                types.InlineKeyboardButton(text='📊 Добавить трафик', callback_data=f'admin_sub_traffic_{user_id}'),
+                types.InlineKeyboardButton(text='⏰ Продлить', callback_data=f'admin_sub_extend_{user_id}{_sid}'),
+                types.InlineKeyboardButton(text='💳 Купить подписку', callback_data=f'admin_sub_buy_{user_id}{_sid}'),
             ],
             [
                 types.InlineKeyboardButton(
-                    text='🌍 Сменить сервер', callback_data=f'admin_user_change_server_{user_id}'
+                    text='🔄 Тип подписки', callback_data=f'admin_sub_change_type_{user_id}{_sid}'
                 ),
-                types.InlineKeyboardButton(text='📱 Устройства', callback_data=f'admin_user_devices_{user_id}'),
+                types.InlineKeyboardButton(
+                    text='📊 Добавить трафик', callback_data=f'admin_sub_traffic_{user_id}{_sid}'
+                ),
             ],
             [
-                types.InlineKeyboardButton(text='🛠️ Лимит трафика', callback_data=f'admin_user_traffic_{user_id}'),
                 types.InlineKeyboardButton(
-                    text='🔄 Сбросить устройства', callback_data=f'admin_user_reset_devices_{user_id}'
+                    text='🌍 Сменить сервер', callback_data=f'admin_user_change_server_{user_id}{_sid}'
+                ),
+                types.InlineKeyboardButton(text='📱 Устройства', callback_data=f'admin_user_devices_{user_id}{_sid}'),
+            ],
+            [
+                types.InlineKeyboardButton(text='🛠️ Лимит трафика', callback_data=f'admin_user_traffic_{user_id}{_sid}'),
+                types.InlineKeyboardButton(
+                    text='🔄 Сбросить устройства', callback_data=f'admin_user_reset_devices_{user_id}{_sid}'
                 ),
             ],
         ]
@@ -906,20 +973,31 @@ async def _render_user_subscription_overview(callback: types.CallbackQuery, db: 
             keyboard.append(
                 [
                     types.InlineKeyboardButton(
-                        text='📦 Сменить тариф', callback_data=f'admin_sub_change_tariff_{user_id}'
+                        text='📦 Сменить тариф', callback_data=f'admin_sub_change_tariff_{user_id}{_sid}'
                     ),
-                    types.InlineKeyboardButton(text='💳 Купить тариф', callback_data=f'admin_tariff_buy_{user_id}'),
+                    types.InlineKeyboardButton(
+                        text='💳 Купить тариф', callback_data=f'admin_tariff_buy_{user_id}{_sid}'
+                    ),
                 ]
             )
 
         if subscription.is_active:
             keyboard.append(
-                [types.InlineKeyboardButton(text='🚫 Деактивировать', callback_data=f'admin_sub_deactivate_{user_id}')]
+                [
+                    types.InlineKeyboardButton(
+                        text='🚫 Деактивировать', callback_data=f'admin_sub_deactivate_{user_id}{_sid}'
+                    )
+                ]
             )
         else:
-            keyboard.append(
-                [types.InlineKeyboardButton(text='✅ Активировать', callback_data=f'admin_sub_activate_{user_id}')]
-            )
+            row = [
+                types.InlineKeyboardButton(text='✅ Активировать', callback_data=f'admin_sub_activate_{user_id}{_sid}'),
+            ]
+            if settings.is_multi_tariff_enabled() and subscription_id:
+                row.append(
+                    types.InlineKeyboardButton(text='🗑 Удалить', callback_data=f'admin_sub_delete_{user_id}{_sid}')
+                )
+            keyboard.append(row)
     else:
         text += '❌ <b>Подписка отсутствует</b>\n\n'
         text += 'Пользователь еще не активировал подписку.'
@@ -937,12 +1015,41 @@ async def _render_user_subscription_overview(callback: types.CallbackQuery, db: 
     return True
 
 
+def _extract_admin_sub_context(callback_data: str) -> tuple[int, int | None]:
+    """Extract user_id and optional subscription_id from admin callback_data.
+
+    Patterns:
+    - 'admin_sub_extend_123'       -> (123, None)
+    - 'admin_sub_extend_123_s456'  -> (123, 456)
+    """
+    parts = callback_data.split('_')
+    subscription_id = None
+    if parts[-1].startswith('s') and parts[-1][1:].isdigit():
+        subscription_id = int(parts[-1][1:])
+        user_id = int(parts[-2])
+    else:
+        user_id = int(parts[-1])
+    return user_id, subscription_id
+
+
 @admin_required
 @error_handler
 async def show_user_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     user_id = int(callback.data.split('_')[-1])
 
     if await _render_user_subscription_overview(callback, db, user_id):
+        await callback.answer()
+
+
+@admin_required
+@error_handler
+async def admin_select_user_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Handle subscription picker selection in multi-tariff mode."""
+    parts = callback.data.split('_')
+    user_id = int(parts[-2])
+    subscription_id = int(parts[-1])
+
+    if await _render_user_subscription_overview(callback, db, user_id, subscription_id=subscription_id):
         await callback.answer()
 
 
@@ -961,12 +1068,8 @@ async def show_user_transactions(callback: types.CallbackQuery, db_user: User, d
     transactions = await get_user_transactions(db, user_id, limit=10)
 
     text = '💳 <b>Транзакции пользователя</b>\n\n'
-    if user.telegram_id:
-        user_link = f'<a href="tg://user?id={user.telegram_id}">{user.full_name}</a>'
-        user_id_display = user.telegram_id
-    else:
-        user_link = f'<b>{user.full_name}</b>'
-        user_id_display = user.email or f'#{user.id}'
+    user_link = user_html_link(user)
+    user_id_display = user.telegram_id or user.email or f'#{user.id}'
     text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n'
     text += f'💰 Текущий баланс: {settings.format_price(user.balance_kopeks)}\n\n'
 
@@ -976,7 +1079,7 @@ async def show_user_transactions(callback: types.CallbackQuery, db_user: User, d
         for transaction in transactions:
             type_emoji = '📈' if transaction.amount_kopeks > 0 else '📉'
             text += f'{type_emoji} {settings.format_price(abs(transaction.amount_kopeks))}\n'
-            text += f'📋 {transaction.description}\n'
+            text += f'📋 {html.escape(transaction.description or "")}\n'
             text += f'📅 {format_datetime(transaction.created_at)}\n\n'
     else:
         text += '📭 <b>Транзакции отсутствуют</b>'
@@ -1019,9 +1122,9 @@ async def delete_user_account(callback: types.CallbackQuery, db_user: User, db: 
     user_id = int(callback.data.split('_')[-1])
 
     user_service = UserService()
-    success = await user_service.delete_user_account(db, user_id, db_user.id)
+    delete_result = await user_service.delete_user_account(db, user_id, db_user.id, force_panel_delete=True)
 
-    if success:
+    if delete_result.bot_deleted:
         await callback.message.edit_text(
             '✅ Пользователь успешно удален',
             reply_markup=types.InlineKeyboardMarkup(
@@ -1057,7 +1160,7 @@ async def process_user_search(message: types.Message, db_user: User, state: FSMC
 
     if not search_results['users']:
         await message.answer(
-            f"🔍 По запросу '<b>{query}</b>' ничего не найдено",
+            f"🔍 По запросу '<b>{html.escape(query)}</b>' ничего не найдено",
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_users')]]
             ),
@@ -1065,7 +1168,7 @@ async def process_user_search(message: types.Message, db_user: User, state: FSMC
         await state.clear()
         return
 
-    text = f"🔍 <b>Результаты поиска:</b> '{query}'\n\n"
+    text = f"🔍 <b>Результаты поиска:</b> '{html.escape(query)}'\n\n"
     text += 'Выберите пользователя:'
 
     keyboard = []
@@ -1079,10 +1182,12 @@ async def process_user_search(message: types.Message, db_user: User, state: FSMC
             status_emoji = '🗑️'
 
         subscription_emoji = ''
-        if user.subscription:
-            if user.subscription.is_trial:
+        subs = getattr(user, 'subscriptions', None) or []
+        subscription = next((s for s in subs if s.is_active), subs[0] if subs else None)
+        if subscription:
+            if subscription.is_trial:
                 subscription_emoji = '🎁'
-            elif user.subscription.is_active:
+            elif subscription.is_active:
                 subscription_emoji = '💎'
             else:
                 subscription_emoji = '⏰'
@@ -1175,7 +1280,7 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
 
     sections = [
         texts.ADMIN_USER_MANAGEMENT_PROFILE.format(
-            name=user.full_name,
+            name=html.escape(user.full_name),
             telegram_id=user.telegram_id,
             username=username_display,
             status=status_text,
@@ -1210,7 +1315,7 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
                 end_date=format_datetime(subscription.end_date),
                 traffic=traffic_usage,
                 devices=subscription.device_limit,
-                countries=len(subscription.connected_squads),
+                countries=len(subscription.connected_squads or []),
             )
         )
     else:
@@ -1223,11 +1328,11 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
             texts.t(
                 'ADMIN_USER_PROMO_GROUPS_PRIMARY',
                 '⭐ Основная: {name} (Priority: {priority})',
-            ).format(name=primary_group.name, priority=getattr(primary_group, 'priority', 0))
+            ).format(name=html.escape(primary_group.name), priority=getattr(primary_group, 'priority', 0))
         )
         sections.append(
             texts.ADMIN_USER_MANAGEMENT_PROMO_GROUP.format(
-                name=primary_group.name,
+                name=html.escape(primary_group.name),
                 server_discount=primary_group.server_discount_percent,
                 traffic_discount=primary_group.traffic_discount_percent,
                 device_discount=primary_group.device_discount_percent,
@@ -1249,7 +1354,7 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
                     )
                 )
                 for group in additional_groups:
-                    sections.append(f'  • {group.name} (Priority: {getattr(group, "priority", 0)})')
+                    sections.append(f'  • {html.escape(group.name)} (Priority: {getattr(group, "priority", 0)})')
     else:
         sections.append(texts.ADMIN_USER_MANAGEMENT_PROMO_GROUP_NONE)
 
@@ -1264,7 +1369,7 @@ async def show_user_management(callback: types.CallbackQuery, db_user: User, db:
             restriction_lines.append('  • 🚫 Продление/покупка запрещена')
         restriction_reason = getattr(user, 'restriction_reason', None)
         if restriction_reason:
-            restriction_lines.append(f'  📝 Причина: {restriction_reason}')
+            restriction_lines.append(f'  📝 Причина: {html.escape(restriction_reason)}')
         sections.append('\n'.join(restriction_lines))
 
     text = '\n\n'.join(sections)
@@ -1321,7 +1426,7 @@ async def _build_user_referrals_view(
         'ADMIN_USER_REFERRALS_SUMMARY',
         '👤 {name} (ID: <code>{telegram_id}</code>)\n👥 Всего рефералов: {count}',
     ).format(
-        name=user.full_name,
+        name=html.escape(user.full_name),
         telegram_id=user.telegram_id,
         count=len(referrals),
     )
@@ -1356,11 +1461,12 @@ async def _build_user_referrals_view(
         items = []
         for referral in referrals[:limit]:
             username_part = f', @{referral.username}' if referral.username else ''
+            safe_name = html.escape(referral.full_name)
             if referral.telegram_id:
-                referral_link = f'<a href="tg://user?id={referral.telegram_id}">{referral.full_name}</a>'
+                referral_link = f'<a href="tg://user?id={referral.telegram_id}">{safe_name}</a>'
                 referral_id_display = referral.telegram_id
             else:
-                referral_link = f'<b>{referral.full_name}</b>'
+                referral_link = f'<b>{safe_name}</b>'
                 referral_id_display = referral.email or f'#{referral.id}'
             items.append(
                 texts.t(
@@ -1737,7 +1843,7 @@ async def start_edit_user_referrals(
             'Или нажмите кнопку ниже, чтобы отменить.'
         ),
     ).format(
-        name=user.full_name,
+        name=html.escape(user.full_name),
         telegram_id=user.telegram_id,
     )
 
@@ -1812,15 +1918,21 @@ async def process_edit_user_referrals(
         if not normalized:
             continue
 
-        normalized = normalized.removeprefix('@')
-
         user = None
-        if normalized.isdigit():
-            try:
-                user = await get_user_by_telegram_id(db, int(normalized))
-            except ValueError:
-                user = None
+        if normalized.startswith('#') and normalized[1:].isdigit():
+            # Internal user ID lookup: #2351
+            user = await get_user_by_id(db, int(normalized[1:]))
+        elif '@' in normalized and '.' in normalized:
+            # Email lookup: user@example.com
+            user = await get_user_by_email(db, normalized)
+        elif normalized.startswith('@'):
+            # Username lookup: @username
+            user = await get_user_by_username(db, normalized.lstrip('@'))
+        elif normalized.isdigit():
+            # Telegram ID lookup
+            user = await get_user_by_telegram_id(db, int(normalized))
         else:
+            # Fallback: try as username without @
             user = await get_user_by_username(db, normalized)
 
         if not user:
@@ -1972,7 +2084,7 @@ async def _render_user_promo_group(message: types.Message, language: str, user: 
         current_line = texts.t(
             'ADMIN_USER_PROMO_GROUPS_PRIMARY',
             '⭐ Основная: {name} (Priority: {priority})',
-        ).format(name=primary_group.name, priority=getattr(primary_group, 'priority', 0))
+        ).format(name=html.escape(primary_group.name), priority=getattr(primary_group, 'priority', 0))
 
         discount_line = texts.ADMIN_USER_PROMO_GROUP_DISCOUNTS.format(
             servers=primary_group.server_discount_percent,
@@ -1997,7 +2109,7 @@ async def _render_user_promo_group(message: types.Message, language: str, user: 
                     + '\n'
                 )
                 for group in additional_groups:
-                    additional_line += f'  • {group.name} (Priority: {getattr(group, "priority", 0)})\n'
+                    additional_line += f'  • {html.escape(group.name)} (Priority: {getattr(group, "priority", 0)})\n'
                 discount_line += additional_line
     else:
         current_line = texts.t(
@@ -2388,7 +2500,7 @@ async def show_user_restrictions(callback: types.CallbackQuery, db_user: User, d
 
     text_lines = [
         '⚠️ <b>Ограничения пользователя</b>',
-        f'👤 {user.full_name}',
+        f'👤 {html.escape(user.full_name)}',
         '',
         '✅ — разрешено, 🚫 — запрещено',
         '',
@@ -2398,7 +2510,7 @@ async def show_user_restrictions(callback: types.CallbackQuery, db_user: User, d
 
     if restriction_reason:
         text_lines.append('')
-        text_lines.append(f'📝 <b>Причина:</b> {restriction_reason}')
+        text_lines.append(f'📝 <b>Причина:</b> {html.escape(restriction_reason)}')
 
     keyboard = get_user_restrictions_keyboard(
         user_id=user_id,
@@ -2479,7 +2591,7 @@ async def ask_restriction_reason(callback: types.CallbackQuery, db_user: User, d
         'выполнить запрещённое действие.\n\n'
     )
     if current_reason:
-        text += f'Текущая причина: <i>{current_reason}</i>\n\n'
+        text += f'Текущая причина: <i>{html.escape(current_reason)}</i>\n\n'
     text += 'Отправьте новую причину или /cancel для отмены:'
 
     await callback.message.edit_text(
@@ -2525,12 +2637,12 @@ async def save_restriction_reason(message: types.Message, db_user: User, db: Asy
         '✅ <b>Причина ограничения сохранена</b>',
         '',
         '⚠️ <b>Ограничения пользователя</b>',
-        f'👤 {user.full_name}',
+        f'👤 {html.escape(user.full_name)}',
         '',
         f'{"🚫" if restriction_topup else "✅"} Пополнение баланса',
         f'{"🚫" if restriction_subscription else "✅"} Продление/покупка подписки',
         '',
-        f'📝 <b>Причина:</b> {reason}',
+        f'📝 <b>Причина:</b> {html.escape(reason)}',
     ]
 
     keyboard = get_user_restrictions_keyboard(
@@ -2585,7 +2697,9 @@ async def show_inactive_users(callback: types.CallbackQuery, db_user: User, db: 
         await callback.answer()
         return
 
-    with_active_sub = sum(1 for u in inactive_users if u.subscription and u.subscription.is_active)
+    with_active_sub = sum(
+        1 for u in inactive_users if any(s.is_active for s in (getattr(u, 'subscriptions', None) or []))
+    )
     will_delete = len(inactive_users) - with_active_sub
 
     text = '🗑️ <b>Неактивные пользователи</b>\n'
@@ -2596,13 +2710,9 @@ async def show_inactive_users(callback: types.CallbackQuery, db_user: User, db: 
     text += '\n'
 
     for user in inactive_users[:10]:
-        if user.telegram_id:
-            user_link = f'<a href="tg://user?id={user.telegram_id}">{user.full_name}</a>'
-            user_id_display = user.telegram_id
-        else:
-            user_link = f'<b>{user.full_name}</b>'
-            user_id_display = user.email or f'#{user.id}'
-        has_active = user.subscription and user.subscription.is_active
+        user_link = user_html_link(user)
+        user_id_display = user.telegram_id or user.email or f'#{user.id}'
+        has_active = any(s.is_active for s in (getattr(user, 'subscriptions', None) or []))
         sub_badge = ' 🛡️' if has_active else ''
         text += f'👤 {user_link}{sub_badge}\n'
         text += f'🆔 <code>{user_id_display}</code>\n'
@@ -2691,12 +2801,8 @@ async def show_user_statistics(callback: types.CallbackQuery, db_user: User, db:
         campaign_stats = await get_campaign_statistics(db, campaign_registration.campaign_id)
 
     text = '📊 <b>Статистика пользователя</b>\n\n'
-    if user.telegram_id:
-        user_link = f'<a href="tg://user?id={user.telegram_id}">{user.full_name}</a>'
-        user_id_display = user.telegram_id
-    else:
-        user_link = f'<b>{user.full_name}</b>'
-        user_id_display = user.email or f'#{user.id}'
+    user_link = user_html_link(user)
+    user_id_display = user.telegram_id or user.email or f'#{user.id}'
     text += f'👤 {user_link} (ID: <code>{user_id_display}</code>)\n\n'
 
     text += '<b>Основная информация:</b>\n'
@@ -2712,7 +2818,7 @@ async def show_user_statistics(callback: types.CallbackQuery, db_user: User, db:
         text += f'• Статус: {sub_status}{sub_type}\n'
         text += f'• Трафик: {subscription.traffic_used_gb:.1f}/{subscription.traffic_limit_gb} ГБ\n'
         text += f'• Устройства: {subscription.device_limit}\n'
-        text += f'• Стран: {len(subscription.connected_squads)}\n'
+        text += f'• Стран: {len(subscription.connected_squads or [])}\n'
     else:
         text += '• Отсутствует\n'
 
@@ -2721,13 +2827,13 @@ async def show_user_statistics(callback: types.CallbackQuery, db_user: User, db:
     if user.referred_by_id:
         referrer = await get_user_by_id(db, user.referred_by_id)
         if referrer:
-            text += f'• Пришел по реферальной ссылке от <b>{referrer.full_name}</b>\n'
+            text += f'• Пришел по реферальной ссылке от <b>{html.escape(referrer.full_name)}</b>\n'
         else:
             text += '• Пришел по реферальной ссылке (реферер не найден)\n'
         if campaign_registration and campaign_registration.campaign:
-            text += f'• Дополнительно зарегистрирован через кампанию <b>{campaign_registration.campaign.name}</b>\n'
+            text += f'• Дополнительно зарегистрирован через кампанию <b>{html.escape(campaign_registration.campaign.name)}</b>\n'
     elif campaign_registration and campaign_registration.campaign:
-        text += f'• Регистрация через рекламную кампанию <b>{campaign_registration.campaign.name}</b>\n'
+        text += f'• Регистрация через рекламную кампанию <b>{html.escape(campaign_registration.campaign.name)}</b>\n'
         if campaign_registration.created_at:
             text += f'• Дата регистрации по кампании: {campaign_registration.created_at.strftime("%d.%m.%Y %H:%M")}\n'
     else:
@@ -2737,7 +2843,7 @@ async def show_user_statistics(callback: types.CallbackQuery, db_user: User, db:
 
     if campaign_registration and campaign_registration.campaign and campaign_stats:
         text += '<b>Рекламная кампания:</b>\n'
-        text += f'• Название: <b>{campaign_registration.campaign.name}</b>'
+        text += f'• Название: <b>{html.escape(campaign_registration.campaign.name)}</b>'
         if campaign_registration.campaign.start_parameter:
             text += f' (параметр: <code>{campaign_registration.campaign.start_parameter}</code>)'
         text += '\n'
@@ -2771,7 +2877,7 @@ async def show_user_statistics(callback: types.CallbackQuery, db_user: User, db:
         if referral_stats['referrals_detail']:
             text += '\n<b>Детали по рефералам:</b>\n'
             for detail in referral_stats['referrals_detail'][:5]:
-                referral_name = detail['referral_name']
+                referral_name = html.escape(detail['referral_name'])
                 earned = settings.format_price(detail['total_earned_kopeks'])
                 status = '🟢' if detail['is_active'] else '🔴'
                 text += f'• {status} {referral_name}: {earned}\n'
@@ -2802,7 +2908,11 @@ async def get_detailed_referral_stats(db: AsyncSession, user_id: int) -> dict:
 
     base_stats = await get_user_referral_stats(db, user_id)
 
-    referrals_query = select(User).options(selectinload(User.subscription)).where(User.referred_by_id == user_id)
+    referrals_query = (
+        select(User)
+        .options(selectinload(User.subscriptions).selectinload(Subscription.tariff))
+        .where(User.referred_by_id == user_id)
+    )
 
     referrals_result = await db.execute(referrals_query)
     referrals = referrals_result.scalars().all()
@@ -2823,13 +2933,12 @@ async def get_detailed_referral_stats(db: AsyncSession, user_id: int) -> dict:
         earned = earnings_by_referral.get(referral.id, 0)
 
         is_active = False
-        if referral.subscription:
+        ref_subs = getattr(referral, 'subscriptions', None) or []
+        ref_sub = next((s for s in ref_subs if s.is_active), ref_subs[0] if ref_subs else None)
+        if ref_sub:
             from app.database.models import SubscriptionStatus
 
-            is_active = (
-                referral.subscription.status == SubscriptionStatus.ACTIVE.value
-                and referral.subscription.end_date > current_time
-            )
+            is_active = ref_sub.status == SubscriptionStatus.ACTIVE.value and ref_sub.end_date > current_time
 
         referrals_detail.append(
             {
@@ -2839,7 +2948,7 @@ async def get_detailed_referral_stats(db: AsyncSession, user_id: int) -> dict:
                 'total_earned_kopeks': earned,
                 'is_active': is_active,
                 'registration_date': referral.created_at,
-                'has_subscription': bool(referral.subscription),
+                'has_subscription': bool(ref_subs),
             }
         )
 
@@ -2857,9 +2966,16 @@ async def get_detailed_referral_stats(db: AsyncSession, user_id: int) -> dict:
 @admin_required
 @error_handler
 async def extend_user_subscription(callback: types.CallbackQuery, db_user: User, state: FSMContext):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
 
-    await state.update_data(extending_user_id=user_id)
+    await state.update_data(extending_user_id=user_id, admin_subscription_id=subscription_id)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     await callback.message.edit_text(
         '⏰ <b>Продление подписки</b>\n\n'
@@ -2871,18 +2987,28 @@ async def extend_user_subscription(callback: types.CallbackQuery, db_user: User,
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    types.InlineKeyboardButton(text='-7 дней', callback_data=f'admin_sub_extend_days_{user_id}_-7'),
-                    types.InlineKeyboardButton(text='-30 дней', callback_data=f'admin_sub_extend_days_{user_id}_-30'),
+                    types.InlineKeyboardButton(
+                        text='-7 дней', callback_data=f'admin_sub_extend_days_{user_id}{_sid}_-7'
+                    ),
+                    types.InlineKeyboardButton(
+                        text='-30 дней', callback_data=f'admin_sub_extend_days_{user_id}{_sid}_-30'
+                    ),
                 ],
                 [
-                    types.InlineKeyboardButton(text='7 дней', callback_data=f'admin_sub_extend_days_{user_id}_7'),
-                    types.InlineKeyboardButton(text='30 дней', callback_data=f'admin_sub_extend_days_{user_id}_30'),
+                    types.InlineKeyboardButton(text='7 дней', callback_data=f'admin_sub_extend_days_{user_id}{_sid}_7'),
+                    types.InlineKeyboardButton(
+                        text='30 дней', callback_data=f'admin_sub_extend_days_{user_id}{_sid}_30'
+                    ),
                 ],
                 [
-                    types.InlineKeyboardButton(text='90 дней', callback_data=f'admin_sub_extend_days_{user_id}_90'),
-                    types.InlineKeyboardButton(text='180 дней', callback_data=f'admin_sub_extend_days_{user_id}_180'),
+                    types.InlineKeyboardButton(
+                        text='90 дней', callback_data=f'admin_sub_extend_days_{user_id}{_sid}_90'
+                    ),
+                    types.InlineKeyboardButton(
+                        text='180 дней', callback_data=f'admin_sub_extend_days_{user_id}{_sid}_180'
+                    ),
                 ],
-                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_subscription_{user_id}')],
+                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=back_cb)],
             ]
         ),
     )
@@ -2895,14 +3021,27 @@ async def extend_user_subscription(callback: types.CallbackQuery, db_user: User,
 @error_handler
 async def process_subscription_extension_days(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     parts = callback.data.split('_')
-    user_id = int(parts[-2])
+    # days is always the last part (may be negative, e.g. '-7')
     days = int(parts[-1])
+    # Check if second-to-last part is a subscription_id marker (e.g. 's456')
+    if parts[-2].startswith('s') and parts[-2][1:].isdigit():
+        subscription_id = int(parts[-2][1:])
+        user_id = int(parts[-3])
+    else:
+        subscription_id = None
+        user_id = int(parts[-2])
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     if days == 0 or days < -365 or days > 365:
         await callback.answer('❌ Количество дней должно быть от -365 до 365, исключая 0', show_alert=True)
         return
 
-    success = await _extend_subscription_by_days(db, user_id, days, db_user.id)
+    success = await _extend_subscription_by_days(db, user_id, days, db_user.id, subscription_id=subscription_id)
 
     if success:
         if days > 0:
@@ -2912,26 +3051,14 @@ async def process_subscription_extension_days(callback: types.CallbackQuery, db_
         await callback.message.edit_text(
             f'✅ Подписка пользователя {action_text}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
     else:
         await callback.message.edit_text(
             '❌ Ошибка продления подписки',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
 
@@ -2945,11 +3072,18 @@ async def process_subscription_extension_text(
 ):
     data = await state.get_data()
     user_id = data.get('extending_user_id')
+    subscription_id = data.get('admin_subscription_id')
 
     if not user_id:
         await message.answer('❌ Ошибка: пользователь не найден')
         await state.clear()
         return
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     try:
         days = int(message.text.strip())
@@ -2958,7 +3092,7 @@ async def process_subscription_extension_text(
             await message.answer('❌ Количество дней должно быть от -365 до 365, исключая 0')
             return
 
-        success = await _extend_subscription_by_days(db, user_id, days, db_user.id)
+        success = await _extend_subscription_by_days(db, user_id, days, db_user.id, subscription_id=subscription_id)
 
         if success:
             if days > 0:
@@ -2968,13 +3102,7 @@ async def process_subscription_extension_text(
             await message.answer(
                 f'✅ Подписка пользователя {action_text}',
                 reply_markup=types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                            )
-                        ]
-                    ]
+                    inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
                 ),
             )
         else:
@@ -2990,9 +3118,16 @@ async def process_subscription_extension_text(
 @admin_required
 @error_handler
 async def add_subscription_traffic(callback: types.CallbackQuery, db_user: User, state: FSMContext):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
 
-    await state.update_data(traffic_user_id=user_id)
+    await state.update_data(traffic_user_id=user_id, admin_subscription_id=subscription_id)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     await callback.message.edit_text(
         '📊 <b>Добавление трафика</b>\n\n'
@@ -3003,17 +3138,25 @@ async def add_subscription_traffic(callback: types.CallbackQuery, db_user: User,
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    types.InlineKeyboardButton(text='50 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}_50'),
-                    types.InlineKeyboardButton(text='100 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}_100'),
+                    types.InlineKeyboardButton(text='50 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}{_sid}_50'),
+                    types.InlineKeyboardButton(
+                        text='100 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}{_sid}_100'
+                    ),
                 ],
                 [
-                    types.InlineKeyboardButton(text='500 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}_500'),
-                    types.InlineKeyboardButton(text='1000 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}_1000'),
+                    types.InlineKeyboardButton(
+                        text='500 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}{_sid}_500'
+                    ),
+                    types.InlineKeyboardButton(
+                        text='1000 ГБ', callback_data=f'admin_sub_traffic_add_{user_id}{_sid}_1000'
+                    ),
                 ],
                 [
-                    types.InlineKeyboardButton(text='♾️ Безлимит', callback_data=f'admin_sub_traffic_add_{user_id}_0'),
+                    types.InlineKeyboardButton(
+                        text='♾️ Безлимит', callback_data=f'admin_sub_traffic_add_{user_id}{_sid}_0'
+                    ),
                 ],
-                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_subscription_{user_id}')],
+                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=back_cb)],
             ]
         ),
     )
@@ -3026,36 +3169,35 @@ async def add_subscription_traffic(callback: types.CallbackQuery, db_user: User,
 @error_handler
 async def process_traffic_addition_button(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     parts = callback.data.split('_')
-    user_id = int(parts[-2])
     gb = int(parts[-1])
+    if parts[-2].startswith('s') and parts[-2][1:].isdigit():
+        subscription_id = int(parts[-2][1:])
+        user_id = int(parts[-3])
+    else:
+        subscription_id = None
+        user_id = int(parts[-2])
 
-    success = await _add_subscription_traffic(db, user_id, gb, db_user.id)
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
+
+    success = await _add_subscription_traffic(db, user_id, gb, db_user.id, subscription_id=subscription_id)
 
     if success:
         traffic_text = '♾️ безлимитный' if gb == 0 else f'{gb} ГБ'
         await callback.message.edit_text(
             f'✅ К подписке пользователя добавлен трафик: {traffic_text}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
     else:
         await callback.message.edit_text(
             '❌ Ошибка добавления трафика',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
 
@@ -3067,11 +3209,18 @@ async def process_traffic_addition_button(callback: types.CallbackQuery, db_user
 async def process_traffic_addition_text(message: types.Message, db_user: User, state: FSMContext, db: AsyncSession):
     data = await state.get_data()
     user_id = data.get('traffic_user_id')
+    subscription_id = data.get('admin_subscription_id')
 
     if not user_id:
         await message.answer('❌ Ошибка: пользователь не найден')
         await state.clear()
         return
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     try:
         gb = int(message.text.strip())
@@ -3080,20 +3229,14 @@ async def process_traffic_addition_text(message: types.Message, db_user: User, s
             await message.answer('❌ Количество ГБ должно быть от 0 до 10000 (0 = безлимит)')
             return
 
-        success = await _add_subscription_traffic(db, user_id, gb, db_user.id)
+        success = await _add_subscription_traffic(db, user_id, gb, db_user.id, subscription_id=subscription_id)
 
         if success:
             traffic_text = '♾️ безлимитный' if gb == 0 else f'{gb} ГБ'
             await message.answer(
                 f'✅ К подписке пользователя добавлен трафик: {traffic_text}',
                 reply_markup=types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                            )
-                        ]
-                    ]
+                    inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
                 ),
             )
         else:
@@ -3109,14 +3252,21 @@ async def process_traffic_addition_text(message: types.Message, db_user: User, s
 @admin_required
 @error_handler
 async def deactivate_user_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     await callback.message.edit_text(
         '🚫 <b>Деактивация подписки</b>\n\n'
         'Вы уверены, что хотите деактивировать подписку этого пользователя?\n'
         'Пользователь потеряет доступ к сервису.',
         reply_markup=get_confirmation_keyboard(
-            f'admin_sub_deactivate_confirm_{user_id}', f'admin_user_subscription_{user_id}', db_user.language
+            f'admin_sub_deactivate_confirm_{user_id}{_sid}', back_cb, db_user.language
         ),
     )
     await callback.answer()
@@ -3125,34 +3275,28 @@ async def deactivate_user_subscription(callback: types.CallbackQuery, db_user: U
 @admin_required
 @error_handler
 async def confirm_subscription_deactivation(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
 
-    success = await _deactivate_user_subscription(db, user_id, db_user.id)
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
+
+    success = await _deactivate_user_subscription(db, user_id, db_user.id, subscription_id=subscription_id)
 
     if success:
         await callback.message.edit_text(
             '✅ Подписка пользователя деактивирована',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
     else:
         await callback.message.edit_text(
             '❌ Ошибка деактивации подписки',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
 
@@ -3161,35 +3305,99 @@ async def confirm_subscription_deactivation(callback: types.CallbackQuery, db_us
 
 @admin_required
 @error_handler
-async def activate_user_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    user_id = int(callback.data.split('_')[-1])
+async def delete_user_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Show confirmation for deleting a subscription (multi-tariff only)."""
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
 
-    success = await _activate_user_subscription(db, user_id, db_user.id)
+    if not subscription_id or not settings.is_multi_tariff_enabled():
+        await callback.answer('Удаление доступно только в мультитарифном режиме', show_alert=True)
+        return
+
+    back_cb = f'admin_user_sub_select_{user_id}_{subscription_id}'
+    _sid = f'_s{subscription_id}'
+
+    await callback.message.edit_text(
+        '🗑 <b>Удаление подписки</b>\n\n⚠️ Подписка будет полностью удалена из системы.\nЭто действие необратимо!',
+        reply_markup=get_confirmation_keyboard(f'admin_sub_delete_confirm_{user_id}{_sid}', back_cb, db_user.language),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def confirm_subscription_deletion(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Delete a subscription permanently (multi-tariff only)."""
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    if not subscription_id or not settings.is_multi_tariff_enabled():
+        await callback.answer('Удаление доступно только в мультитарифном режиме', show_alert=True)
+        return
+
+    from app.database.crud.subscription import get_subscription_by_id_for_user
+
+    subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+    if not subscription:
+        await callback.answer('Подписка не найдена', show_alert=True)
+        return
+
+    # Disable on Remnawave side first
+    _uuid = getattr(subscription, 'remnawave_uuid', None)
+    if _uuid:
+        subscription_service = SubscriptionService()
+        await subscription_service.disable_remnawave_user(_uuid)
+
+    # Delete traffic purchases
+    from sqlalchemy import delete as sql_delete
+
+    from app.database.models import TrafficPurchase
+
+    await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
+
+    await db.delete(subscription)
+    await db.commit()
+
+    logger.info(
+        'Админ удалил подписку пользователя',
+        admin_id=db_user.id,
+        user_id=user_id,
+        subscription_id=subscription_id,
+    )
+
+    back_cb = f'admin_user_subscription_{user_id}'
+    await callback.message.edit_text(
+        '✅ Подписка удалена',
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подпискам', callback_data=back_cb)]]
+        ),
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def activate_user_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
+
+    success = await _activate_user_subscription(db, user_id, db_user.id, subscription_id=subscription_id)
 
     if success:
         await callback.message.edit_text(
             '✅ Подписка пользователя активирована',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
     else:
         await callback.message.edit_text(
             '❌ Ошибка активации подписки',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
 
@@ -3359,17 +3567,33 @@ async def show_user_servers_management(callback: types.CallbackQuery, db_user: U
 @admin_required
 @error_handler
 async def show_server_selection(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    user_id = int(callback.data.split('_')[-1])
-    await _show_servers_for_user(callback, user_id, db)
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+    await _show_servers_for_user(callback, user_id, db, subscription_id=subscription_id)
     await callback.answer()
 
 
-async def _show_servers_for_user(callback: types.CallbackQuery, user_id: int, db: AsyncSession):
+async def _show_servers_for_user(
+    callback: types.CallbackQuery, user_id: int, db: AsyncSession, subscription_id: int | None = None
+):
     try:
         user = await get_user_by_id(db, user_id)
         current_squads = []
-        if user and user.subscription:
-            current_squads = user.subscription.connected_squads or []
+        if user:
+            if subscription_id and settings.is_multi_tariff_enabled():
+                from app.database.crud.subscription import get_subscription_by_id_for_user
+
+                subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+            else:
+                subscription = await _resolve_admin_subscription(db, user_id)
+            if subscription:
+                current_squads = subscription.connected_squads or []
+
+        _sid = f'_s{subscription_id}' if subscription_id and settings.is_multi_tariff_enabled() else ''
+        back_cb = (
+            f'admin_user_sub_select_{user_id}_{subscription_id}'
+            if subscription_id and settings.is_multi_tariff_enabled()
+            else f'admin_user_subscription_{user_id}'
+        )
 
         all_servers, _ = await get_all_server_squads(db, available_only=False)
 
@@ -3382,9 +3606,7 @@ async def _show_servers_for_user(callback: types.CallbackQuery, user_id: int, db
             await callback.message.edit_text(
                 '❌ Доступные серверы не найдены',
                 reply_markup=types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}')]
-                    ]
+                    inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb)]]
                 ),
             )
             return
@@ -3419,7 +3641,8 @@ async def _show_servers_for_user(callback: types.CallbackQuery, user_id: int, db
             keyboard.append(
                 [
                     types.InlineKeyboardButton(
-                        text=f'{emoji} {display_name}', callback_data=f'admin_user_toggle_server_{user_id}_{server.id}'
+                        text=f'{emoji} {display_name}',
+                        callback_data=f'admin_user_toggle_server_{user_id}_{server.id}{_sid}',
                     )
                 ]
             )
@@ -3429,8 +3652,8 @@ async def _show_servers_for_user(callback: types.CallbackQuery, user_id: int, db
 
         keyboard.append(
             [
-                types.InlineKeyboardButton(text='✅ Готово', callback_data=f'admin_user_subscription_{user_id}'),
-                types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}'),
+                types.InlineKeyboardButton(text='✅ Готово', callback_data=back_cb),
+                types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb),
             ]
         )
 
@@ -3446,10 +3669,17 @@ async def toggle_user_server(callback: types.CallbackQuery, db_user: User, db: A
     parts = callback.data.split('_')
     user_id = int(parts[4])
     server_id = int(parts[5])
+    subscription_id = int(parts[6][1:]) if len(parts) > 6 and parts[6].startswith('s') else None
 
     try:
         user = await get_user_by_id(db, user_id)
-        if not user or not user.subscription:
+        if subscription_id and settings.is_multi_tariff_enabled():
+            from app.database.crud.subscription import get_subscription_by_id_for_user
+
+            subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+        else:
+            subscription = await _resolve_admin_subscription(db, user_id)
+        if not user or not subscription:
             await callback.answer('❌ Пользователь или подписка не найдены', show_alert=True)
             return
 
@@ -3457,8 +3687,6 @@ async def toggle_user_server(callback: types.CallbackQuery, db_user: User, db: A
         if not server:
             await callback.answer('❌ Сервер не найден', show_alert=True)
             return
-
-        subscription = user.subscription
         current_squads = list(subscription.connected_squads or [])
 
         if server.squad_uuid in current_squads:
@@ -3473,12 +3701,17 @@ async def toggle_user_server(callback: types.CallbackQuery, db_user: User, db: A
         await db.commit()
         await db.refresh(subscription)
 
-        if user.remnawave_uuid:
+        _uuid = (
+            getattr(subscription, 'remnawave_uuid', None)
+            if settings.is_multi_tariff_enabled() and subscription
+            else None
+        ) or getattr(user, 'remnawave_uuid', None)
+        if _uuid:
             try:
                 remnawave_service = RemnaWaveService()
                 async with remnawave_service.get_api_client() as api:
                     await api.update_user(
-                        uuid=user.remnawave_uuid,
+                        uuid=_uuid,
                         active_internal_squads=current_squads,
                         description=settings.format_remnawave_user_description(
                             full_name=user.full_name, username=user.username, telegram_id=user.telegram_id
@@ -3496,19 +3729,39 @@ async def toggle_user_server(callback: types.CallbackQuery, db_user: User, db: A
             user_id=user_id,
         )
 
-        await refresh_server_selection_screen(callback, user_id, db_user, db)
+        await refresh_server_selection_screen(callback, user_id, db_user, db, subscription_id=subscription_id)
 
     except Exception as e:
         logger.error('Ошибка переключения сервера', error=e)
         await callback.answer('❌ Ошибка изменения сервера', show_alert=True)
 
 
-async def refresh_server_selection_screen(callback: types.CallbackQuery, user_id: int, db_user: User, db: AsyncSession):
+async def refresh_server_selection_screen(
+    callback: types.CallbackQuery,
+    user_id: int,
+    db_user: User,
+    db: AsyncSession,
+    subscription_id: int | None = None,
+):
     try:
         user = await get_user_by_id(db, user_id)
         current_squads = []
-        if user and user.subscription:
-            current_squads = user.subscription.connected_squads or []
+        if user:
+            if subscription_id and settings.is_multi_tariff_enabled():
+                from app.database.crud.subscription import get_subscription_by_id_for_user
+
+                subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+            else:
+                subscription = await _resolve_admin_subscription(db, user_id)
+            if subscription:
+                current_squads = subscription.connected_squads or []
+
+        _sid = f'_s{subscription_id}' if subscription_id and settings.is_multi_tariff_enabled() else ''
+        back_cb = (
+            f'admin_user_sub_select_{user_id}_{subscription_id}'
+            if subscription_id and settings.is_multi_tariff_enabled()
+            else f'admin_user_subscription_{user_id}'
+        )
 
         servers, _ = await get_all_server_squads(db, available_only=True)
 
@@ -3516,9 +3769,7 @@ async def refresh_server_selection_screen(callback: types.CallbackQuery, user_id
             await callback.message.edit_text(
                 '❌ Доступные серверы не найдены',
                 reply_markup=types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}')]
-                    ]
+                    inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb)]]
                 ),
             )
             return
@@ -3535,7 +3786,7 @@ async def refresh_server_selection_screen(callback: types.CallbackQuery, user_id
                 [
                     types.InlineKeyboardButton(
                         text=f'{emoji} {server.display_name}',
-                        callback_data=f'admin_user_toggle_server_{user_id}_{server.id}',
+                        callback_data=f'admin_user_toggle_server_{user_id}_{server.id}{_sid}',
                     )
                 ]
             )
@@ -3545,8 +3796,8 @@ async def refresh_server_selection_screen(callback: types.CallbackQuery, user_id
 
         keyboard.append(
             [
-                types.InlineKeyboardButton(text='✅ Готово', callback_data=f'admin_user_subscription_{user_id}'),
-                types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}'),
+                types.InlineKeyboardButton(text='✅ Готово', callback_data=back_cb),
+                types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb),
             ]
         )
 
@@ -3559,9 +3810,16 @@ async def refresh_server_selection_screen(callback: types.CallbackQuery, user_id
 @admin_required
 @error_handler
 async def start_devices_edit(callback: types.CallbackQuery, db_user: User, state: FSMContext):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
 
-    await state.update_data(editing_devices_user_id=user_id)
+    await state.update_data(editing_devices_user_id=user_id, admin_subscription_id=subscription_id)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
 
     await callback.message.edit_text(
         '📱 <b>Изменение количества устройств</b>\n\n'
@@ -3572,15 +3830,15 @@ async def start_devices_edit(callback: types.CallbackQuery, db_user: User, state
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    types.InlineKeyboardButton(text='1', callback_data=f'admin_user_devices_set_{user_id}_1'),
-                    types.InlineKeyboardButton(text='2', callback_data=f'admin_user_devices_set_{user_id}_2'),
-                    types.InlineKeyboardButton(text='3', callback_data=f'admin_user_devices_set_{user_id}_3'),
+                    types.InlineKeyboardButton(text='1', callback_data=f'admin_user_devices_set_{user_id}{_sid}_1'),
+                    types.InlineKeyboardButton(text='2', callback_data=f'admin_user_devices_set_{user_id}{_sid}_2'),
+                    types.InlineKeyboardButton(text='3', callback_data=f'admin_user_devices_set_{user_id}{_sid}_3'),
                 ],
                 [
-                    types.InlineKeyboardButton(text='5', callback_data=f'admin_user_devices_set_{user_id}_5'),
-                    types.InlineKeyboardButton(text='10', callback_data=f'admin_user_devices_set_{user_id}_10'),
+                    types.InlineKeyboardButton(text='5', callback_data=f'admin_user_devices_set_{user_id}{_sid}_5'),
+                    types.InlineKeyboardButton(text='10', callback_data=f'admin_user_devices_set_{user_id}{_sid}_10'),
                 ],
-                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_subscription_{user_id}')],
+                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=back_cb)],
             ]
         ),
     )
@@ -3593,35 +3851,34 @@ async def start_devices_edit(callback: types.CallbackQuery, db_user: User, state
 @error_handler
 async def set_user_devices_button(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     parts = callback.data.split('_')
-    user_id = int(parts[-2])
     devices = int(parts[-1])
+    if parts[-2].startswith('s') and parts[-2][1:].isdigit():
+        subscription_id = int(parts[-2][1:])
+        user_id = int(parts[-3])
+    else:
+        subscription_id = None
+        user_id = int(parts[-2])
 
-    success = await _update_user_devices(db, user_id, devices, db_user.id)
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
+
+    success = await _update_user_devices(db, user_id, devices, db_user.id, subscription_id=subscription_id)
 
     if success:
         await callback.message.edit_text(
             f'✅ Количество устройств изменено на: {devices}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]]
             ),
         )
     else:
         await callback.message.edit_text(
             '❌ Ошибка изменения количества устройств',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]]
             ),
         )
 
@@ -3637,11 +3894,18 @@ async def set_user_devices_button(callback: types.CallbackQuery, db_user: User, 
 async def process_devices_edit_text(message: types.Message, db_user: User, state: FSMContext, db: AsyncSession):
     data = await state.get_data()
     user_id = data.get('editing_devices_user_id')
+    subscription_id = data.get('admin_subscription_id')
 
     if not user_id:
         await message.answer('❌ Ошибка: пользователь не найден')
         await state.clear()
         return
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
 
     try:
         devices = int(message.text.strip())
@@ -3650,18 +3914,14 @@ async def process_devices_edit_text(message: types.Message, db_user: User, state
             await message.answer('❌ Количество устройств должно быть от 1 до 10')
             return
 
-        success = await _update_user_devices(db, user_id, devices, db_user.id)
+        success = await _update_user_devices(db, user_id, devices, db_user.id, subscription_id=subscription_id)
 
         if success:
             await message.answer(
                 f'✅ Количество устройств изменено на: {devices}',
                 reply_markup=types.InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                            )
-                        ]
+                        [types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]
                     ]
                 ),
             )
@@ -3678,9 +3938,16 @@ async def process_devices_edit_text(message: types.Message, db_user: User, state
 @admin_required
 @error_handler
 async def start_traffic_edit(callback: types.CallbackQuery, db_user: User, state: FSMContext):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
 
-    await state.update_data(editing_traffic_user_id=user_id)
+    await state.update_data(editing_traffic_user_id=user_id, admin_subscription_id=subscription_id)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
 
     await callback.message.edit_text(
         '📊 <b>Изменение лимита трафика</b>\n\n'
@@ -3692,15 +3959,27 @@ async def start_traffic_edit(callback: types.CallbackQuery, db_user: User, state
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    types.InlineKeyboardButton(text='50 ГБ', callback_data=f'admin_user_traffic_set_{user_id}_50'),
-                    types.InlineKeyboardButton(text='100 ГБ', callback_data=f'admin_user_traffic_set_{user_id}_100'),
+                    types.InlineKeyboardButton(
+                        text='50 ГБ', callback_data=f'admin_user_traffic_set_{user_id}{_sid}_50'
+                    ),
+                    types.InlineKeyboardButton(
+                        text='100 ГБ', callback_data=f'admin_user_traffic_set_{user_id}{_sid}_100'
+                    ),
                 ],
                 [
-                    types.InlineKeyboardButton(text='500 ГБ', callback_data=f'admin_user_traffic_set_{user_id}_500'),
-                    types.InlineKeyboardButton(text='1000 ГБ', callback_data=f'admin_user_traffic_set_{user_id}_1000'),
+                    types.InlineKeyboardButton(
+                        text='500 ГБ', callback_data=f'admin_user_traffic_set_{user_id}{_sid}_500'
+                    ),
+                    types.InlineKeyboardButton(
+                        text='1000 ГБ', callback_data=f'admin_user_traffic_set_{user_id}{_sid}_1000'
+                    ),
                 ],
-                [types.InlineKeyboardButton(text='♾️ Безлимит', callback_data=f'admin_user_traffic_set_{user_id}_0')],
-                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_subscription_{user_id}')],
+                [
+                    types.InlineKeyboardButton(
+                        text='♾️ Безлимит', callback_data=f'admin_user_traffic_set_{user_id}{_sid}_0'
+                    )
+                ],
+                [types.InlineKeyboardButton(text='❌ Отмена', callback_data=back_cb)],
             ]
         ),
     )
@@ -3713,36 +3992,35 @@ async def start_traffic_edit(callback: types.CallbackQuery, db_user: User, state
 @error_handler
 async def set_user_traffic_button(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     parts = callback.data.split('_')
-    user_id = int(parts[-2])
     traffic_gb = int(parts[-1])
+    if parts[-2].startswith('s') and parts[-2][1:].isdigit():
+        subscription_id = int(parts[-2][1:])
+        user_id = int(parts[-3])
+    else:
+        subscription_id = None
+        user_id = int(parts[-2])
 
-    success = await _update_user_traffic(db, user_id, traffic_gb, db_user.id)
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
+
+    success = await _update_user_traffic(db, user_id, traffic_gb, db_user.id, subscription_id=subscription_id)
 
     if success:
         traffic_text = '♾️ безлимитный' if traffic_gb == 0 else f'{traffic_gb} ГБ'
         await callback.message.edit_text(
             f'✅ Лимит трафика изменен на: {traffic_text}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]]
             ),
         )
     else:
         await callback.message.edit_text(
             '❌ Ошибка изменения лимита трафика',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]]
             ),
         )
 
@@ -3754,11 +4032,18 @@ async def set_user_traffic_button(callback: types.CallbackQuery, db_user: User, 
 async def process_traffic_edit_text(message: types.Message, db_user: User, state: FSMContext, db: AsyncSession):
     data = await state.get_data()
     user_id = data.get('editing_traffic_user_id')
+    subscription_id = data.get('admin_subscription_id')
 
     if not user_id:
         await message.answer('❌ Ошибка: пользователь не найден')
         await state.clear()
         return
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
 
     try:
         traffic_gb = int(message.text.strip())
@@ -3767,7 +4052,7 @@ async def process_traffic_edit_text(message: types.Message, db_user: User, state
             await message.answer('❌ Лимит трафика должен быть от 0 до 10000 ГБ (0 = безлимит)')
             return
 
-        success = await _update_user_traffic(db, user_id, traffic_gb, db_user.id)
+        success = await _update_user_traffic(db, user_id, traffic_gb, db_user.id, subscription_id=subscription_id)
 
         if success:
             traffic_text = '♾️ безлимитный' if traffic_gb == 0 else f'{traffic_gb} ГБ'
@@ -3775,11 +4060,7 @@ async def process_traffic_edit_text(message: types.Message, db_user: User, state
                 f'✅ Лимит трафика изменен на: {traffic_text}',
                 reply_markup=types.InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                            )
-                        ]
+                        [types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]
                     ]
                 ),
             )
@@ -3796,7 +4077,14 @@ async def process_traffic_edit_text(message: types.Message, db_user: User, state
 @admin_required
 @error_handler
 async def confirm_reset_devices(callback: types.CallbackQuery, db_user: User):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
 
     await callback.message.edit_text(
         '🔄 <b>Сброс устройств пользователя</b>\n\n'
@@ -3808,7 +4096,7 @@ async def confirm_reset_devices(callback: types.CallbackQuery, db_user: User):
         '• Действие необратимо!\n\n'
         'Продолжить?',
         reply_markup=get_confirmation_keyboard(
-            f'admin_user_reset_devices_confirm_{user_id}', f'admin_user_subscription_{user_id}', db_user.language
+            f'admin_user_reset_devices_confirm_{user_id}{_sid}', back_cb, db_user.language
         ),
     )
     await callback.answer()
@@ -3817,28 +4105,41 @@ async def confirm_reset_devices(callback: types.CallbackQuery, db_user: User):
 @admin_required
 @error_handler
 async def reset_user_devices(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id and settings.is_multi_tariff_enabled()
+        else f'admin_user_subscription_{user_id}'
+    )
 
     try:
         user = await get_user_by_id(db, user_id)
-        if not user or not user.remnawave_uuid:
+        _uuid = None
+        if subscription_id and settings.is_multi_tariff_enabled():
+            from app.database.crud.subscription import get_subscription_by_id_for_user
+
+            subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+            _uuid = getattr(subscription, 'remnawave_uuid', None) if subscription else None
+        elif settings.is_multi_tariff_enabled():
+            subscription = await _resolve_admin_subscription(db, user_id)
+            _uuid = getattr(subscription, 'remnawave_uuid', None) if subscription else None
+        if not _uuid:
+            _uuid = getattr(user, 'remnawave_uuid', None)
+        if not user or not _uuid:
             await callback.answer('❌ Пользователь не найден или не связан с RemnaWave', show_alert=True)
             return
 
         remnawave_service = RemnaWaveService()
         async with remnawave_service.get_api_client() as api:
-            success = await api.reset_user_devices(user.remnawave_uuid)
+            success = await api.reset_user_devices(_uuid)
 
         if success:
             await callback.message.edit_text(
                 '✅ Устройства пользователя успешно сброшены',
                 reply_markup=types.InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                            )
-                        ]
+                        [types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]
                     ]
                 ),
             )
@@ -3848,11 +4149,7 @@ async def reset_user_devices(callback: types.CallbackQuery, db_user: User, db: A
                 '❌ Ошибка сброса устройств',
                 reply_markup=types.InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text='📱 Подписка и настройки', callback_data=f'admin_user_subscription_{user_id}'
-                            )
-                        ]
+                        [types.InlineKeyboardButton(text='📱 Подписка и настройки', callback_data=back_cb)]
                     ]
                 ),
             )
@@ -3862,26 +4159,33 @@ async def reset_user_devices(callback: types.CallbackQuery, db_user: User, db: A
         await callback.answer('❌ Ошибка сброса устройств', show_alert=True)
 
 
-async def _update_user_devices(db: AsyncSession, user_id: int, devices: int, admin_id: int) -> bool:
+async def _update_user_devices(
+    db: AsyncSession, user_id: int, devices: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
         user = await get_user_by_id(db, user_id)
-        if not user or not user.subscription:
+        subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
+        if not user or not subscription:
             logger.error('Пользователь или подписка не найдены', user_id=user_id)
             return False
 
-        subscription = user.subscription
         old_devices = subscription.device_limit
         subscription.device_limit = devices
         subscription.updated_at = datetime.now(UTC)
 
         await db.commit()
 
-        if user.remnawave_uuid:
+        _uuid = (
+            getattr(subscription, 'remnawave_uuid', None)
+            if settings.is_multi_tariff_enabled() and subscription
+            else None
+        ) or getattr(user, 'remnawave_uuid', None)
+        if _uuid:
             try:
                 remnawave_service = RemnaWaveService()
                 async with remnawave_service.get_api_client() as api:
                     await api.update_user(
-                        uuid=user.remnawave_uuid,
+                        uuid=_uuid,
                         hwid_device_limit=devices,
                         description=settings.format_remnawave_user_description(
                             full_name=user.full_name, username=user.username, telegram_id=user.telegram_id
@@ -3906,30 +4210,39 @@ async def _update_user_devices(db: AsyncSession, user_id: int, devices: int, adm
         return False
 
 
-async def _update_user_traffic(db: AsyncSession, user_id: int, traffic_gb: int, admin_id: int) -> bool:
+async def _update_user_traffic(
+    db: AsyncSession, user_id: int, traffic_gb: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
         user = await get_user_by_id(db, user_id)
-        if not user or not user.subscription:
+        subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
+        if not user or not subscription:
             logger.error('Пользователь или подписка не найдены', user_id=user_id)
             return False
 
-        subscription = user.subscription
         old_traffic = subscription.traffic_limit_gb
         subscription.traffic_limit_gb = traffic_gb
         subscription.updated_at = datetime.now(UTC)
 
         await db.commit()
 
-        if user.remnawave_uuid:
+        _uuid = (
+            getattr(subscription, 'remnawave_uuid', None)
+            if settings.is_multi_tariff_enabled() and subscription
+            else None
+        ) or getattr(user, 'remnawave_uuid', None)
+        if _uuid:
             try:
-                from app.external.remnawave_api import TrafficLimitStrategy
+                from app.services.subscription_service import get_traffic_reset_strategy
 
                 remnawave_service = RemnaWaveService()
                 async with remnawave_service.get_api_client() as api:
                     await api.update_user(
-                        uuid=user.remnawave_uuid,
+                        uuid=_uuid,
                         traffic_limit_bytes=traffic_gb * (1024**3) if traffic_gb > 0 else 0,
-                        traffic_limit_strategy=TrafficLimitStrategy.MONTH,
+                        traffic_limit_strategy=get_traffic_reset_strategy(
+                            subscription.tariff if subscription else None
+                        ),
                         description=settings.format_remnawave_user_description(
                             full_name=user.full_name, username=user.username, telegram_id=user.telegram_id
                         ),
@@ -3955,20 +4268,82 @@ async def _update_user_traffic(db: AsyncSession, user_id: int, traffic_gb: int, 
         return False
 
 
-async def _extend_subscription_by_days(db: AsyncSession, user_id: int, days: int, admin_id: int) -> bool:
+async def _resolve_admin_subscription(
+    db: AsyncSession, user_id: int, subscription_id: int | None = None, tariff_id: int | None = None
+) -> 'Subscription | None':
+    """Resolve subscription for admin operations.
+
+    In multi-tariff without explicit subscription_id:
+    - If tariff_id provided → find active sub with that tariff only
+    - 1 active sub → use it
+    - Multiple → prefer non-daily with most days remaining
+    - 0 active → return None
+    """
+    if settings.is_multi_tariff_enabled():
+        if subscription_id:
+            from app.database.crud.subscription import get_subscription_by_id_for_user
+
+            return await get_subscription_by_id_for_user(db, subscription_id, user_id)
+
+        from app.database.crud.subscription import get_active_subscriptions_by_user_id
+
+        active_subs = await get_active_subscriptions_by_user_id(db, user_id)
+
+        if not active_subs:
+            return None
+
+        # When buying a specific tariff, only match subscription with the same tariff_id
+        if tariff_id is not None:
+            matching = [s for s in active_subs if s.tariff_id == tariff_id]
+            if matching:
+                return matching[0]
+            # No subscription for this tariff — must create a new one
+            return None
+
+        if len(active_subs) == 1:
+            return active_subs[0]
+
+        non_daily = [s for s in active_subs if not getattr(s, 'is_daily_tariff', False)]
+        eligible = non_daily or active_subs
+        selected = max(eligible, key=lambda s: s.days_left)
+        logger.warning(
+            'Admin operation: multiple active subscriptions, auto-selected best',
+            user_id=user_id,
+            selected_sub_id=selected.id,
+            total_active=len(active_subs),
+        )
+        return selected
+    from app.database.crud.subscription import get_subscription_by_user_id
+
+    return await get_subscription_by_user_id(db, user_id)
+
+
+async def _extend_subscription_by_days(
+    db: AsyncSession, user_id: int, days: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
-        from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import extend_subscription, restore_reserve_grace_if_active
         from app.services.subscription_service import SubscriptionService
 
-        subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
         if not subscription:
             logger.error('Подписка не найдена для пользователя', user_id=user_id)
             return False
 
+        subscription_service = SubscriptionService()
+
+        # Если подписка была в grace-периоде на резервном скваде, восстанавливаем
+        # реальные squads/трафик/end_date ДО применения продления — иначе
+        # restore_reserve_grace_if_active() откатит уже продлённую дату обратно
+        # на дату, зафиксированную в момент входа в grace.
+        restore_reserve_squads = restore_reserve_grace_if_active(subscription)
+
         await extend_subscription(db, subscription, days)
 
-        subscription_service = SubscriptionService()
-        await subscription_service.update_remnawave_user(db, subscription)
+        if restore_reserve_squads:
+            await db.commit()
+
+        await subscription_service.update_remnawave_user(db, subscription, sync_squads=restore_reserve_squads)
 
         if days > 0:
             logger.info('Админ продлил подписку пользователя на дней', admin_id=admin_id, user_id=user_id, days=days)
@@ -3983,12 +4358,17 @@ async def _extend_subscription_by_days(db: AsyncSession, user_id: int, days: int
         return False
 
 
-async def _add_subscription_traffic(db: AsyncSession, user_id: int, gb: int, admin_id: int) -> bool:
+async def _add_subscription_traffic(
+    db: AsyncSession, user_id: int, gb: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
-        from app.database.crud.subscription import add_subscription_traffic, get_subscription_by_user_id
+        from app.database.crud.subscription import (
+            add_subscription_traffic,
+            reactivate_subscription,
+        )
         from app.services.subscription_service import SubscriptionService
 
-        subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
         if not subscription:
             logger.error('Подписка не найдена для пользователя', user_id=user_id)
             return False
@@ -3999,8 +4379,22 @@ async def _add_subscription_traffic(db: AsyncSession, user_id: int, gb: int, adm
         else:
             await add_subscription_traffic(db, subscription, gb)
 
+        # Реактивируем подписку если она была DISABLED/EXPIRED (например, после LIMITED/EXPIRED в RemnaWave)
+        await reactivate_subscription(db, subscription)
+
         subscription_service = SubscriptionService()
         await subscription_service.update_remnawave_user(db, subscription)
+
+        # Явно включаем пользователя на панели (PATCH может не снять LIMITED-статус)
+        if subscription.status == 'active':
+            _uuid = getattr(subscription, 'remnawave_uuid', None) if settings.is_multi_tariff_enabled() else None
+            if not _uuid:
+                from app.database.crud.user import get_user_by_id
+
+                user = await get_user_by_id(db, user_id)
+                _uuid = getattr(user, 'remnawave_uuid', None)
+            if _uuid:
+                await subscription_service.enable_remnawave_user(_uuid)
 
         traffic_text = 'безлимитный' if gb == 0 else f'{gb} ГБ'
         logger.info('Админ добавил трафик пользователю', admin_id=admin_id, traffic_text=traffic_text, user_id=user_id)
@@ -4011,22 +4405,29 @@ async def _add_subscription_traffic(db: AsyncSession, user_id: int, gb: int, adm
         return False
 
 
-async def _deactivate_user_subscription(db: AsyncSession, user_id: int, admin_id: int) -> bool:
+async def _deactivate_user_subscription(
+    db: AsyncSession, user_id: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
-        from app.database.crud.subscription import deactivate_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import (
+            deactivate_subscription,
+        )
         from app.services.subscription_service import SubscriptionService
 
-        subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
         if not subscription:
             logger.error('Подписка не найдена для пользователя', user_id=user_id)
             return False
 
         await deactivate_subscription(db, subscription)
 
-        user = await get_user_by_id(db, user_id)
-        if user and user.remnawave_uuid:
-            subscription_service = SubscriptionService()
-            await subscription_service.disable_remnawave_user(user.remnawave_uuid)
+        subscription_service = SubscriptionService()
+        _uuid = getattr(subscription, 'remnawave_uuid', None) if settings.is_multi_tariff_enabled() else None
+        if not _uuid:
+            user = await get_user_by_id(db, user_id)
+            _uuid = getattr(user, 'remnawave_uuid', None)
+        if _uuid:
+            await subscription_service.disable_remnawave_user(_uuid)
 
         logger.info('Админ деактивировал подписку пользователя', admin_id=admin_id, user_id=user_id)
         return True
@@ -4036,13 +4437,14 @@ async def _deactivate_user_subscription(db: AsyncSession, user_id: int, admin_id
         return False
 
 
-async def _activate_user_subscription(db: AsyncSession, user_id: int, admin_id: int) -> bool:
+async def _activate_user_subscription(
+    db: AsyncSession, user_id: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
-        from app.database.crud.subscription import get_subscription_by_user_id
         from app.database.models import SubscriptionStatus
         from app.services.subscription_service import SubscriptionService
 
-        subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
         if not subscription:
             logger.error('Подписка не найдена для пользователя', user_id=user_id)
             return False
@@ -4065,13 +4467,15 @@ async def _activate_user_subscription(db: AsyncSession, user_id: int, admin_id: 
         return False
 
 
-async def _grant_trial_subscription(db: AsyncSession, user_id: int, admin_id: int) -> bool:
+async def _grant_trial_subscription(
+    db: AsyncSession, user_id: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
-        from app.database.crud.subscription import create_trial_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import create_trial_subscription
         from app.services.subscription_service import SubscriptionService
 
-        existing_subscription = await get_subscription_by_user_id(db, user_id)
-        if existing_subscription:
+        existing_subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
+        if existing_subscription and not settings.is_multi_tariff_enabled():
             logger.error('У пользователя уже есть подписка', user_id=user_id)
             return False
 
@@ -4096,14 +4500,16 @@ async def _grant_trial_subscription(db: AsyncSession, user_id: int, admin_id: in
         return False
 
 
-async def _grant_paid_subscription(db: AsyncSession, user_id: int, days: int, admin_id: int) -> bool:
+async def _grant_paid_subscription(
+    db: AsyncSession, user_id: int, days: int, admin_id: int, subscription_id: int | None = None
+) -> bool:
     try:
         from app.config import settings
-        from app.database.crud.subscription import create_paid_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import create_paid_subscription
         from app.services.subscription_service import SubscriptionService
 
-        existing_subscription = await get_subscription_by_user_id(db, user_id)
-        if existing_subscription:
+        existing_subscription = await _resolve_admin_subscription(db, user_id, subscription_id)
+        if existing_subscription and not settings.is_multi_tariff_enabled():
             logger.error('У пользователя уже есть подписка', user_id=user_id)
             return False
 
@@ -4155,46 +4561,22 @@ async def _calculate_subscription_period_price(
     subscription_service: SubscriptionService | None = None,
 ) -> int:
     """Рассчитывает стоимость подписки для администратора с учётом всех параметров."""
+    from app.services.pricing_engine import pricing_engine
 
-    service = subscription_service or SubscriptionService()
-
-    connected_squads = list(subscription.connected_squads or [])
-    server_ids = []
-
-    if connected_squads:
+    # Загружаем тариф для корректного расчёта в тарифном режиме
+    if subscription.tariff_id:
         try:
-            server_ids = await get_server_ids_by_uuids(db, connected_squads)
-            if len(server_ids) != len(connected_squads):
-                logger.warning(
-                    'Не удалось сопоставить все сервера подписки пользователя для расчёта цены',
-                    telegram_id=target_user.telegram_id,
-                )
+            await db.refresh(subscription, ['tariff'])
         except Exception as e:
-            logger.error(
-                'Не удалось получить идентификаторы серверов для расчёта цены подписки пользователя',
-                telegram_id=target_user.telegram_id,
-                e=e,
-            )
-            server_ids = []
-    traffic_limit_gb = subscription.traffic_limit_gb
-    if traffic_limit_gb is None:
-        traffic_limit_gb = settings.DEFAULT_TRAFFIC_LIMIT_GB
+            logger.warning('Не удалось загрузить тариф для расчёта цены', error=e)
 
-    device_limit = subscription.device_limit
-    if not device_limit or device_limit < 0:
-        device_limit = settings.DEFAULT_DEVICE_LIMIT
-
-    total_price, _ = await service.calculate_subscription_price(
-        period_days=period_days,
-        traffic_gb=traffic_limit_gb,
-        server_squad_ids=server_ids,
-        devices=device_limit,
-        db=db,
+    pricing = await pricing_engine.calculate_renewal_price(
+        db,
+        subscription,
+        period_days,
         user=target_user,
-        promo_group=target_user.promo_group,
     )
-
-    return total_price
+    return pricing.final_total
 
 
 @admin_required
@@ -4219,20 +4601,37 @@ async def cleanup_inactive_users(callback: types.CallbackQuery, db_user: User, d
 @admin_required
 @error_handler
 async def change_subscription_type(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     user_service = UserService()
     profile = await user_service.get_user_profile(db, user_id)
 
-    if not profile or not profile['subscription']:
+    if not profile:
         await callback.answer('❌ Пользователь или подписка не найдены', show_alert=True)
         return
 
-    subscription = profile['subscription']
+    if subscription_id and settings.is_multi_tariff_enabled():
+        from app.database.crud.subscription import get_subscription_by_id_for_user
+
+        subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+    else:
+        subscription = profile['subscription']
+
+    if not subscription:
+        await callback.answer('❌ Пользователь или подписка не найдены', show_alert=True)
+        return
+
     current_type = '🎁 Триал' if subscription.is_trial else '💎 Платная'
 
     text = '🔄 <b>Смена типа подписки</b>\n\n'
-    text += f'👤 {profile["user"].full_name}\n'
+    text += f'👤 {html.escape(profile["user"].full_name)}\n'
     text += f'📱 Текущий тип: {current_type}\n\n'
     text += 'Выберите новый тип подписки:'
 
@@ -4240,14 +4639,14 @@ async def change_subscription_type(callback: types.CallbackQuery, db_user: User,
 
     if subscription.is_trial:
         keyboard.append(
-            [InlineKeyboardButton(text='💎 Сделать платной', callback_data=f'admin_sub_type_paid_{user_id}')]
+            [InlineKeyboardButton(text='💎 Сделать платной', callback_data=f'admin_sub_type_paid_{user_id}{_sid}')]
         )
     else:
         keyboard.append(
-            [InlineKeyboardButton(text='🎁 Сделать триальной', callback_data=f'admin_sub_type_trial_{user_id}')]
+            [InlineKeyboardButton(text='🎁 Сделать триальной', callback_data=f'admin_sub_type_trial_{user_id}{_sid}')]
         )
 
-    keyboard.append([InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}')])
+    keyboard.append([InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb)])
 
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
@@ -4256,7 +4655,13 @@ async def change_subscription_type(callback: types.CallbackQuery, db_user: User,
 @admin_required
 @error_handler
 async def admin_buy_subscription(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     user_service = UserService()
     profile = await user_service.get_user_profile(db, user_id)
@@ -4266,7 +4671,13 @@ async def admin_buy_subscription(callback: types.CallbackQuery, db_user: User, d
         return
 
     target_user = profile['user']
-    subscription = profile['subscription']
+
+    if subscription_id and settings.is_multi_tariff_enabled():
+        from app.database.crud.subscription import get_subscription_by_id_for_user
+
+        subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+    else:
+        subscription = profile['subscription']
 
     if not subscription:
         await callback.answer('❌ У пользователя нет подписки', show_alert=True)
@@ -4308,17 +4719,11 @@ async def admin_buy_subscription(callback: types.CallbackQuery, db_user: User, d
         await callback.answer('❌ Не удалось рассчитать стоимость подписки', show_alert=True)
         return
 
-    period_buttons.append(
-        [types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_user_subscription_{user_id}')]
-    )
+    period_buttons.append([types.InlineKeyboardButton(text='❌ Отмена', callback_data=back_cb)])
 
     text = '💳 <b>Покупка подписки для пользователя</b>\n\n'
-    if target_user.telegram_id:
-        target_user_link = f'<a href="tg://user?id={target_user.telegram_id}">{target_user.full_name}</a>'
-        target_user_id_display = target_user.telegram_id
-    else:
-        target_user_link = f'<b>{target_user.full_name}</b>'
-        target_user_id_display = target_user.email or f'#{target_user.id}'
+    target_user_link = user_html_link(target_user)
+    target_user_id_display = target_user.telegram_id or target_user.email or f'#{target_user.id}'
     text += f'👤 {target_user_link} (ID: {target_user_id_display})\n'
     text += f'💰 Баланс пользователя: {settings.format_price(target_user.balance_kopeks)}\n\n'
     traffic_text = 'Безлимит' if (subscription.traffic_limit_gb or 0) <= 0 else f'{subscription.traffic_limit_gb} ГБ'
@@ -4406,12 +4811,8 @@ async def admin_buy_subscription_confirm(callback: types.CallbackQuery, db_user:
         return
 
     text = '💳 <b>Подтверждение покупки подписки</b>\n\n'
-    if target_user.telegram_id:
-        target_user_link = f'<a href="tg://user?id={target_user.telegram_id}">{target_user.full_name}</a>'
-        target_user_id_display = target_user.telegram_id
-    else:
-        target_user_link = f'<b>{target_user.full_name}</b>'
-        target_user_id_display = target_user.email or f'#{target_user.id}'
+    target_user_link = user_html_link(target_user)
+    target_user_id_display = target_user.telegram_id or target_user.email or f'#{target_user.id}'
     text += f'👤 {target_user_link} (ID: {target_user_id_display})\n'
     text += f'📅 Период подписки: {period_days} дней\n'
     text += f'💰 Стоимость: {settings.format_price(price_kopeks)}\n'
@@ -4463,6 +4864,11 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
 
     subscription_service = SubscriptionService()
 
+    # TOCTOU protection: lock user row before pricing to prevent concurrent balance modifications
+    from app.database.crud.user import lock_user_for_pricing
+
+    target_user = await lock_user_for_pricing(db, target_user.id)
+
     try:
         price_kopeks = await _calculate_subscription_period_price(
             db,
@@ -4496,7 +4902,11 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
         from app.database.crud.user import subtract_user_balance
 
         success = await subtract_user_balance(
-            db, target_user, price_kopeks, f'Покупка подписки на {period_days} дней (администратор)'
+            db,
+            target_user,
+            price_kopeks,
+            f'Покупка подписки на {period_days} дней (администратор)',
+            mark_as_paid_subscription=True,
         )
 
         if not success:
@@ -4550,23 +4960,35 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
             )
 
             try:
-                from app.external.remnawave_api import TrafficLimitStrategy, UserStatus
+                from app.external.remnawave_api import UserStatus
                 from app.services.remnawave_service import RemnaWaveService
+                from app.services.subscription_service import get_traffic_reset_strategy
 
                 remnawave_service = RemnaWaveService()
 
                 hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
 
-                if target_user.remnawave_uuid:
+                # Загружаем tariff для внешнего сквада
+                try:
+                    await db.refresh(subscription, ['tariff'])
+                except Exception:
+                    pass
+                ext_squad_uuid = subscription.tariff.external_squad_uuid if subscription.tariff else None
+
+                _uuid = (
+                    getattr(subscription, 'remnawave_uuid', None) if settings.is_multi_tariff_enabled() else None
+                ) or getattr(target_user, 'remnawave_uuid', None)
+                if _uuid:
                     async with remnawave_service.get_api_client() as api:
                         update_kwargs = dict(
-                            uuid=target_user.remnawave_uuid,
-                            status=UserStatus.ACTIVE if subscription.is_active else UserStatus.EXPIRED,
-                            expire_at=subscription.end_date,
+                            uuid=_uuid,
+                            status=UserStatus.ACTIVE if subscription.is_active else UserStatus.DISABLED,
+                            # Панель отклоняет expireAt в прошлом — минимальный зазор в будущее.
+                            expire_at=max(subscription.end_date, datetime.now(UTC) + timedelta(minutes=1)),
                             traffic_limit_bytes=subscription.traffic_limit_gb * (1024**3)
                             if subscription.traffic_limit_gb > 0
                             else 0,
-                            traffic_limit_strategy=TrafficLimitStrategy.MONTH,
+                            traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                             description=settings.format_remnawave_user_description(
                                 full_name=target_user.full_name,
                                 username=target_user.username,
@@ -4580,6 +5002,11 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                         if hwid_limit is not None:
                             update_kwargs['hwid_device_limit'] = hwid_limit
 
+                        # Внешний сквад: синхронизируем из тарифа (если задан)
+                        # Не отправляем null — RemnaWave API не принимает null для externalSquadUuid (A039)
+                        if ext_squad_uuid is not None:
+                            update_kwargs['external_squad_uuid'] = ext_squad_uuid
+
                         remnawave_user = await api.update_user(**update_kwargs)
                 else:
                     username = settings.format_remnawave_username(
@@ -4592,12 +5019,13 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
                     async with remnawave_service.get_api_client() as api:
                         create_kwargs = dict(
                             username=username,
-                            expire_at=subscription.end_date,
-                            status=UserStatus.ACTIVE if subscription.is_active else UserStatus.EXPIRED,
+                            # Панель отклоняет expireAt в прошлом — минимальный зазор в будущее.
+                            expire_at=max(subscription.end_date, datetime.now(UTC) + timedelta(minutes=1)),
+                            status=UserStatus.ACTIVE if subscription.is_active else UserStatus.DISABLED,
                             traffic_limit_bytes=subscription.traffic_limit_gb * (1024**3)
                             if subscription.traffic_limit_gb > 0
                             else 0,
-                            traffic_limit_strategy=TrafficLimitStrategy.MONTH,
+                            traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                             telegram_id=target_user.telegram_id,
                             email=target_user.email,
                             description=settings.format_remnawave_user_description(
@@ -4611,11 +5039,16 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
 
                         if hwid_limit is not None:
                             create_kwargs['hwid_device_limit'] = hwid_limit
+                        if ext_squad_uuid is not None:
+                            create_kwargs['external_squad_uuid'] = ext_squad_uuid
 
                         remnawave_user = await api.create_user(**create_kwargs)
 
                     if remnawave_user and hasattr(remnawave_user, 'uuid'):
-                        target_user.remnawave_uuid = remnawave_user.uuid
+                        if settings.is_multi_tariff_enabled() and subscription:
+                            subscription.remnawave_uuid = remnawave_user.uuid
+                        else:
+                            target_user.remnawave_uuid = remnawave_user.uuid
                         await db.commit()
 
                 if remnawave_user:
@@ -4629,12 +5062,8 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
         else:
             message = '❌ Ошибка: у пользователя нет существующей подписки'
 
-        if target_user.telegram_id:
-            target_user_link = f'<a href="tg://user?id={target_user.telegram_id}">{target_user.full_name}</a>'
-            target_user_id_display = target_user.telegram_id
-        else:
-            target_user_link = f'<b>{target_user.full_name}</b>'
-            target_user_id_display = target_user.email or f'#{target_user.id}'
+        target_user_link = user_html_link(target_user)
+        target_user_id_display = target_user.telegram_id or target_user.email or f'#{target_user.id}'
         await callback.message.edit_text(
             f'{message}\n\n'
             f'👤 {target_user_link} (ID: {target_user_id_display})\n'
@@ -4654,12 +5083,16 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
 
         try:
             if callback.bot and target_user.telegram_id:
+                tariff_line = ''
+                if settings.is_multi_tariff_enabled() and getattr(subscription, 'tariff', None):
+                    tariff_line = f'\n📦 Тариф: «{subscription.tariff.name}»'
                 await callback.bot.send_message(
                     chat_id=target_user.telegram_id,
                     text=f'💳 <b>Администратор продлил вашу подписку</b>\n\n'
                     f'📅 Подписка продлена на {period_days} дней\n'
                     f'💰 Списано с баланса: {settings.format_price(price_kopeks)}\n'
-                    f'📅 Подписка действительна до: {format_datetime(subscription.end_date)}',
+                    f'📅 Подписка действительна до: {format_datetime(subscription.end_date)}'
+                    f'{tariff_line}',
                     parse_mode='HTML',
                 )
         except Exception as e:
@@ -4682,7 +5115,13 @@ async def admin_buy_subscription_execute(callback: types.CallbackQuery, db_user:
 @error_handler
 async def admin_buy_tariff(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     """Показывает список тарифов для покупки админом."""
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     user_service = UserService()
     profile = await user_service.get_user_profile(db, user_id)
@@ -4702,20 +5141,14 @@ async def admin_buy_tariff(callback: types.CallbackQuery, db_user: User, db: Asy
         await callback.message.edit_text(
             '❌ <b>Нет доступных тарифов</b>\n\nСоздайте тарифы в разделе управления тарифами.',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}')]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb)]]
             ),
         )
         await callback.answer()
         return
 
-    if target_user.telegram_id:
-        target_user_link = f'<a href="tg://user?id={target_user.telegram_id}">{target_user.full_name}</a>'
-        target_user_id_display = target_user.telegram_id
-    else:
-        target_user_link = f'<b>{target_user.full_name}</b>'
-        target_user_id_display = target_user.email or f'#{target_user.id}'
+    target_user_link = user_html_link(target_user)
+    target_user_id_display = target_user.telegram_id or target_user.email or f'#{target_user.id}'
     text = '💳 <b>Покупка тарифа для пользователя</b>\n\n'
     text += f'👤 {target_user_link} (ID: {target_user_id_display})\n'
     text += f'💰 Баланс: {settings.format_price(target_user.balance_kopeks)}\n\n'
@@ -4725,7 +5158,7 @@ async def admin_buy_tariff(callback: types.CallbackQuery, db_user: User, db: Asy
         traffic = '♾️' if tariff.traffic_limit_gb == 0 else f'{tariff.traffic_limit_gb} ГБ'
         prices = tariff.period_prices or {}
         min_price = min(prices.values()) if prices else 0
-        text += f'<b>{tariff.name}</b> — {traffic}/{tariff.device_limit}📱 от {settings.format_price(min_price)}\n'
+        text += f'<b>{html.escape(tariff.name)}</b> — {traffic} / {tariff.device_limit} 📱 от {settings.format_price(min_price)}\n'
 
     keyboard = []
     for tariff in tariffs:
@@ -4737,7 +5170,7 @@ async def admin_buy_tariff(callback: types.CallbackQuery, db_user: User, db: Asy
             ]
         )
 
-    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}')])
+    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb)])
 
     await callback.message.edit_text(
         text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode='HTML'
@@ -4770,18 +5203,14 @@ async def admin_buy_tariff_period(callback: types.CallbackQuery, db_user: User, 
         await callback.answer('❌ Тариф недоступен', show_alert=True)
         return
 
-    if target_user.telegram_id:
-        target_user_link = f'<a href="tg://user?id={target_user.telegram_id}">{target_user.full_name}</a>'
-        target_user_id_display = target_user.telegram_id
-    else:
-        target_user_link = f'<b>{target_user.full_name}</b>'
-        target_user_id_display = target_user.email or f'#{target_user.id}'
+    target_user_link = user_html_link(target_user)
+    target_user_id_display = target_user.telegram_id or target_user.email or f'#{target_user.id}'
     traffic = '♾️ Безлимит' if tariff.traffic_limit_gb == 0 else f'{tariff.traffic_limit_gb} ГБ'
 
     text = '💳 <b>Покупка тарифа для пользователя</b>\n\n'
     text += f'👤 {target_user_link} (ID: {target_user_id_display})\n'
     text += f'💰 Баланс: {settings.format_price(target_user.balance_kopeks)}\n\n'
-    text += f'📦 <b>Тариф: {tariff.name}</b>\n'
+    text += f'📦 <b>Тариф: {html.escape(tariff.name)}</b>\n'
     text += f'📊 Трафик: {traffic}\n'
     text += f'📱 Устройств: {tariff.device_limit}\n'
     text += f'🌐 Серверов: {len(tariff.allowed_squads) if tariff.allowed_squads else 0}\n\n'
@@ -4859,18 +5288,14 @@ async def admin_buy_tariff_confirm(callback: types.CallbackQuery, db_user: User,
         await callback.answer()
         return
 
-    if target_user.telegram_id:
-        target_user_link = f'<a href="tg://user?id={target_user.telegram_id}">{target_user.full_name}</a>'
-        target_user_id_display = target_user.telegram_id
-    else:
-        target_user_link = f'<b>{target_user.full_name}</b>'
-        target_user_id_display = target_user.email or f'#{target_user.id}'
+    target_user_link = user_html_link(target_user)
+    target_user_id_display = target_user.telegram_id or target_user.email or f'#{target_user.id}'
     traffic = '♾️ Безлимит' if tariff.traffic_limit_gb == 0 else f'{tariff.traffic_limit_gb} ГБ'
 
     text = '💳 <b>Подтверждение покупки тарифа</b>\n\n'
     text += f'👤 {target_user_link} (ID: {target_user_id_display})\n'
     text += f'💰 Баланс: {settings.format_price(target_user.balance_kopeks)}\n\n'
-    text += f'📦 <b>Тариф: {tariff.name}</b>\n'
+    text += f'📦 <b>Тариф: {html.escape(tariff.name)}</b>\n'
     text += f'📊 Трафик: {traffic}\n'
     text += f'📱 Устройств: {tariff.device_limit}\n'
     text += f'📅 Период: {period} дней\n'
@@ -4901,7 +5326,7 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
     user_id = int(parts[4])
     tariff_id = int(parts[5])
     period = int(parts[6])
-    price_kopeks = int(parts[7])
+    price_kopeks_from_callback = int(parts[7])
 
     user_service = UserService()
     profile = await user_service.get_user_profile(db, user_id)
@@ -4920,7 +5345,46 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
         await callback.answer('❌ Тариф недоступен', show_alert=True)
         return
 
-    # Проверяем баланс ещё раз
+    # TOCTOU protection: lock user row before pricing to prevent concurrent balance modifications
+    from app.database.crud.user import lock_user_for_pricing
+
+    target_user = await lock_user_for_pricing(db, target_user.id)
+
+    existing_subscription = await _resolve_admin_subscription(db, target_user.id, tariff_id=tariff_id)
+
+    # Recalculate price from locked state (callback data may be stale)
+    from app.services.pricing_engine import PricingEngine
+
+    pricing_engine = PricingEngine()
+    device_limit = None
+    if existing_subscription and existing_subscription.tariff_id == tariff_id:
+        device_limit = existing_subscription.device_limit
+
+    try:
+        result = await pricing_engine.calculate_tariff_purchase_price(
+            tariff,
+            period,
+            device_limit=device_limit,
+            user=target_user,
+        )
+        price_kopeks = result.final_total
+    except Exception as e:
+        logger.error(
+            'Ошибка расчёта стоимости тарифа при списании средств админом для пользователя',
+            telegram_id=target_user.telegram_id,
+            e=e,
+        )
+        await callback.answer('❌ Не удалось рассчитать стоимость тарифа', show_alert=True)
+        return
+
+    if price_kopeks_from_callback != price_kopeks:
+        logger.info(
+            'Стоимость тарифа для пользователя изменилась перед списанием',
+            telegram_id=target_user.telegram_id,
+            price_kopeks_from_callback=price_kopeks_from_callback,
+            price_kopeks=price_kopeks,
+        )
+
     if target_user.balance_kopeks < price_kopeks:
         await callback.answer('❌ Недостаточно средств на балансе', show_alert=True)
         return
@@ -4929,7 +5393,7 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
         from app.database.crud.subscription import (
             create_paid_subscription,
             extend_subscription,
-            get_subscription_by_user_id,
+            restore_reserve_grace_if_active,
         )
         from app.database.crud.transaction import create_transaction
         from app.database.crud.user import subtract_user_balance
@@ -4937,7 +5401,11 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
 
         # Списываем баланс
         success = await subtract_user_balance(
-            db, target_user, price_kopeks, f'Покупка тарифа {tariff.name} на {period} дней (администратор)'
+            db,
+            target_user,
+            price_kopeks,
+            f'Покупка тарифа {tariff.name} на {period} дней (администратор)',
+            mark_as_paid_subscription=True,
         )
 
         if not success:
@@ -4947,10 +5415,15 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
         # Получаем серверы из тарифа
         squads = tariff.allowed_squads or []
 
-        # Проверяем есть ли подписка
-        existing_subscription = await get_subscription_by_user_id(db, target_user.id)
+        # Проверяем есть ли подписка с этим тарифом
+        existing_subscription = await _resolve_admin_subscription(db, target_user.id, tariff_id=tariff_id)
 
         if existing_subscription:
+            # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+            # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+            # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+            restore_reserve_grace_if_active(existing_subscription)
+
             # Продлеваем существующую подписку
             subscription = await extend_subscription(
                 db,
@@ -4990,22 +5463,18 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
             db,
             user_id=target_user.id,
             type=TransactionType.SUBSCRIPTION_PAYMENT,
-            amount_kopeks=-price_kopeks,
+            amount_kopeks=price_kopeks,
             description=f'Покупка тарифа {tariff.name} на {period} дней (администратор)',
         )
 
-        if target_user.telegram_id:
-            target_user_link = f'<a href="tg://user?id={target_user.telegram_id}">{target_user.full_name}</a>'
-            target_user_id_display = target_user.telegram_id
-        else:
-            target_user_link = f'<b>{target_user.full_name}</b>'
-            target_user_id_display = target_user.email or f'#{target_user.id}'
+        target_user_link = user_html_link(target_user)
+        target_user_id_display = target_user.telegram_id or target_user.email or f'#{target_user.id}'
         traffic = '♾️ Безлимит' if tariff.traffic_limit_gb == 0 else f'{tariff.traffic_limit_gb} ГБ'
 
         await callback.message.edit_text(
             f'✅ <b>Тариф успешно куплен!</b>\n\n'
             f'👤 {target_user_link} (ID: {target_user_id_display})\n'
-            f'📦 Тариф: {tariff.name}\n'
+            f'📦 Тариф: {html.escape(tariff.name)}\n'
             f'📊 Трафик: {traffic}\n'
             f'📱 Устройств: {tariff.device_limit}\n'
             f'📅 Период: {period} дней\n'
@@ -5029,7 +5498,7 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
                 await callback.bot.send_message(
                     chat_id=target_user.telegram_id,
                     text=f'💳 <b>Администратор оформил вам тариф</b>\n\n'
-                    f'📦 Тариф: {tariff.name}\n'
+                    f'📦 Тариф: {html.escape(tariff.name)}\n'
                     f'📊 Трафик: {traffic}\n'
                     f'📱 Устройств: {tariff.device_limit}\n'
                     f'📅 Период: {period} дней\n'
@@ -5052,8 +5521,15 @@ async def admin_buy_tariff_execute(callback: types.CallbackQuery, db_user: User,
 @error_handler
 async def change_subscription_type_confirm(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     parts = callback.data.split('_')
-    new_type = parts[-2]  # 'paid' или 'trial'
-    user_id = int(parts[-1])
+    # callback: admin_sub_type_{new_type}_{user_id} or admin_sub_type_{new_type}_{user_id}_s{sub_id}
+    new_type = parts[3]  # 'paid' or 'trial'
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     success = await _change_subscription_type(db, user_id, new_type, db_user.id)
 
@@ -5062,18 +5538,14 @@ async def change_subscription_type_confirm(callback: types.CallbackQuery, db_use
         await callback.message.edit_text(
             f'✅ Тип подписки успешно изменен на {type_text}',
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}')]
-                ]
+                inline_keyboard=[[InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
     else:
         await callback.message.edit_text(
             '❌ Ошибка изменения типа подписки',
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}')]
-                ]
+                inline_keyboard=[[InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
 
@@ -5082,10 +5554,9 @@ async def change_subscription_type_confirm(callback: types.CallbackQuery, db_use
 
 async def _change_subscription_type(db: AsyncSession, user_id: int, new_type: str, admin_id: int) -> bool:
     try:
-        from app.database.crud.subscription import get_subscription_by_user_id
         from app.services.subscription_service import SubscriptionService
 
-        subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await _resolve_admin_subscription(db, user_id)
         if not subscription:
             logger.error('Подписка не найдена для пользователя', user_id=user_id)
             return False
@@ -5099,10 +5570,11 @@ async def _change_subscription_type(db: AsyncSession, user_id: int, new_type: st
         old_type = 'триальной' if subscription.is_trial else 'платной'
         new_type_text = 'триальной' if new_is_trial else 'платной'
 
+        was_trial = subscription.is_trial
         subscription.is_trial = new_is_trial
         subscription.updated_at = datetime.now(UTC)
 
-        if not new_is_trial and subscription.is_trial:
+        if not new_is_trial and was_trial:
             user = await get_user_by_id(db, user_id)
             if user:
                 user.has_had_paid_subscription = True
@@ -5136,16 +5608,26 @@ async def _change_subscription_type(db: AsyncSession, user_id: int, new_type: st
 @error_handler
 async def show_admin_tariff_change(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     """Показывает список доступных тарифов для смены."""
-    user_id = int(callback.data.split('_')[-1])
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     user = await get_user_by_id(db, user_id)
     if not user:
         await callback.answer('❌ Пользователь не найден', show_alert=True)
         return
 
-    from app.database.crud.subscription import get_subscription_by_user_id
+    if subscription_id and settings.is_multi_tariff_enabled():
+        from app.database.crud.subscription import get_subscription_by_id_for_user
 
-    subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+    else:
+        subscription = await _resolve_admin_subscription(db, user_id)
 
     if not subscription:
         await callback.answer('❌ У пользователя нет подписки', show_alert=True)
@@ -5158,9 +5640,7 @@ async def show_admin_tariff_change(callback: types.CallbackQuery, db_user: User,
         await callback.message.edit_text(
             '❌ <b>Нет доступных тарифов</b>\n\nСоздайте тарифы в разделе управления тарифами.',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}')]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb)]]
             ),
         )
         await callback.answer()
@@ -5172,14 +5652,11 @@ async def show_admin_tariff_change(callback: types.CallbackQuery, db_user: User,
         current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
 
     text = '📦 <b>Смена тарифа пользователя</b>\n\n'
-    if user.telegram_id:
-        user_link = f'<a href="tg://user?id={user.telegram_id}">{user.full_name}</a>'
-    else:
-        user_link = f'<b>{user.full_name}</b> ({user.email or f"#{user.id}"})'
+    user_link = user_html_link(user)
     text += f'👤 {user_link}\n\n'
 
     if current_tariff:
-        text += f'<b>Текущий тариф:</b> {current_tariff.name}\n\n'
+        text += f'<b>Текущий тариф:</b> {html.escape(current_tariff.name)}\n\n'
     else:
         text += '<b>Текущий тариф:</b> не установлен\n\n'
 
@@ -5199,12 +5676,12 @@ async def show_admin_tariff_change(callback: types.CallbackQuery, db_user: User,
         keyboard.append(
             [
                 types.InlineKeyboardButton(
-                    text=button_text, callback_data=f'admin_sub_tariff_select_{tariff.id}_{user_id}'
+                    text=button_text, callback_data=f'admin_sub_tariff_select_{tariff.id}_{user_id}{_sid}'
                 )
             ]
         )
 
-    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_user_subscription_{user_id}')])
+    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data=back_cb)])
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
@@ -5215,8 +5692,20 @@ async def show_admin_tariff_change(callback: types.CallbackQuery, db_user: User,
 async def select_admin_tariff_change(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     """Подтверждение выбора тарифа."""
     parts = callback.data.split('_')
-    tariff_id = int(parts[-2])
-    user_id = int(parts[-1])
+    # admin_sub_tariff_select_{tariff_id}_{user_id} or admin_sub_tariff_select_{tariff_id}_{user_id}_s{sub_id}
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+    # tariff_id is always the part right before user_id (before optional subscription_id)
+    if subscription_id:
+        tariff_id = int(parts[-3])
+    else:
+        tariff_id = int(parts[-2])
+
+    _sid = f'_s{subscription_id}' if subscription_id else ''
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     user = await get_user_by_id(db, user_id)
     if not user:
@@ -5228,9 +5717,12 @@ async def select_admin_tariff_change(callback: types.CallbackQuery, db_user: Use
         await callback.answer('❌ Тариф не найден', show_alert=True)
         return
 
-    from app.database.crud.subscription import get_subscription_by_user_id
+    if subscription_id and settings.is_multi_tariff_enabled():
+        from app.database.crud.subscription import get_subscription_by_id_for_user
 
-    subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+    else:
+        subscription = await _resolve_admin_subscription(db, user_id)
 
     if not subscription:
         await callback.answer('❌ У пользователя нет подписки', show_alert=True)
@@ -5245,12 +5737,9 @@ async def select_admin_tariff_change(callback: types.CallbackQuery, db_user: Use
     servers_count = len(tariff.allowed_squads) if tariff.allowed_squads else 0
 
     text = '📦 <b>Подтверждение смены тарифа</b>\n\n'
-    if user.telegram_id:
-        user_link = f'<a href="tg://user?id={user.telegram_id}">{user.full_name}</a>'
-    else:
-        user_link = f'<b>{user.full_name}</b> ({user.email or f"#{user.id}"})'
+    user_link = user_html_link(user)
     text += f'👤 {user_link}\n\n'
-    text += f'<b>Новый тариф:</b> {tariff.name}\n'
+    text += f'<b>Новый тариф:</b> {html.escape(tariff.name)}\n'
     text += f'• Устройства: {tariff.device_limit}\n'
     text += f'• Трафик: {traffic_str}\n'
     text += f'• Серверы: {servers_count}\n\n'
@@ -5260,9 +5749,9 @@ async def select_admin_tariff_change(callback: types.CallbackQuery, db_user: Use
     keyboard = [
         [
             types.InlineKeyboardButton(
-                text='✅ Подтвердить', callback_data=f'admin_sub_tariff_confirm_{tariff_id}_{user_id}'
+                text='✅ Подтвердить', callback_data=f'admin_sub_tariff_confirm_{tariff_id}_{user_id}{_sid}'
             ),
-            types.InlineKeyboardButton(text='❌ Отмена', callback_data=f'admin_sub_change_tariff_{user_id}'),
+            types.InlineKeyboardButton(text='❌ Отмена', callback_data=back_cb),
         ]
     ]
 
@@ -5275,8 +5764,18 @@ async def select_admin_tariff_change(callback: types.CallbackQuery, db_user: Use
 async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     """Применяет смену тарифа."""
     parts = callback.data.split('_')
-    tariff_id = int(parts[-2])
-    user_id = int(parts[-1])
+    # admin_sub_tariff_confirm_{tariff_id}_{user_id} or admin_sub_tariff_confirm_{tariff_id}_{user_id}_s{sub_id}
+    user_id, subscription_id = _extract_admin_sub_context(callback.data)
+    if subscription_id:
+        tariff_id = int(parts[-3])
+    else:
+        tariff_id = int(parts[-2])
+
+    back_cb = (
+        f'admin_user_sub_select_{user_id}_{subscription_id}'
+        if subscription_id
+        else f'admin_user_subscription_{user_id}'
+    )
 
     user = await get_user_by_id(db, user_id)
     if not user:
@@ -5288,20 +5787,45 @@ async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: Us
         await callback.answer('❌ Тариф не найден', show_alert=True)
         return
 
-    from app.database.crud.subscription import get_subscription_by_user_id
+    if subscription_id and settings.is_multi_tariff_enabled():
+        from app.database.crud.subscription import get_subscription_by_id_for_user
 
-    subscription = await get_subscription_by_user_id(db, user_id)
+        subscription = await get_subscription_by_id_for_user(db, subscription_id, user_id)
+    else:
+        subscription = await _resolve_admin_subscription(db, user_id)
 
     if not subscription:
         await callback.answer('❌ У пользователя нет подписки', show_alert=True)
         return
 
     try:
+        from app.database.crud.subscription import restore_reserve_grace_if_active
+
         old_tariff_id = subscription.tariff_id
 
-        # Обновляем параметры подписки в соответствии с тарифом
+        # Preserve extra purchased devices above the old tariff's base limit
+        extra_devices = 0
+        if subscription.tariff_id:
+            old_tariff = await get_tariff_by_id(db, subscription.tariff_id)
+            if old_tariff and old_tariff.device_limit:
+                extra_devices = max(0, (subscription.device_limit or old_tariff.device_limit) - old_tariff.device_limit)
+
+        # ТЕСТОВАЯ ФИЧА: если подписка была в grace-периоде на резервном скваде,
+        # сбрасываем guard-поля до применения параметров нового тарифа ниже —
+        # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
+        restore_reserve_grace_if_active(subscription)
+
         subscription.tariff_id = tariff.id
-        subscription.device_limit = tariff.device_limit
+
+        new_base = tariff.device_limit or 1
+        new_total = new_base + extra_devices
+        effective_max = tariff.max_device_limit or (
+            settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else None
+        )
+        if effective_max and new_total > effective_max:
+            new_total = effective_max
+        subscription.device_limit = new_total
+
         subscription.traffic_limit_gb = tariff.traffic_limit_gb
         subscription.connected_squads = tariff.allowed_squads or []
         subscription.updated_at = datetime.now(UTC)
@@ -5315,11 +5839,33 @@ async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: Us
         subscription.purchased_traffic_gb = 0
         subscription.traffic_reset_at = None
 
+        # Сброс использованного трафика по админ-настройке
+        if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:
+            subscription.traffic_used_gb = 0.0
+
+        # Записываем транзакцию о смене тарифа
+        from app.database.crud.transaction import create_transaction
+
+        await create_transaction(
+            db=db,
+            user_id=user.id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            amount_kopeks=0,
+            description=f"Смена тарифа администратором на '{tariff.name}'",
+            commit=False,
+        )
+
         await db.commit()
 
-        # Синхронизируем с RemnaWave
+        # Синхронизируем с RemnaWave (сброс трафика по админ-настройке)
         subscription_service = SubscriptionService()
-        await subscription_service.update_remnawave_user(db, subscription)
+        await subscription_service.update_remnawave_user(
+            db,
+            subscription,
+            reset_traffic=settings.RESET_TRAFFIC_ON_TARIFF_SWITCH,
+            reset_reason='смена тарифа (админ)',
+            sync_squads=True,
+        )
 
         logger.info(
             'Админ изменил тариф пользователя',
@@ -5332,18 +5878,12 @@ async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: Us
 
         await callback.message.edit_text(
             f'✅ <b>Тариф успешно изменен</b>\n\n'
-            f'Новый тариф: <b>{tariff.name}</b>\n'
-            f'• Устройства: {tariff.device_limit}\n'
+            f'Новый тариф: <b>{html.escape(tariff.name)}</b>\n'
+            f'• Устройства: {subscription.device_limit}\n'
             f'• Трафик: {"♾️" if tariff.traffic_limit_gb == 0 else f"{tariff.traffic_limit_gb} ГБ"}\n'
             f'• Серверы: {len(tariff.allowed_squads) if tariff.allowed_squads else 0}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
 
@@ -5352,15 +5892,9 @@ async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: Us
         await db.rollback()
 
         await callback.message.edit_text(
-            f'❌ <b>Ошибка смены тарифа</b>\n\nДетали: {e!s}',
+            f'❌ <b>Ошибка смены тарифа</b>\n\nДетали: {html.escape(str(e))}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text='📱 К подписке', callback_data=f'admin_user_subscription_{user_id}'
-                        )
-                    ]
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text='📱 К подписке', callback_data=back_cb)]]
             ),
         )
 
@@ -5375,6 +5909,8 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(show_users_statistics, F.data == 'admin_users_stats')
 
     dp.callback_query.register(show_user_subscription, F.data.startswith('admin_user_subscription_'))
+
+    dp.callback_query.register(admin_select_user_subscription, F.data.startswith('admin_user_sub_select_'))
 
     dp.callback_query.register(show_user_transactions, F.data.startswith('admin_user_transactions_'))
 
@@ -5501,6 +6037,11 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(confirm_subscription_deactivation, F.data.startswith('admin_sub_deactivate_confirm_'))
 
     dp.callback_query.register(activate_user_subscription, F.data.startswith('admin_sub_activate_'))
+
+    dp.callback_query.register(
+        delete_user_subscription, F.data.startswith('admin_sub_delete_') & ~F.data.contains('confirm')
+    )
+    dp.callback_query.register(confirm_subscription_deletion, F.data.startswith('admin_sub_delete_confirm_'))
 
     dp.callback_query.register(grant_trial_subscription, F.data.startswith('admin_sub_grant_trial_'))
 

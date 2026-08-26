@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cabinet.dependencies import get_cabinet_db
+from app.database.crud.public_catalog_hidden_host import get_hidden_host_uuids
 from app.mobile.schemas.servers import MobileServerListResponse, MobileServerResponse
 
 
@@ -31,7 +34,7 @@ router = APIRouter()
     ),
     tags=['mobile'],
 )
-async def list_mobile_servers() -> MobileServerListResponse:
+async def list_mobile_servers(db: AsyncSession = Depends(get_cabinet_db)) -> MobileServerListResponse:
     if RemnaWaveService is None:  # pragma: no cover
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -56,7 +59,10 @@ async def list_mobile_servers() -> MobileServerListResponse:
             detail='Не удалось получить список серверов',
         ) from exc
 
-    visible_hosts = [h for h in hosts if not h.is_hidden and not h.is_disabled]
+    hidden_uuids = await get_hidden_host_uuids(db)
+    visible_hosts = [
+        h for h in hosts if not h.is_hidden and not h.is_disabled and h.uuid not in hidden_uuids
+    ]
 
     servers = [
         MobileServerResponse(

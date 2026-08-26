@@ -1,15 +1,23 @@
 from aiogram import types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.crud.saved_payment_method import (
+    deactivate_payment_method,
+    get_active_payment_methods_by_user,
+)
 from app.database.crud.subscription import update_subscription_autopay
 from app.database.models import User
 from app.keyboards.inline import (
+    _get_payment_method_display_name,
     get_autopay_days_keyboard,
     get_autopay_keyboard,
+    get_confirm_unlink_keyboard,
     get_countries_keyboard,
     get_devices_keyboard,
+    get_saved_cards_keyboard,
     get_subscription_period_keyboard,
     get_traffic_packages_keyboard,
 )
@@ -29,9 +37,16 @@ from .countries import (
 from .pricing import _build_subscription_period_prompt
 
 
-async def handle_autopay_menu(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+async def _resolve_subscription(callback, db_user, db, state=None):
+    """Resolve subscription — delegates to shared resolve_subscription_from_context."""
+    from .common import resolve_subscription_from_context
+
+    return await resolve_subscription_from_context(callback, db_user, db, state)
+
+
+async def handle_autopay_menu(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext = None):
     texts = get_texts(db_user.language)
-    subscription = db_user.subscription
+    subscription, sub_id = await _resolve_subscription(callback, db_user, db, state)
     if not subscription:
         await callback.answer(
             texts.t('SUBSCRIPTION_ACTIVE_REQUIRED', '⚠️ У вас нет активной подписки!'),
@@ -73,15 +88,30 @@ async def handle_autopay_menu(callback: types.CallbackQuery, db_user: User, db: 
 
     await callback.message.edit_text(
         text,
-        reply_markup=get_autopay_keyboard(db_user.language),
+        reply_markup=get_autopay_keyboard(db_user.language, sub_id=sub_id),
         parse_mode='HTML',
     )
     await callback.answer()
 
 
-async def toggle_autopay(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    subscription = db_user.subscription
-    enable = callback.data == 'autopay_enable'
+async def toggle_autopay(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext = None):
+    subscription, sub_id = await _resolve_subscription(callback, db_user, db, state)
+    if subscription is None:
+        return
+    enable = callback.data.startswith('autopay_enable')
+
+    if enable:
+        # Classic subscriptions cannot use autopay when tariff mode is enabled
+        if settings.is_tariffs_mode() and not subscription.tariff_id:
+            texts = get_texts(db_user.language)
+            await callback.answer(
+                texts.t(
+                    'AUTOPAY_NOT_AVAILABLE_CLASSIC',
+                    'Автоплатеж недоступен. Для продления необходимо выбрать тариф.',
+                ),
+                show_alert=True,
+            )
+            return
 
     # Суточные подписки имеют свой механизм продления (DailySubscriptionService),
     # глобальный autopay для них запрещён
@@ -107,7 +137,13 @@ async def toggle_autopay(callback: types.CallbackQuery, db_user: User, db: Async
     status = texts.t('AUTOPAY_STATUS_ENABLED', 'включен') if enable else texts.t('AUTOPAY_STATUS_DISABLED', 'выключен')
     await callback.answer(texts.t('AUTOPAY_TOGGLE_SUCCESS', '✅ Автоплатеж {status}!').format(status=status))
 
-    await handle_autopay_menu(callback, db_user, db)
+    try:
+        await handle_autopay_menu(callback, db_user, db)
+    except TelegramBadRequest as e:
+        if 'message is not modified' in str(e):
+            pass
+        else:
+            raise
 
 
 async def show_autopay_days(callback: types.CallbackQuery, db_user: User):
@@ -122,9 +158,12 @@ async def show_autopay_days(callback: types.CallbackQuery, db_user: User):
     await callback.answer()
 
 
-async def set_autopay_days(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    days = int(callback.data.split('_')[2])
-    subscription = db_user.subscription
+async def set_autopay_days(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext = None):
+    subscription, sub_id = await _resolve_subscription(callback, db_user, db, state)
+    if subscription is None:
+        return
+    base_data = callback.data.split(':')[0]
+    days = int(base_data.split('_')[2])
 
     await update_subscription_autopay(db, subscription, subscription.autopay_enabled, days)
 
@@ -132,6 +171,97 @@ async def set_autopay_days(callback: types.CallbackQuery, db_user: User, db: Asy
     await callback.answer(texts.t('AUTOPAY_DAYS_SET', '✅ Установлено {days} дней!').format(days=days))
 
     await handle_autopay_menu(callback, db_user, db)
+
+
+async def handle_saved_cards_list(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    texts = get_texts(db_user.language)
+    cards = await get_active_payment_methods_by_user(db, db_user.id)
+
+    if not cards:
+        await callback.message.edit_text(
+            texts.t(
+                'SAVED_CARDS_EMPTY',
+                '💳 <b>Привязанные карты</b>\n\nНет привязанных карт.\n'
+                'Карта привяжется автоматически при следующем пополнении баланса.',
+            ),
+            reply_markup=get_saved_cards_keyboard([], db_user.language),
+            parse_mode='HTML',
+        )
+    else:
+        await callback.message.edit_text(
+            texts.t(
+                'SAVED_CARDS_TITLE',
+                '💳 <b>Привязанные карты</b>\n\nВыберите карту для отвязки:',
+            ),
+            reply_markup=get_saved_cards_keyboard(cards, db_user.language),
+            parse_mode='HTML',
+        )
+    await callback.answer()
+
+
+async def handle_unlink_card(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    texts = get_texts(db_user.language)
+    try:
+        card_id = int(callback.data.split('_')[-1])
+    except (ValueError, IndexError):
+        await callback.answer(texts.t('INVALID_REQUEST', 'Invalid request'), show_alert=True)
+        return
+
+    cards = await get_active_payment_methods_by_user(db, db_user.id)
+    card = next((c for c in cards if c.id == card_id), None)
+
+    if not card:
+        await callback.answer(
+            texts.t('SAVED_CARDS_UNLINK_ERROR', '❌ Не удалось отвязать карту'),
+            show_alert=True,
+        )
+        return
+
+    card_label = _get_payment_method_display_name(card, db_user.language)
+    text = texts.t(
+        'SAVED_CARDS_CONFIRM_UNLINK',
+        'Вы уверены, что хотите отвязать карту <b>{card}</b>?\n\n'
+        'После отвязки автоплатеж не сможет использовать эту карту.',
+    ).format(card=card_label)
+
+    if len(cards) == 1:
+        text += texts.t(
+            'SAVED_CARDS_LAST_CARD_WARNING',
+            '\n\n⚠️ <b>Внимание:</b> это ваша последняя привязанная карта. '
+            'После отвязки автоплатеж не сможет списывать средства.',
+        )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_confirm_unlink_keyboard(card_id, db_user.language),
+        parse_mode='HTML',
+    )
+    await callback.answer()
+
+
+async def handle_confirm_unlink(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    texts = get_texts(db_user.language)
+    try:
+        card_id = int(callback.data.split('_')[-1])
+    except (ValueError, IndexError):
+        await callback.answer(texts.t('INVALID_REQUEST', 'Invalid request'), show_alert=True)
+        return
+
+    success = await deactivate_payment_method(db, card_id, db_user.id)
+
+    if success:
+        await callback.answer(
+            texts.t('SAVED_CARDS_UNLINKED', '✅ Карта отвязана'),
+        )
+    else:
+        await callback.answer(
+            texts.t('SAVED_CARDS_UNLINK_ERROR', '❌ Не удалось отвязать карту'),
+            show_alert=True,
+        )
+        return
+
+    # Return to the updated cards list
+    await handle_saved_cards_list(callback, db_user, db)
 
 
 async def handle_subscription_config_back(
@@ -192,8 +322,31 @@ async def handle_subscription_cancel(callback: types.CallbackQuery, state: FSMCo
     await state.clear()
     await clear_subscription_checkout_draft(db_user.id)
 
-    # Удаляем сохраненную корзину, чтобы не показывать кнопку возврата
-    await user_cart_service.delete_user_cart(db_user.id)
+    # Multi-tariff safe: delete only the cart for the current subscription
+    # to avoid nuking carts belonging to other subscriptions.
+    cart_data = await user_cart_service.get_user_cart(db_user.id)
+    cart_sub_id = None
+    if cart_data:
+        try:
+            raw = cart_data.get('subscription_id')
+            if raw is not None:
+                cart_sub_id = int(raw)
+        except (TypeError, ValueError):
+            pass
+
+    if cart_sub_id is not None:
+        await user_cart_service.delete_subscription_cart(db_user.id, cart_sub_id)
+        # Clean up global key only if it still references this subscription
+        global_cart = await user_cart_service.get_user_cart(db_user.id)
+        if global_cart and global_cart.get('subscription_id') is not None:
+            try:
+                if int(global_cart['subscription_id']) == cart_sub_id:
+                    await user_cart_service.delete_global_cart_only(db_user.id)
+            except (TypeError, ValueError):
+                pass
+    else:
+        # No subscription_id in cart -- safe to delete the global cart
+        await user_cart_service.delete_user_cart(db_user.id)
 
     from app.handlers.menu import show_main_menu
 

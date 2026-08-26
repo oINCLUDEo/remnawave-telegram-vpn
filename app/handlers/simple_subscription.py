@@ -18,7 +18,7 @@ from app.services.payment_service import PaymentService
 from app.services.subscription_purchase_service import SubscriptionPurchaseService
 from app.states import SubscriptionStates
 from app.utils.decorators import error_handler
-from app.utils.pricing_utils import compute_simple_subscription_price
+from app.utils.pricing_utils import balance_covers_price, compute_simple_subscription_price
 from app.utils.subscription_utils import (
     get_display_subscription_link,
     resolve_simple_subscription_device_limit,
@@ -42,9 +42,13 @@ async def start_simple_subscription_purchase(
         await callback.answer('❌ Простая покупка подписки временно недоступна', show_alert=True)
         return
 
+    if settings.is_multi_tariff_enabled():
+        await callback.answer('Используйте выбор тарифа для управления подписками', show_alert=True)
+        return
+
     # Проверка ограничения на покупку/продление подписки
     if getattr(db_user, 'restriction_subscription', False):
-        reason = getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором'
+        reason = html.escape(getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором')
         support_url = settings.get_support_contact_url()
         keyboard = []
         if support_url:
@@ -118,7 +122,7 @@ async def start_simple_subscription_purchase(
         else 'none',
     )
 
-    can_pay_from_balance = user_balance_kopeks >= price_kopeks
+    can_pay_from_balance = balance_covers_price(user_balance_kopeks, price_kopeks)
     logger.warning(
         'SIMPLE_SUBSCRIPTION_DEBUG_START_BALANCE | user= | balance= | min_required= | can_pay',
         db_user_id=db_user.id,
@@ -401,13 +405,25 @@ async def handle_simple_subscription_pay_with_balance(
         state_data=data,
     )
 
-    # Рассчитываем цену подписки
+    # Lock user BEFORE pricing to prevent TOCTOU
+    from app.database.crud.user import lock_user_for_pricing, subtract_user_balance
+
+    db_user = await lock_user_for_pricing(db, db_user.id)
+
+    # Рассчитываем цену подписки (group discounts per-category)
     price_kopeks, price_breakdown = await _calculate_simple_subscription_price(
         db,
         subscription_params,
         user=db_user,
         resolved_squad_uuid=resolved_squad_uuid,
     )
+
+    # PricingEngine already applies promo-offer discount inside calculate_classic_new_subscription_price.
+    # Only determine whether to consume the offer (zero it out after use).
+    from app.utils.promo_offer import get_user_active_promo_discount_percent
+
+    consume_promo = get_user_active_promo_discount_percent(db_user) > 0
+
     total_required = price_kopeks
     logger.warning(
         'SIMPLE_SUBSCRIPTION_DEBUG_PAY_BALANCE | user= | period= | base= | traffic= | devices= | servers= | discount= | total_required= | balance',
@@ -425,28 +441,45 @@ async def handle_simple_subscription_pay_with_balance(
     # Проверяем баланс пользователя
     user_balance_kopeks = getattr(db_user, 'balance_kopeks', 0)
 
-    if user_balance_kopeks < total_required:
+    if total_required > 0 and not balance_covers_price(user_balance_kopeks, total_required):
         await callback.answer('❌ Недостаточно средств на балансе для оплаты подписки', show_alert=True)
         return
 
     try:
         # Списываем средства с баланса пользователя
-        from app.database.crud.user import subtract_user_balance
-
+        purchase_description = f'Оплата подписки на {subscription_params["period_days"]} дней'
         success = await subtract_user_balance(
             db,
             db_user,
             price_kopeks,
-            f'Оплата подписки на {subscription_params["period_days"]} дней',
-            consume_promo_offer=False,
+            purchase_description,
+            consume_promo_offer=consume_promo,
+            mark_as_paid_subscription=True,
         )
 
         if not success:
             await callback.answer('❌ Ошибка списания средств с баланса', show_alert=True)
             return
 
+        # Создаём транзакцию для учёта списания
+        from app.database.crud.transaction import create_transaction
+        from app.database.models import PaymentMethod, TransactionType
+
+        transaction = await create_transaction(
+            db,
+            user_id=db_user.id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            amount_kopeks=price_kopeks,
+            description=purchase_description,
+            payment_method=PaymentMethod.BALANCE,
+        )
+
         # Проверяем, есть ли у пользователя уже подписка
-        from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import (
+            extend_subscription,
+            get_subscription_by_user_id,
+            restore_reserve_grace_if_active,
+        )
 
         existing_subscription = await get_subscription_by_user_id(db, db_user.id)
 
@@ -455,12 +488,18 @@ async def handle_simple_subscription_pay_with_balance(
             # Сохраняем информацию о текущей подписке, особенно является ли она пробной
             was_trial = getattr(existing_subscription, 'is_trial', False)
 
+            # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада
+            # до продления, иначе сквад/трафик/end_date останутся резервными.
+            restore_reserve_grace_if_active(existing_subscription)
+
             subscription = await extend_subscription(
-                db=db, subscription=existing_subscription, days=subscription_params['period_days']
+                db=db,
+                subscription=existing_subscription,
+                days=subscription_params['period_days'],
+                traffic_limit_gb=subscription_params['traffic_limit_gb'],
+                device_limit=subscription_params['device_limit'],
+                connected_squads=[resolved_squad_uuid] if resolved_squad_uuid else None,
             )
-            # Обновляем параметры подписки
-            subscription.traffic_limit_gb = subscription_params['traffic_limit_gb']
-            subscription.device_limit = subscription_params['device_limit']
 
             # Если текущая подписка была пробной, и мы обновляем её
             # нужно изменить статус подписки
@@ -470,10 +509,6 @@ async def handle_simple_subscription_pay_with_balance(
                 # Переводим подписку из пробной в активную платную
                 subscription.status = SubscriptionStatus.ACTIVE.value
                 subscription.is_trial = False
-
-            # Устанавливаем новый выбранный сквад
-            if resolved_squad_uuid:
-                subscription.connected_squads = [resolved_squad_uuid]
 
             await db.commit()
             await db.refresh(subscription)
@@ -632,10 +667,11 @@ async def handle_simple_subscription_pay_with_balance(
                 db,
                 db_user,
                 subscription,
-                None,  # transaction
+                transaction,
                 subscription_params['period_days'],
                 False,  # was_trial_conversion
                 amount_kopeks=price_kopeks,
+                purchase_type='renewal' if existing_subscription else 'first_purchase',
             )
         except Exception as e:
             logger.error('Ошибка отправки уведомления админам о покупке', error=e)
@@ -711,7 +747,7 @@ async def handle_simple_subscription_other_payment_methods(
     )
 
     user_balance_kopeks = getattr(db_user, 'balance_kopeks', 0)
-    can_pay_from_balance = user_balance_kopeks >= price_kopeks
+    can_pay_from_balance = balance_covers_price(user_balance_kopeks, price_kopeks)
     logger.warning(
         'SIMPLE_SUBSCRIPTION_DEBUG_METHODS | user= | balance= | base= | traffic= | devices= | servers= | discount= | total_required= | can_pay',
         db_user_id=db_user.id,
@@ -826,13 +862,21 @@ async def handle_simple_subscription_payment_method(
             state_data=data,
         )
 
-        # Рассчитываем цену подписки
+        # Рассчитываем цену подписки (group discounts per-category)
         price_kopeks, _ = await _calculate_simple_subscription_price(
             db,
             subscription_params,
             user=db_user,
             resolved_squad_uuid=resolved_squad_uuid,
         )
+
+        # Apply promo-offer discount on top of group discounts (consistent with balance-pay path)
+        from app.services.pricing_engine import PricingEngine
+        from app.utils.promo_offer import get_user_active_promo_discount_percent
+
+        offer_pct = get_user_active_promo_discount_percent(db_user)
+        if offer_pct > 0:
+            price_kopeks = PricingEngine.apply_discount(price_kopeks, offer_pct)
 
         if payment_method == 'stars':
             # Оплата через Telegram Stars
@@ -913,6 +957,7 @@ async def handle_simple_subscription_payment_method(
                         'user_telegram_id': str(db_user.telegram_id),
                         'user_username': db_user.username or '',
                         'order_id': str(order.id),
+                        'subscription_id': str(order.id),
                         'subscription_period': str(subscription_params['period_days']),
                         'payment_purpose': 'simple_subscription_purchase',
                     },
@@ -929,6 +974,7 @@ async def handle_simple_subscription_payment_method(
                         'user_telegram_id': str(db_user.telegram_id),
                         'user_username': db_user.username or '',
                         'order_id': str(order.id),
+                        'subscription_id': str(order.id),
                         'subscription_period': str(subscription_params['period_days']),
                         'payment_purpose': 'simple_subscription_purchase',
                     },
@@ -957,7 +1003,7 @@ async def handle_simple_subscription_payment_method(
                     from aiogram.types import BufferedInputFile
 
                     # Используем qr_confirmation_data если доступно, иначе confirmation_url
-                    qr_data = qr_confirmation_data if qr_confirmation_data else confirmation_url
+                    qr_data = qr_confirmation_data or confirmation_url
 
                     # Создаем QR-код из полученных данных
                     qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -2107,13 +2153,25 @@ async def confirm_simple_subscription_purchase(
         state_data=data,
     )
 
-    # Рассчитываем цену подписки
+    # Lock user BEFORE pricing to prevent TOCTOU
+    from app.database.crud.user import lock_user_for_pricing, subtract_user_balance
+
+    db_user = await lock_user_for_pricing(db, db_user.id)
+
+    # Рассчитываем цену подписки (group discounts per-category)
     price_kopeks, price_breakdown = await _calculate_simple_subscription_price(
         db,
         subscription_params,
         user=db_user,
         resolved_squad_uuid=resolved_squad_uuid,
     )
+
+    # PricingEngine already applies promo-offer discount inside calculate_classic_new_subscription_price.
+    # Only determine whether to consume the offer (zero it out after use).
+    from app.utils.promo_offer import get_user_active_promo_discount_percent
+
+    consume_promo = get_user_active_promo_discount_percent(db_user) > 0
+
     total_required = price_kopeks
     logger.warning(
         'SIMPLE_SUBSCRIPTION_DEBUG_CONFIRM | user= | period= | base= | traffic= | devices= | servers= | discount= | total_required= | balance',
@@ -2131,28 +2189,45 @@ async def confirm_simple_subscription_purchase(
     # Проверяем баланс пользователя
     user_balance_kopeks = getattr(db_user, 'balance_kopeks', 0)
 
-    if user_balance_kopeks < total_required:
+    if total_required > 0 and not balance_covers_price(user_balance_kopeks, total_required):
         await callback.answer('❌ Недостаточно средств на балансе для оплаты подписки', show_alert=True)
         return
 
     try:
         # Списываем средства с баланса пользователя
-        from app.database.crud.user import subtract_user_balance
-
+        purchase_description = f'Оплата подписки на {subscription_params["period_days"]} дней'
         success = await subtract_user_balance(
             db,
             db_user,
             price_kopeks,
-            f'Оплата подписки на {subscription_params["period_days"]} дней',
-            consume_promo_offer=False,
+            purchase_description,
+            consume_promo_offer=consume_promo,
+            mark_as_paid_subscription=True,
         )
 
         if not success:
             await callback.answer('❌ Ошибка списания средств с баланса', show_alert=True)
             return
 
+        # Создаём транзакцию для учёта списания
+        from app.database.crud.transaction import create_transaction
+        from app.database.models import PaymentMethod, TransactionType
+
+        transaction = await create_transaction(
+            db,
+            user_id=db_user.id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            amount_kopeks=price_kopeks,
+            description=purchase_description,
+            payment_method=PaymentMethod.BALANCE,
+        )
+
         # Проверяем, есть ли у пользователя уже подписка
-        from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
+        from app.database.crud.subscription import (
+            extend_subscription,
+            get_subscription_by_user_id,
+            restore_reserve_grace_if_active,
+        )
 
         existing_subscription = await get_subscription_by_user_id(db, db_user.id)
 
@@ -2161,12 +2236,18 @@ async def confirm_simple_subscription_purchase(
             # Сохраняем информацию о текущей подписке, особенно является ли она пробной
             was_trial = getattr(existing_subscription, 'is_trial', False)
 
+            # ТЕСТОВАЯ ФИЧА: сбрасываем guard-поля grace-периода резервного сквада
+            # до продления, иначе сквад/трафик/end_date останутся резервными.
+            restore_reserve_grace_if_active(existing_subscription)
+
             subscription = await extend_subscription(
-                db=db, subscription=existing_subscription, days=subscription_params['period_days']
+                db=db,
+                subscription=existing_subscription,
+                days=subscription_params['period_days'],
+                traffic_limit_gb=subscription_params['traffic_limit_gb'],
+                device_limit=subscription_params['device_limit'],
+                connected_squads=[resolved_squad_uuid] if resolved_squad_uuid else None,
             )
-            # Обновляем параметры подписки
-            subscription.traffic_limit_gb = subscription_params['traffic_limit_gb']
-            subscription.device_limit = subscription_params['device_limit']
 
             # Если текущая подписка была пробной, и мы обновляем её
             # нужно изменить статус подписки
@@ -2176,10 +2257,6 @@ async def confirm_simple_subscription_purchase(
                 # Переводим подписку из пробной в активную платную
                 subscription.status = SubscriptionStatus.ACTIVE.value
                 subscription.is_trial = False
-
-            # Устанавливаем новый выбранный сквад
-            if resolved_squad_uuid:
-                subscription.connected_squads = [resolved_squad_uuid]
 
             await db.commit()
             await db.refresh(subscription)
@@ -2338,10 +2415,11 @@ async def confirm_simple_subscription_purchase(
                 db,
                 db_user,
                 subscription,
-                None,  # transaction
+                transaction,
                 subscription_params['period_days'],
                 False,  # was_trial_conversion
                 amount_kopeks=price_kopeks,
+                purchase_type='renewal' if existing_subscription else 'first_purchase',
             )
         except Exception as e:
             logger.error('Ошибка отправки уведомления админам о покупке', error=e)

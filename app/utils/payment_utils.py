@@ -2,6 +2,15 @@ from app.config import settings
 from app.localization.texts import get_texts
 
 
+def verify_payment_amount(
+    received_kopeks: int,
+    expected_kopeks: int,
+    tolerance_kopeks: int = 1,
+) -> bool:
+    """Check that the received amount matches the expected amount within tolerance."""
+    return abs(received_kopeks - expected_kopeks) <= tolerance_kopeks
+
+
 def get_available_payment_methods() -> list[dict[str, str]]:
     """
     Возвращает список доступных способов оплаты с их настройками
@@ -104,15 +113,28 @@ def get_available_payment_methods() -> list[dict[str, str]]:
 
     if settings.is_platega_enabled() and settings.get_platega_active_methods():
         platega_name = settings.get_platega_display_name()
-        methods.append(
-            {
-                'id': 'platega',
-                'name': 'Банковская карта',
-                'icon': '💳',
-                'description': f'через {platega_name} (карты + СБП)',
-                'callback': 'topup_platega',
-            }
-        )
+        if settings.PLATEGA_INLINE_METHODS:
+            for method_code in settings.get_platega_active_methods():
+                info = settings.get_platega_method_definitions().get(method_code, {})
+                methods.append(
+                    {
+                        'id': f'platega_m{method_code}',
+                        'name': info.get('name', f'Метод {method_code}'),
+                        'icon': info.get('title', '💳').split(' ', 1)[0] if info.get('title') else '💳',
+                        'description': f'через {platega_name}',
+                        'callback': f'topup_platega_m{method_code}',
+                    }
+                )
+        else:
+            methods.append(
+                {
+                    'id': 'platega',
+                    'name': 'Банковская карта',
+                    'icon': '💳',
+                    'description': f'через {platega_name} (карты + СБП)',
+                    'callback': 'topup_platega',
+                }
+            )
 
     if settings.is_cloudpayments_enabled():
         cloudpayments_name = settings.get_cloudpayments_display_name()
@@ -147,6 +169,18 @@ def get_available_payment_methods() -> list[dict[str, str]]:
                 'icon': '💳',
                 'description': f'через {kassa_ai_name}',
                 'callback': 'topup_kassa_ai',
+            }
+        )
+
+    if settings.is_riopay_enabled():
+        riopay_name = settings.get_riopay_display_name()
+        methods.append(
+            {
+                'id': 'riopay',
+                'name': f'Банковская карта ({riopay_name})',
+                'icon': '💳',
+                'description': f'через {riopay_name}',
+                'callback': 'topup_riopay',
             }
         )
 
@@ -261,12 +295,22 @@ def is_payment_method_available(method_id: str) -> bool:
         return settings.is_heleket_enabled()
     if method_id == 'platega':
         return settings.is_platega_enabled() and bool(settings.get_platega_active_methods())
+    if method_id.startswith('platega_m'):
+        if not settings.is_platega_enabled():
+            return False
+        try:
+            code = int(method_id[len('platega_m') :])
+        except ValueError:
+            return False
+        return code in settings.get_platega_active_methods()
     if method_id == 'cloudpayments':
         return settings.is_cloudpayments_enabled()
     if method_id == 'freekassa':
         return settings.is_freekassa_enabled()
     if method_id == 'kassa_ai':
         return settings.is_kassa_ai_enabled()
+    if method_id == 'riopay':
+        return settings.is_riopay_enabled()
     if method_id == 'support':
         return settings.is_support_topup_enabled()
     return False

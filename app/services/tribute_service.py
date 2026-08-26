@@ -13,9 +13,6 @@ from app.database.database import get_db
 from app.database.models import PaymentMethod, TransactionType
 from app.external.tribute import TributeService as TributeAPI
 from app.services.payment_service import PaymentService
-from app.services.subscription_auto_purchase_service import (
-    auto_purchase_saved_cart_after_topup,
-)
 from app.utils.user_utils import format_referrer_info
 
 
@@ -99,12 +96,14 @@ class TributeService:
             user_telegram_id = payment_data['user_id']
             amount_kopeks = payment_data['amount_kopeks']
             payment_id = payment_data['payment_id']
+            trb_user_id = payment_data.get('trb_user_id')
 
             logger.info(
-                'Обрабатываем успешный Tribute платеж: user_telegram_id=, amount=, payment_id',
+                'Обрабатываем успешный Tribute платеж: user_telegram_id=, amount=, payment_id=, trb_user_id=',
                 user_telegram_id=user_telegram_id,
                 amount_kopeks=amount_kopeks,
                 payment_id=payment_id,
+                trb_user_id=trb_user_id,
             )
 
             async for session in get_db():
@@ -144,6 +143,11 @@ class TributeService:
                     description=f'Пополнение через Tribute: {amount_kopeks / 100}₽ (ID: {payment_id})',
                 )
 
+                # Lock user row to prevent concurrent balance race conditions
+                from app.database.crud.user import lock_user_for_update
+
+                user = await lock_user_for_update(session, user)
+
                 old_balance = user.balance_kopeks
                 was_first_topup = not user.has_made_first_topup
 
@@ -164,7 +168,7 @@ class TributeService:
                 except Exception as e:
                     logger.error('Ошибка обработки реферального пополнения Tribute', error=e)
 
-                if was_first_topup and not user.has_made_first_topup:
+                if was_first_topup and not user.has_made_first_topup and not user.referred_by_id:
                     user.has_made_first_topup = True
                     await session.commit()
 
@@ -216,6 +220,7 @@ class TributeService:
         try:
             user_id = payment_data['user_id']
             payment_id = payment_data['payment_id']
+            trb_user_id = payment_data.get('trb_user_id')
 
             async for session in get_db():
                 transaction = await get_transaction_by_external_id(
@@ -228,7 +233,11 @@ class TributeService:
 
                 await self._send_failure_notification(user_id)
 
-                logger.info('Обработан неудачный Tribute платеж для пользователя', user_id=user_id)
+                logger.info(
+                    'Обработан неудачный Tribute платеж для пользователя',
+                    user_id=user_id,
+                    trb_user_id=trb_user_id,
+                )
                 break
 
         except Exception as e:
@@ -239,6 +248,7 @@ class TributeService:
             user_id = refund_data['user_id']
             amount_kopeks = refund_data['amount_kopeks']
             payment_id = refund_data['payment_id']
+            trb_user_id = refund_data.get('trb_user_id')
 
             async for session in get_db():
                 await create_transaction(
@@ -250,17 +260,27 @@ class TributeService:
                     payment_method=PaymentMethod.TRIBUTE,
                     external_id=f'refund_{payment_id}',
                     is_completed=True,
+                    commit=False,
                 )
 
                 user = await get_user_by_telegram_id(session, user_id)
-                if user and user.balance_kopeks >= amount_kopeks:
-                    user.balance_kopeks -= amount_kopeks
-                    await session.commit()
+                if user:
+                    # Lock user row to prevent concurrent balance race conditions
+                    from app.database.crud.user import lock_user_for_update
+
+                    user = await lock_user_for_update(session, user)
+                    if user.balance_kopeks >= amount_kopeks:
+                        user.balance_kopeks -= amount_kopeks
+
+                await session.commit()
 
                 await self._send_refund_notification(user_id, amount_kopeks)
 
                 logger.info(
-                    'Обработан возврат Tribute: ₽ для пользователя', amount_kopeks=amount_kopeks / 100, user_id=user_id
+                    'Обработан возврат Tribute: ₽ для пользователя',
+                    amount_kopeks=amount_kopeks / 100,
+                    user_id=user_id,
+                    trb_user_id=trb_user_id,
                 )
                 break
 
@@ -278,85 +298,29 @@ class TributeService:
 
             async for session in get_db():
                 user = await get_user_by_telegram_id(session, user_id)
+                if not user:
+                    logger.warning('Пользователь не найден для уведомления Tribute', user_id=user_id)
+                    break
+
+                # Сначала отправляем стандартное уведомление
+                payment_service = PaymentService(self.bot)
+                keyboard = await payment_service.build_topup_success_keyboard(user)
+
+                text = (
+                    f'✅ **Платеж успешно получен!**\n\n'
+                    f'💰 Сумма: {int(amount_rubles)} ₽\n'
+                    f'💳 Способ оплаты: Tribute\n'
+                    f'🎉 Средства зачислены на баланс!\n\n'
+                    f'Спасибо за оплату! 🙏'
+                )
+
+                await self.bot.send_message(user_id, text, reply_markup=keyboard, parse_mode='Markdown')
+
+                # Проверяем наличие сохраненной корзины для возврата к оформлению подписки
+                from app.services.payment.common import send_cart_notification_after_topup
+
+                await send_cart_notification_after_topup(user, amount_kopeks, session, self.bot)
                 break
-
-            # Сначала отправляем стандартное уведомление
-            payment_service = PaymentService(self.bot)
-            keyboard = await payment_service.build_topup_success_keyboard(user)
-
-            text = (
-                f'✅ **Платеж успешно получен!**\n\n'
-                f'💰 Сумма: {int(amount_rubles)} ₽\n'
-                f'💳 Способ оплаты: Tribute\n'
-                f'🎉 Средства зачислены на баланс!\n\n'
-                f'⚠️ <b>Важно:</b> Пополнение баланса не активирует подписку автоматически. '
-                f'Обязательно активируйте подписку отдельно!\n\n'
-                f'🔄 При наличии сохранённой корзины подписки и включенной автопокупке, '
-                f'подписка будет приобретена автоматически после пополнения баланса.\n\n'
-                f'Спасибо за оплату! 🙏'
-            )
-
-            await self.bot.send_message(user_id, text, reply_markup=keyboard, parse_mode='Markdown')
-
-            # Проверяем наличие сохраненной корзины для возврата к оформлению подписки
-            from app.services.user_cart_service import user_cart_service
-
-            has_saved_cart = await user_cart_service.has_user_cart(user.id)
-            auto_purchase_success = False
-            if has_saved_cart:
-                try:
-                    auto_purchase_success = await auto_purchase_saved_cart_after_topup(
-                        session,
-                        user,
-                        bot=self.bot,
-                    )
-                except Exception as auto_error:
-                    logger.error(
-                        'Ошибка автоматической покупки подписки для пользователя',
-                        user_id=user.id,
-                        auto_error=auto_error,
-                        exc_info=True,
-                    )
-
-                if auto_purchase_success:
-                    has_saved_cart = False
-
-            # Отправляем уведомление только если есть сохранённая корзина и telegram_id
-            if has_saved_cart and self.bot and user_id:
-                # Если у пользователя есть сохраненная корзина,
-                # отправляем ему уведомление с кнопкой вернуться к оформлению
-                from aiogram import types
-
-                from app.localization.texts import get_texts
-
-                texts = get_texts(user.language)
-                cart_message = texts.BALANCE_TOPUP_CART_REMINDER_DETAILED.format(
-                    total_amount=settings.format_price(amount_kopeks)
-                )
-
-                # Создаем клавиатуру с кнопками
-                keyboard = types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT, callback_data='subscription_resume_checkout'
-                            )
-                        ],
-                        [types.InlineKeyboardButton(text='💰 Мой баланс', callback_data='menu_balance')],
-                        [types.InlineKeyboardButton(text='🏠 Главное меню', callback_data='back_to_menu')],
-                    ]
-                )
-
-                await self.bot.send_message(
-                    chat_id=user_id,
-                    text=f'✅ Баланс пополнен на {settings.format_price(amount_kopeks)}!\n\n'
-                    f'⚠️ <b>Важно:</b> Пополнение баланса не активирует подписку автоматически. '
-                    f'Обязательно активируйте подписку отдельно!\n\n{cart_message}',
-                    reply_markup=keyboard,
-                )
-                logger.info(
-                    'Отправлено уведомление с кнопкой возврата к оформлению подписки пользователю', user_id=user_id
-                )
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления об успешном платеже', error=e)
@@ -452,6 +416,11 @@ class TributeService:
                     external_id=external_id,
                     is_completed=True,
                 )
+
+                # Lock user row to prevent concurrent balance race conditions
+                from app.database.crud.user import lock_user_for_update
+
+                user = await lock_user_for_update(session, user)
 
                 old_balance = user.balance_kopeks
                 user.balance_kopeks += amount_kopeks

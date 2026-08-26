@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.database.models import ReferralEarning, Transaction, TransactionType, User
+from app.database.models import ReferralEarning, Subscription, SubscriptionStatus, Transaction, TransactionType, User
 
 
 logger = structlog.get_logger(__name__)
@@ -24,6 +24,8 @@ def format_referrer_info(user: User) -> str:
 
     try:
         # Проверяем, является ли referrer обычным объектом или InstrumentedList
+        # getattr default does NOT catch MissingGreenlet (not an AttributeError),
+        # so we wrap in try/except to handle lazy-load failures in async context.
         referrer = getattr(user, 'referrer', None)
 
         # Если referrer это InstrumentedList или None, то возвращаем информацию по ID
@@ -39,8 +41,9 @@ def format_referrer_info(user: User) -> str:
 
         return f'ID {referrer_telegram_id or referred_by_id}'
 
-    except (AttributeError, TypeError):
-        # Если возникла ошибка при обращении к атрибутам, просто возвращаем ID
+    except Exception:
+        # MissingGreenlet is not a subclass of AttributeError/TypeError,
+        # so we must catch broadly to handle lazy-load failures in async context.
         return f'ID {referred_by_id} (ошибка загрузки)'
 
 
@@ -62,6 +65,7 @@ def get_effective_referral_commission_percent(user: User) -> int:
     """Возвращает индивидуальный процент комиссии пользователя или дефолтное значение."""
 
     percent = getattr(user, 'referral_commission_percent', None)
+    source = 'user' if percent is not None else 'default'
 
     if percent is None:
         percent = settings.REFERRAL_COMMISSION_PERCENT
@@ -75,6 +79,12 @@ def get_effective_referral_commission_percent(user: User) -> int:
         )
         return max(0, min(100, settings.REFERRAL_COMMISSION_PERCENT))
 
+    logger.debug(
+        'Определён процент комиссии',
+        user_id=getattr(user, 'id', None),
+        commission_percent=percent,
+        source=source,
+    )
     return percent
 
 
@@ -84,20 +94,18 @@ async def mark_user_as_had_paid_subscription(db: AsyncSession, user: User) -> bo
             logger.debug('Пользователь уже отмечен как имевший платную подписку', user_id=user.id)
             return True
 
-        await db.execute(
-            update(User).where(User.id == user.id).values(has_had_paid_subscription=True, updated_at=datetime.now(UTC))
-        )
+        async with db.begin_nested():
+            await db.execute(
+                update(User)
+                .where(User.id == user.id)
+                .values(has_had_paid_subscription=True, updated_at=datetime.now(UTC))
+            )
 
-        await db.commit()
         logger.info('✅ Пользователь отмечен как имевший платную подписку', user_id=user.id)
         return True
 
     except Exception as e:
         logger.error('Ошибка отметки пользователя как имевшего платную подписку', user_id=user.id, error=e)
-        try:
-            await db.rollback()
-        except Exception as rollback_error:
-            logger.error('Ошибка отката транзакции', rollback_error=rollback_error)
         return False
 
 
@@ -159,10 +167,16 @@ async def get_user_referral_summary(db: AsyncSession, user_id: int) -> dict:
         for row in earnings_by_type_result:
             earnings_by_type[row.reason] = {'count': row.count, 'total_amount_kopeks': row.total_amount}
 
-        active_referrals_count = 0
-        for referral in referrals:
-            if referral.last_activity and referral.last_activity >= month_ago:
-                active_referrals_count += 1
+        active_result = await db.execute(
+            select(func.count(func.distinct(User.id)))
+            .join(Subscription, User.id == Subscription.user_id)
+            .where(
+                User.referred_by_id == user_id,
+                Subscription.status == SubscriptionStatus.ACTIVE.value,
+                Subscription.end_date > func.now(),
+            )
+        )
+        active_referrals_count = active_result.scalar() or 0
 
         return {
             'invited_count': invited_count,

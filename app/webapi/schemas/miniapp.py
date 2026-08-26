@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from urllib.parse import urlparse
 
@@ -376,6 +376,7 @@ class MiniAppReferralList(BaseModel):
 class MiniAppReferralInfo(BaseModel):
     referral_code: str | None = None
     referral_link: str | None = None
+    bot_referral_link: str | None = None
     terms: MiniAppReferralTerms | None = None
     stats: MiniAppReferralStats | None = None
     recent_earnings: list[MiniAppReferralRecentEarning] = Field(default_factory=list)
@@ -386,7 +387,7 @@ class MiniAppPaymentMethodsRequest(BaseModel):
     init_data: str = Field(..., alias='initData')
 
 
-class MiniAppPaymentIntegrationType(str, Enum):
+class MiniAppPaymentIntegrationType(StrEnum):
     IFRAME = 'iframe'
     REDIRECT = 'redirect'
 
@@ -640,6 +641,7 @@ class MiniAppTariffSwitchRequest(BaseModel):
 
     init_data: str = Field(...)
     tariff_id: int = Field(...)
+    subscription_id: int | None = Field(default=None, alias='subscriptionId')
 
 
 class MiniAppTariffSwitchPreviewResponse(BaseModel):
@@ -678,6 +680,7 @@ class MiniAppDailySubscriptionToggleRequest(BaseModel):
     """Запрос на паузу/возобновление суточной подписки."""
 
     init_data: str = Field(...)
+    subscription_id: int | None = Field(default=None, alias='subscriptionId')
 
 
 class MiniAppDailySubscriptionToggleResponse(BaseModel):

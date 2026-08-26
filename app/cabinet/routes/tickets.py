@@ -226,6 +226,40 @@ async def get_ticket(
     )
 
 
+@router.post('/{ticket_id}/close', response_model=TicketResponse)
+async def close_ticket(
+    ticket_id: int,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Close an open ticket. Only the ticket owner can close it."""
+    query = (
+        select(Ticket).where(Ticket.id == ticket_id, Ticket.user_id == user.id).options(selectinload(Ticket.messages))
+    )
+    result = await db.execute(query)
+    ticket = result.scalar_one_or_none()
+
+    if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Ticket not found',
+        )
+
+    if ticket.status == 'closed':
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Ticket already closed',
+        )
+
+    ticket.status = 'closed'
+    ticket.closed_at = datetime.now(UTC)
+    ticket.updated_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(ticket)
+
+    return _ticket_to_response(ticket)
+
+
 @router.post('/{ticket_id}/messages', response_model=TicketMessageResponse)
 async def add_ticket_message(
     ticket_id: int,
@@ -282,7 +316,13 @@ async def add_ticket_message(
 
     # Уведомить админов об ответе пользователя (Telegram)
     try:
-        await notify_admins_about_ticket_reply(ticket, request.message, db)
+        await notify_admins_about_ticket_reply(
+            ticket,
+            request.message,
+            db,
+            media_file_id=request.media_file_id,
+            media_type=request.media_type,
+        )
     except Exception as e:
         logger.error('Error notifying admins about ticket reply from cabinet', error=e)
 

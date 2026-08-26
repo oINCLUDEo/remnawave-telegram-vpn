@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import (
     ENV_OVERRIDE_KEYS,
     Settings,
+    clear_db_period_prices,
+    refresh_classic_period_prices,
     refresh_period_prices,
     refresh_traffic_prices,
     settings,
@@ -80,11 +82,15 @@ class BotConfigurationService:
         'PAYMENT': '💳 Общие платежные настройки',
         'PAYMENT_VERIFICATION': '🕵️ Проверка платежей',
         'TELEGRAM': '⭐ Telegram Stars',
+        'TELEGRAM_WIDGET': '🔐 Telegram Login Widget',
+        'TELEGRAM_OIDC': '🔑 Telegram Login (OIDC)',
         'CRYPTOBOT': '🪙 CryptoBot',
         'HELEKET': '🪙 Heleket',
         'CLOUDPAYMENTS': '💳 CloudPayments',
         'FREEKASSA': '💳 Freekassa',
         'KASSA_AI': '💳 KassaAI',
+        'RIOPAY': '💳 RioPay',
+        'SEVERPAY': '💳 SeverPay',
         'YOOKASSA': '🟣 YooKassa',
         'PLATEGA': '💳 {platega_name}',
         'TRIBUTE': '🎁 Tribute',
@@ -112,6 +118,7 @@ class BotConfigurationService:
         'HAPP': '🅷 Happ',
         'SKIP': '⚡ Быстрый старт',
         'ADDITIONAL': '📱 Дополнительные приложения',
+        'MOBILE': '📲 Мобильное приложение (Flutter)',
         'DATABASE': '💾 База данных',
         'POSTGRES': '🐘 PostgreSQL',
         'SQLITE': '🧱 SQLite',
@@ -145,11 +152,14 @@ class BotConfigurationService:
         'CLOUDPAYMENTS': 'CloudPayments: оплата банковскими картами, Public ID, API Secret и вебхуки.',
         'FREEKASSA': 'Freekassa: ID магазина, API ключ, секретные слова и вебхуки.',
         'KASSA_AI': 'KassaAI: отдельная платёжка api.fk.life с СБП, картами и SberPay.',
+        'RIOPAY': 'RioPay: платёжная система api.riopay.online с поддержкой карт и СБП.',
         'PLATEGA': '{platega_name}: merchant ID, секрет, ссылки возврата и методы оплаты.',
         'MULENPAY': 'Платежи {mulenpay_name} и параметры магазина.',
         'PAL24': 'PAL24 / PayPalych подключения и лимиты.',
         'TRIBUTE': 'Tribute и донат-сервисы.',
         'TELEGRAM': 'Telegram Stars и их стоимость.',
+        'TELEGRAM_WIDGET': 'Внешний вид виджета авторизации Telegram на странице входа в кабинет.',
+        'TELEGRAM_OIDC': 'OpenID Connect авторизация через Telegram (новая система). Требует настройки в BotFather > Bot Settings > Web Login.',
         'WATA': 'Wata: токен доступа, тип платежа и пределы сумм.',
         'EXTERNAL_ADMIN': 'Токен внешней админки для проверки запросов.',
         'SUBSCRIPTIONS_CORE': 'Лимиты устройств, трафика и базовые цены подписок.',
@@ -171,7 +181,8 @@ class BotConfigurationService:
         'MINIAPP': 'Mini App и кастомные ссылки.',
         'HAPP': 'Интеграция Happ и связанные ссылки.',
         'SKIP': 'Настройки быстрого старта и гайд по подключению.',
-        'ADDITIONAL': 'Конфигурация app-config.json, deep links и кеша.',
+        'ADDITIONAL': 'Конфигурация deep links и кеша.',
+        'MOBILE': 'Минимальная версия, принудительное обновление, техработы и сплит-туннелинг для мобильного клиента — применяется мгновенно, без релиза в сторы.',
         'DATABASE': 'Режим работы базы данных и пути до файлов.',
         'POSTGRES': 'Параметры подключения к PostgreSQL.',
         'SQLITE': 'Файл SQLite и резервные параметры.',
@@ -205,12 +216,11 @@ class BotConfigurationService:
         'DATABASE_URL': 'DATABASE',
         'DATABASE_MODE': 'DATABASE',
         'LOCALES_PATH': 'LOCALIZATION',
-        'CHANNEL_SUB_ID': 'CHANNEL',
-        'CHANNEL_LINK': 'CHANNEL',
         'CHANNEL_IS_REQUIRED_SUB': 'CHANNEL',
         'BOT_USERNAME': 'CORE',
         'DEFAULT_LANGUAGE': 'LOCALIZATION',
         'AVAILABLE_LANGUAGES': 'LOCALIZATION',
+        'REMNAWAVE_WEBHOOK_NOTIFY_NODE_CONNECTION_STATUS': 'ADMIN_NOTIFICATIONS',
         'LANGUAGE_SELECTION_ENABLED': 'LOCALIZATION',
         'DEFAULT_DEVICE_LIMIT': 'SUBSCRIPTIONS_CORE',
         'DEFAULT_TRAFFIC_LIMIT_GB': 'SUBSCRIPTIONS_CORE',
@@ -222,6 +232,7 @@ class BotConfigurationService:
         'SALES_MODE': 'SUBSCRIPTIONS_CORE',
         'DEFAULT_TRAFFIC_RESET_STRATEGY': 'TRAFFIC',
         'RESET_TRAFFIC_ON_PAYMENT': 'TRAFFIC',
+        'RESET_TRAFFIC_ON_TARIFF_SWITCH': 'TRAFFIC',
         'TRAFFIC_SELECTION_MODE': 'TRAFFIC',
         'FIXED_TRAFFIC_LIMIT_GB': 'TRAFFIC',
         'AVAILABLE_SUBSCRIPTION_PERIODS': 'PERIODS',
@@ -234,6 +245,8 @@ class BotConfigurationService:
         'PRICE_360_DAYS': 'SUBSCRIPTION_PRICES',
         'PAID_SUBSCRIPTION_USER_TAG': 'SUBSCRIPTION_PRICES',
         'TRAFFIC_PACKAGES_CONFIG': 'TRAFFIC_PACKAGES',
+        'MULTI_TARIFF_ENABLED': 'SUBSCRIPTIONS_CORE',
+        'MAX_ACTIVE_SUBSCRIPTIONS': 'SUBSCRIPTIONS_CORE',
         'BASE_PROMO_GROUP_PERIOD_DISCOUNTS_ENABLED': 'SUBSCRIPTIONS_CORE',
         'BASE_PROMO_GROUP_PERIOD_DISCOUNTS': 'SUBSCRIPTIONS_CORE',
         'DEFAULT_AUTOPAY_ENABLED': 'AUTOPAY',
@@ -252,6 +265,15 @@ class BotConfigurationService:
         'ADMIN_NOTIFICATIONS_CHAT_ID': 'ADMIN_NOTIFICATIONS',
         'ADMIN_NOTIFICATIONS_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
         'ADMIN_NOTIFICATIONS_TICKET_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_PURCHASES_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_RENEWALS_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_TRIALS_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_BALANCE_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_ADDONS_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_INFRASTRUCTURE_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_ERRORS_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_PROMO_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
+        'ADMIN_NOTIFICATIONS_PARTNERS_TOPIC_ID': 'ADMIN_NOTIFICATIONS',
         'ADMIN_REPORTS_ENABLED': 'ADMIN_REPORTS',
         'ADMIN_REPORTS_CHAT_ID': 'ADMIN_REPORTS',
         'ADMIN_REPORTS_TOPIC_ID': 'ADMIN_REPORTS',
@@ -267,7 +289,6 @@ class BotConfigurationService:
         'SIMPLE_SUBSCRIPTION_DEVICE_LIMIT': 'SIMPLE_SUBSCRIPTION',
         'SIMPLE_SUBSCRIPTION_TRAFFIC_GB': 'SIMPLE_SUBSCRIPTION',
         'SIMPLE_SUBSCRIPTION_SQUAD_UUID': 'SIMPLE_SUBSCRIPTION',
-        'DISABLE_TOPUP_BUTTONS': 'PAYMENT',
         'SUPPORT_TOPUP_ENABLED': 'PAYMENT',
         'ENABLE_NOTIFICATIONS': 'NOTIFICATIONS',
         'NOTIFICATION_RETRY_ATTEMPTS': 'NOTIFICATIONS',
@@ -297,7 +318,6 @@ class BotConfigurationService:
         'CABINET_BUTTON_STYLE': 'INTERFACE',
         'CONNECT_BUTTON_MODE': 'CONNECT_BUTTON',
         'MINIAPP_CUSTOM_URL': 'CONNECT_BUTTON',
-        'APP_CONFIG_PATH': 'ADDITIONAL',
         'ENABLE_DEEP_LINKS': 'ADDITIONAL',
         'APP_CONFIG_CACHE_TTL': 'ADDITIONAL',
         'INACTIVE_USER_DELETE_MONTHS': 'MAINTENANCE',
@@ -333,6 +353,8 @@ class BotConfigurationService:
         'TRAFFIC_': 'TRAFFIC',
         'REFERRAL_': 'REFERRAL',
         'AUTOPAY_': 'AUTOPAY',
+        'TELEGRAM_OIDC_': 'TELEGRAM_OIDC',
+        'TELEGRAM_WIDGET_': 'TELEGRAM_WIDGET',
         'TELEGRAM_STARS': 'TELEGRAM',
         'TRIBUTE_': 'TRIBUTE',
         'YOOKASSA_': 'YOOKASSA',
@@ -341,6 +363,8 @@ class BotConfigurationService:
         'CLOUDPAYMENTS_': 'CLOUDPAYMENTS',
         'FREEKASSA_': 'FREEKASSA',
         'KASSA_AI_': 'KASSA_AI',
+        'RIOPAY_': 'RIOPAY',
+        'SEVERPAY_': 'SEVERPAY',
         'PLATEGA_': 'PLATEGA',
         'MULENPAY_': 'MULENPAY',
         'PAL24_': 'PAL24',
@@ -357,6 +381,7 @@ class BotConfigurationService:
         'NOTIFICATION_': 'NOTIFICATIONS',
         'SERVER_STATUS': 'SERVER_STATUS',
         'MAINTENANCE_': 'MAINTENANCE',
+        'MOBILE_': 'MOBILE',
         'VERSION_CHECK': 'VERSION',
         'BACKUP_': 'BACKUP',
         'WEBHOOK_NOTIFY_': 'WEBHOOK_NOTIFICATIONS',
@@ -480,6 +505,11 @@ class BotConfigurationService:
             ChoiceOption('telegram', '📱 Отключён для Telegram'),
             ChoiceOption('all', '🚫 Отключён для всех'),
         ],
+        'TELEGRAM_WIDGET_SIZE': [
+            ChoiceOption('large', '🔵 Large'),
+            ChoiceOption('medium', '🟡 Medium'),
+            ChoiceOption('small', '🟢 Small'),
+        ],
     }
 
     SETTING_HINTS: dict[str, dict[str, str]] = {
@@ -536,6 +566,29 @@ class BotConfigurationService:
             'example': 'd4aa2b8c-9a36-4f31-93a2-6f07dad05fba',
             'warning': 'Убедитесь, что выбранный сквад активен и доступен для подписки.',
         },
+        'MULTI_TARIFF_ENABLED': {
+            'description': (
+                'Разрешает пользователям покупать несколько тарифов одновременно. '
+                'Каждый тариф создаёт отдельную подписку с собственными серверами и лимитами.'
+            ),
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': (
+                'Работает только в режиме продаж «Тарифы». '
+                'При включении синхронизация с панелью переключается на мультитарифный режим.'
+            ),
+            'dependencies': 'SALES_MODE=tariffs, MAX_ACTIVE_SUBSCRIPTIONS',
+        },
+        'MAX_ACTIVE_SUBSCRIPTIONS': {
+            'description': (
+                'Максимальное количество одновременных активных подписок у одного пользователя. '
+                'Применяется только в мультитарифном режиме.'
+            ),
+            'format': 'Целое число от 1 и выше.',
+            'example': '10',
+            'warning': 'Большое значение может усложнить управление подписками для пользователя.',
+            'dependencies': 'MULTI_TARIFF_ENABLED',
+        },
         'DEVICES_SELECTION_ENABLED': {
             'description': 'Разрешает пользователям выбирать количество устройств при покупке и продлении подписки.',
             'format': 'Булево значение.',
@@ -556,7 +609,7 @@ class BotConfigurationService:
             'format': 'Булево значение.',
             'example': 'Включите после указания токена API и секрета вебхука.',
             'warning': 'Пустой токен или неверный вебхук приведут к отказам платежей.',
-            'dependencies': 'CRYPTOBOT_API_TOKEN, CRYPTOBOT_WEBHOOK_SECRET',
+            'dependencies': 'CRYPTOBOT_API_TOKEN',
         },
         'PAYMENT_VERIFICATION_AUTO_CHECK_ENABLED': {
             'description': (
@@ -819,6 +872,18 @@ class BotConfigurationService:
             'example': '60',
             'warning': 'Защита от спама уведомлениями по одному и тому же пользователю.',
         },
+        'REMNAWAVE_WEBHOOK_NOTIFY_NODE_CONNECTION_STATUS': {
+            'description': (
+                'Уведомления администраторам о потере и восстановлении соединения с нодами из webhook-ов RemnaWave.'
+            ),
+            'format': 'Булево значение.',
+            'example': 'false',
+            'warning': (
+                'Отключает только события node.connection_lost и node.connection_restored. '
+                'Остальные инфраструктурные уведомления продолжают отправляться.'
+            ),
+            'dependencies': 'REMNAWAVE_WEBHOOK_ENABLED, ADMIN_NOTIFICATIONS_ENABLED',
+        },
         'WEBHOOK_NOTIFY_USER_ENABLED': {
             'description': (
                 'Глобальный переключатель уведомлений пользователям от вебхуков RemnaWave. '
@@ -881,6 +946,69 @@ class BotConfigurationService:
             'description': 'Уведомления о подключении и отключении устройств.',
             'format': 'Булево значение.',
             'example': 'true',
+        },
+        'WEBHOOK_NOTIFY_TORRENT_DETECTED': {
+            'description': 'Уведомление пользователю при обнаружении торрент-трафика.',
+            'format': 'Булево значение.',
+            'example': 'true',
+        },
+        'RESET_TRAFFIC_ON_TARIFF_SWITCH': {
+            'description': (
+                'Автоматически сбрасывает счётчик использованного трафика '
+                'при переключении пользователя на другой тарифный план. '
+                'Сброс происходит через RemnaWave API.'
+            ),
+            'format': 'Булево значение: выберите "Включить" или "Выключить".',
+            'example': 'Включено — трафик обнуляется при каждой смене тарифа.',
+            'warning': 'При отключении использованный трафик сохранится после смены тарифа.',
+        },
+        'RESET_TRAFFIC_ON_PAYMENT': {
+            'description': (
+                'Автоматически сбрасывает счётчик использованного трафика при любой оплате или продлении подписки.'
+            ),
+            'format': 'Булево значение: выберите "Включить" или "Выключить".',
+            'example': 'Выключено по умолчанию.',
+            'warning': 'При включении трафик будет обнуляться при каждом продлении подписки.',
+        },
+        'TELEGRAM_WIDGET_SIZE': {
+            'description': 'Размер кнопки виджета Telegram на странице авторизации.',
+            'format': 'Выберите один из доступных размеров.',
+            'example': 'large',
+        },
+        'TELEGRAM_WIDGET_RADIUS': {
+            'description': 'Радиус скругления углов кнопки виджета Telegram (в пикселях).',
+            'format': 'Целое число от 0 до 20.',
+            'example': '8',
+            'warning': 'Максимум: 20 для large, 14 для medium, 10 для small.',
+        },
+        'TELEGRAM_WIDGET_USERPIC': {
+            'description': 'Показывать ли аватар пользователя в виджете Telegram после авторизации.',
+            'format': 'Булево значение.',
+            'example': 'true',
+        },
+        'TELEGRAM_WIDGET_REQUEST_ACCESS': {
+            'description': 'Запрашивать ли у пользователя разрешение на отправку сообщений боту.',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': 'При отключении бот не сможет писать пользователю первым.',
+        },
+        'TELEGRAM_OIDC_ENABLED': {
+            'description': 'Включить авторизацию через новый Telegram Login (OpenID Connect). При включении заменяет legacy виджет.',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'warning': 'Требует заполнения CLIENT_ID и CLIENT_SECRET из BotFather.',
+        },
+        'TELEGRAM_OIDC_CLIENT_ID': {
+            'description': 'ID бота (числовой) из BotFather > Bot Settings > Web Login.',
+            'format': 'Числовой ID бота.',
+            'example': '8521897198',
+            'warning': 'Должен совпадать с ID бота, используемого для авторизации.',
+        },
+        'TELEGRAM_OIDC_CLIENT_SECRET': {
+            'description': 'Секрет для OIDC из BotFather > Bot Settings > Web Login.',
+            'format': 'Строка-секрет.',
+            'example': 'xxxxxxxxxxxxxxxxxxxxxxxx',
+            'warning': 'НЕ совпадает с BOT_TOKEN. Получается отдельно в BotFather.',
         },
     }
 
@@ -1442,6 +1570,12 @@ class BotConfigurationService:
 
         await cls._sync_default_web_api_token()
 
+        # После загрузки всех overrides (включая SALES_MODE) — пересчитать цены,
+        # т.к. ensure_tariffs_synced мог загрузить тарифные цены до того как
+        # SALES_MODE=classic был применён из system_settings
+        refresh_period_prices()
+        refresh_classic_period_prices()
+
     @classmethod
     async def reload(cls) -> None:
         cls._overrides_raw.clear()
@@ -1554,6 +1688,11 @@ class BotConfigurationService:
         if key in {'WEB_API_DEFAULT_TOKEN', 'WEB_API_DEFAULT_TOKEN_NAME'}:
             await cls._sync_default_web_api_token()
 
+        if key == 'SALES_MODE' and settings.is_tariffs_mode():
+            from app.database.crud.tariff import load_period_prices_from_db
+
+            await load_period_prices_from_db(db)
+
     @classmethod
     async def reset_value(
         cls,
@@ -1576,6 +1715,11 @@ class BotConfigurationService:
         if key in {'WEB_API_DEFAULT_TOKEN', 'WEB_API_DEFAULT_TOKEN_NAME'}:
             await cls._sync_default_web_api_token()
 
+        if key == 'SALES_MODE' and settings.is_tariffs_mode():
+            from app.database.crud.tariff import load_period_prices_from_db
+
+            await load_period_prices_from_db(db)
+
     @classmethod
     def _apply_to_settings(cls, key: str, value: Any) -> None:
         if cls._is_env_override(key):
@@ -1583,7 +1727,12 @@ class BotConfigurationService:
             return
         try:
             setattr(settings, key, value)
-            if key in {
+            if key == 'SALES_MODE':
+                if settings.is_classic_mode():
+                    clear_db_period_prices()
+                refresh_period_prices()
+                refresh_classic_period_prices()
+            elif key in {
                 'PRICE_14_DAYS',
                 'PRICE_30_DAYS',
                 'PRICE_60_DAYS',
@@ -1592,6 +1741,7 @@ class BotConfigurationService:
                 'PRICE_360_DAYS',
             }:
                 refresh_period_prices()
+                refresh_classic_period_prices()
             elif key.startswith('PRICE_TRAFFIC_') or key == 'TRAFFIC_PACKAGES_CONFIG':
                 refresh_traffic_prices()
             elif key in {'REMNAWAVE_AUTO_SYNC_ENABLED', 'REMNAWAVE_AUTO_SYNC_TIMES'}:

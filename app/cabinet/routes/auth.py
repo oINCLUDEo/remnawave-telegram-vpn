@@ -4,9 +4,10 @@ import asyncio
 import hashlib
 from datetime import UTC, datetime
 
+import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,8 @@ from app.database.crud.campaign import (
     get_campaign_by_start_parameter,
     get_campaign_registration_by_user,
 )
+from app.database.crud.rbac import UserRoleCRUD
+from app.database.crud.system_setting import get_setting_value
 from app.database.crud.user import (
     clear_email_change_pending,
     create_user,
@@ -26,10 +29,17 @@ from app.database.crud.user import (
     set_email_change_pending,
     verify_and_apply_email_change,
 )
-from app.database.models import CabinetRefreshToken, User
+from app.database.models import CabinetRefreshToken, User, UserStatus
 from app.services.campaign_service import AdvertisingCampaignService
 from app.services.disposable_email_service import disposable_email_service
 from app.services.referral_service import process_referral_registration
+from app.services.web_auth_service import (
+    WEB_AUTH_TOKEN_TTL,
+    consume_web_auth_token,
+    create_web_auth_token,
+    poll_web_auth_token,
+)
+from app.utils.cache import RateLimitCache, TokenReplayCache
 from app.utils.timezone import panel_datetime_to_utc
 
 from ..auth import (
@@ -39,6 +49,7 @@ from ..auth import (
     hash_password,
     validate_telegram_init_data,
     validate_telegram_login_widget,
+    validate_telegram_oidc_token,
     verify_password,
 )
 from ..auth.email_verification import (
@@ -51,10 +62,15 @@ from ..auth.email_verification import (
     is_token_expired,
 )
 from ..auth.jwt_handler import get_refresh_token_expires_at
+from ..auth.merge_service import create_merge_token
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
+from ..ip_utils import get_client_ip
 from ..schemas.auth import (
     AuthResponse,
+    AutoLoginRequest,
     CampaignBonusInfo,
+    DeepLinkPollRequest,
+    DeepLinkTokenResponse,
     EmailChangeRequest,
     EmailChangeResponse,
     EmailChangeVerifyRequest,
@@ -67,6 +83,8 @@ from ..schemas.auth import (
     RefreshTokenRequest,
     RegisterResponse,
     TelegramAuthRequest,
+    TelegramOIDCAuthRequest,
+    TelegramOIDCCodeRequest,
     TelegramWidgetAuthRequest,
     TokenResponse,
     UserResponse,
@@ -99,9 +117,17 @@ def _user_to_response(user: User) -> UserResponse:
     )
 
 
-def _create_auth_response(user: User) -> AuthResponse:
-    """Create full auth response with tokens."""
-    access_token = create_access_token(user.id, user.telegram_id)
+async def _create_auth_response(user: User, db: AsyncSession) -> AuthResponse:
+    """Create full auth response with tokens and RBAC permissions."""
+    user_permissions, user_role_names, user_role_level = await UserRoleCRUD.get_user_permissions(db, user.id)
+
+    access_token = create_access_token(
+        user.id,
+        user.telegram_id,
+        permissions=user_permissions,
+        roles=user_role_names,
+        role_level=user_role_level,
+    )
     refresh_token = create_refresh_token(user.id)
     expires_in = settings.get_cabinet_access_token_expire_minutes() * 60
 
@@ -151,6 +177,15 @@ async def _process_campaign_bonus(
         if not campaign:
             return None
 
+        # Skip if user IS the campaign partner — prevent self-referral
+        if campaign.partner_user_id and campaign.partner_user_id == user.id:
+            logger.debug(
+                'Skipping campaign attribution: user is the campaign partner',
+                user_id=user.id,
+                campaign_id=campaign.id,
+            )
+            return None
+
         # Lock user row to prevent concurrent bonus application (race condition)
         await db.execute(select(User).where(User.id == user.id).with_for_update())
 
@@ -164,7 +199,10 @@ async def _process_campaign_bonus(
             user.referred_by_id = campaign.partner_user_id
             await db.flush()
             try:
-                await process_referral_registration(db, user.id, campaign.partner_user_id, bot=None)
+                from app.bot_factory import create_bot
+
+                async with create_bot() as bot:
+                    await process_referral_registration(db, user.id, campaign.partner_user_id, bot=bot)
                 logger.info(
                     'Referral set from campaign partner',
                     user_id=user.id,
@@ -204,11 +242,39 @@ async def _process_referral_code(
     db: AsyncSession,
     user: User,
     referral_code: str | None,
+    *,
+    is_new_user: bool = False,
 ) -> None:
-    """Set referred_by_id for user if referral_code is valid. Never raises."""
-    if not referral_code or user.referred_by_id:
+    """Process referral for a newly created user. Never raises.
+
+    Only applies to new users (is_new_user=True). Existing users cannot be
+    assigned a referrer — same logic as the bot /start handler.
+
+    Handles two cases:
+    - referred_by_id already set by create_user() → fire registration event
+    - referred_by_id not set (resolution failed earlier) → resolve, set, fire
+    """
+    if not referral_code or not is_new_user:
         return
     try:
+        from app.bot_factory import create_bot
+
+        # Lock user row to prevent concurrent referral application (TOCTOU race)
+        await db.execute(select(User).where(User.id == user.id).with_for_update())
+        await db.refresh(user)
+
+        # Case 1: referred_by_id already set by create_user() — just fire the event
+        if user.referred_by_id:
+            async with create_bot() as bot:
+                await process_referral_registration(db, user.id, user.referred_by_id, bot=bot)
+            logger.info(
+                'Referral registration processed for pre-set referrer',
+                user_id=user.id,
+                referrer_id=user.referred_by_id,
+            )
+            return
+
+        # Case 2: referred_by_id not set — resolve referral code and set it
         referrer = await get_user_by_referral_code(db, referral_code)
         if not referrer:
             return
@@ -218,7 +284,9 @@ async def _process_referral_code(
             return
         user.referred_by_id = referrer.id
         await db.flush()
-        await process_referral_registration(db, user.id, referrer.id, bot=None)
+
+        async with create_bot() as bot:
+            await process_referral_registration(db, user.id, referrer.id, bot=bot)
         logger.info('Referral applied from code', user_id=user.id, referrer_id=referrer.id, referral_code=referral_code)
     except Exception as e:
         logger.error('Failed to process referral code', error=e, referral_code=referral_code)
@@ -231,6 +299,8 @@ async def _sync_subscription_from_panel_by_email(db: AsyncSession, user: User) -
     """
     if not user.email:
         return
+
+    user_email = user.email  # Save before try block — ORM access may fail after rollback
 
     try:
         from app.services.remnawave_service import RemnaWaveService
@@ -247,93 +317,137 @@ async def _sync_subscription_from_panel_by_email(db: AsyncSession, user: User) -
                 logger.debug('No subscription found in panel for email', email=user.email)
                 return
 
-            # Take first user if multiple found
-            panel_user = panel_users[0]
-            logger.info('Found subscription in panel for email', email=user.email, uuid=panel_user.uuid)
-
-            # Link user to panel
-            user.remnawave_uuid = panel_user.uuid
-
-            # Create or update subscription
-            from app.database.crud.subscription import get_subscription_by_user_id
+            # In multi-tariff mode, sync ALL panel users (each = one subscription)
+            # In single-tariff mode, process only the first
+            from app.database.crud.subscription import get_active_subscriptions_by_user_id, get_subscription_by_user_id
             from app.database.models import Subscription, SubscriptionStatus
 
-            existing_sub = await get_subscription_by_user_id(db, user.id)
+            panel_users_to_sync = panel_users if settings.is_multi_tariff_enabled() else panel_users[:1]
 
-            # Parse panel data — panel returns local time with misleading +00:00 offset
-            expire_at = panel_datetime_to_utc(panel_user.expire_at)
-            traffic_limit_gb = panel_user.traffic_limit_bytes // (1024**3) if panel_user.traffic_limit_bytes > 0 else 0
-            traffic_used_gb = panel_user.used_traffic_bytes / (1024**3) if panel_user.used_traffic_bytes > 0 else 0
+            for panel_user in panel_users_to_sync:
+                logger.info('Syncing panel subscription for email', email=user.email, uuid=panel_user.uuid)
 
-            # Extract squad UUIDs from active_internal_squads
-            connected_squads = [s.get('uuid', '') for s in (panel_user.active_internal_squads or []) if s.get('uuid')]
+                # Check if another user already owns this remnawave_uuid
+                if settings.is_multi_tariff_enabled():
+                    from sqlalchemy import select as _select
 
-            # Device limit from panel
-            device_limit = panel_user.hwid_device_limit or 1
+                    from app.database.models import Subscription as _Subscription
 
-            # Determine status — expire_at is now naive UTC
-            current_time = datetime.now(UTC)
+                    _sub_result = await db.execute(
+                        _select(_Subscription).where(_Subscription.remnawave_uuid == panel_user.uuid)
+                    )
+                    _existing_sub = _sub_result.scalar_one_or_none()
+                    if _existing_sub and _existing_sub.user_id != user.id:
+                        logger.warning(
+                            'Panel UUID already owned by another user subscription, skipping',
+                            email=user.email,
+                            panel_uuid=panel_user.uuid,
+                            existing_owner_id=_existing_sub.user_id,
+                        )
+                        continue
+                else:
+                    from app.database.crud.user import get_user_by_remnawave_uuid
 
-            if panel_user.status.value == 'ACTIVE' and expire_at > current_time:
-                sub_status = SubscriptionStatus.ACTIVE
-            elif expire_at <= current_time:
-                sub_status = SubscriptionStatus.EXPIRED
-            else:
-                sub_status = SubscriptionStatus.DISABLED
+                    existing_owner = await get_user_by_remnawave_uuid(db, panel_user.uuid)
+                    if existing_owner and existing_owner.id != user.id:
+                        logger.warning(
+                            'Panel UUID already belongs to another user, skipping',
+                            email=user.email,
+                            panel_uuid=panel_user.uuid,
+                            existing_owner_id=existing_owner.id,
+                        )
+                        continue
 
-            if existing_sub:
-                # Update existing subscription (expire_at already naive UTC)
-                existing_sub.end_date = expire_at
-                existing_sub.traffic_limit_gb = traffic_limit_gb
-                existing_sub.traffic_used_gb = traffic_used_gb
-                existing_sub.status = sub_status.value
-                existing_sub.remnawave_short_uuid = panel_user.short_uuid
-                existing_sub.subscription_url = panel_user.subscription_url
-                existing_sub.subscription_crypto_link = panel_user.happ_crypto_link
-                existing_sub.connected_squads = connected_squads
-                existing_sub.device_limit = device_limit
-                existing_sub.is_trial = False  # Panel subscription is not trial
-                logger.info(
-                    'Updated subscription for email user squads: devices',
-                    email=user.email,
-                    connected_squads=connected_squads,
-                    device_limit=device_limit,
+                # Link user to panel (only in single-tariff mode)
+                if not settings.is_multi_tariff_enabled():
+                    user.remnawave_uuid = panel_user.uuid
+
+                # Find existing subscription
+                if settings.is_multi_tariff_enabled():
+                    active_subs = await get_active_subscriptions_by_user_id(db, user.id)
+                    existing_sub = next(
+                        (s for s in active_subs if s.remnawave_uuid == panel_user.uuid),
+                        None,
+                    )
+                else:
+                    existing_sub = await get_subscription_by_user_id(db, user.id)
+
+                # Parse panel data
+                expire_at = panel_datetime_to_utc(panel_user.expire_at)
+                traffic_limit_gb = (
+                    panel_user.traffic_limit_bytes // (1024**3) if panel_user.traffic_limit_bytes > 0 else 0
                 )
-            else:
-                # Create new subscription (expire_at and current_time already naive UTC)
-                new_sub = Subscription(
-                    user_id=user.id,
-                    start_date=current_time,
-                    end_date=expire_at,
-                    traffic_limit_gb=traffic_limit_gb,
-                    traffic_used_gb=traffic_used_gb,
-                    status=sub_status.value,
-                    is_trial=False,
-                    remnawave_short_uuid=panel_user.short_uuid,
-                    subscription_url=panel_user.subscription_url,
-                    subscription_crypto_link=panel_user.happ_crypto_link,
-                    connected_squads=connected_squads,
-                    device_limit=device_limit,
-                )
-                db.add(new_sub)
-                logger.info(
-                    'Created subscription for email user squads: devices',
-                    email=user.email,
-                    connected_squads=connected_squads,
-                    device_limit=device_limit,
-                )
+                traffic_used_gb = panel_user.used_traffic_bytes / (1024**3) if panel_user.used_traffic_bytes > 0 else 0
+                connected_squads = [
+                    s.get('uuid', '') for s in (panel_user.active_internal_squads or []) if s.get('uuid')
+                ]
+                device_limit = panel_user.hwid_device_limit or 0
+
+                # Determine status
+                current_time = datetime.now(UTC)
+                if panel_user.status.value == 'ACTIVE' and expire_at > current_time:
+                    sub_status = SubscriptionStatus.ACTIVE
+                elif expire_at <= current_time:
+                    sub_status = SubscriptionStatus.EXPIRED
+                else:
+                    sub_status = SubscriptionStatus.DISABLED
+
+                if existing_sub:
+                    existing_sub.end_date = expire_at
+                    existing_sub.traffic_limit_gb = traffic_limit_gb
+                    existing_sub.traffic_used_gb = traffic_used_gb
+                    existing_sub.status = sub_status.value
+                    existing_sub.remnawave_short_uuid = panel_user.short_uuid
+                    existing_sub.subscription_url = panel_user.subscription_url
+                    existing_sub.subscription_crypto_link = panel_user.happ_crypto_link
+                    existing_sub.connected_squads = connected_squads
+                    existing_sub.device_limit = device_limit
+                    existing_sub.is_trial = False
+                    logger.info(
+                        'Updated subscription for email user',
+                        email=user.email,
+                        uuid=panel_user.uuid,
+                    )
+                else:
+                    from app.database.crud.subscription import generate_unique_short_id
+
+                    _short_id = await generate_unique_short_id(db)
+                    new_sub = Subscription(
+                        user_id=user.id,
+                        start_date=current_time,
+                        end_date=expire_at,
+                        traffic_limit_gb=traffic_limit_gb,
+                        traffic_used_gb=traffic_used_gb,
+                        status=sub_status.value,
+                        is_trial=False,
+                        remnawave_uuid=panel_user.uuid if settings.is_multi_tariff_enabled() else None,
+                        remnawave_short_id=_short_id,
+                        remnawave_short_uuid=panel_user.short_uuid,
+                        subscription_url=panel_user.subscription_url,
+                        subscription_crypto_link=panel_user.happ_crypto_link,
+                        connected_squads=connected_squads,
+                        device_limit=device_limit,
+                    )
+                    db.add(new_sub)
+                    logger.info(
+                        'Created subscription for email user',
+                        email=user.email,
+                        uuid=panel_user.uuid,
+                    )
 
             await db.commit()
 
     except Exception as e:
-        logger.warning('Failed to sync subscription from panel for', email=user.email, error=e)
-        # Don't rollback - it detaches user object and breaks subsequent operations
-        # The sync is non-critical, main verification already succeeded
+        logger.warning('Failed to sync subscription from panel for', email=user_email, error=e)
+        await db.rollback()
+        # Refresh user after rollback — object is expired and lazy loads fail in async
+        await db.refresh(user)
 
 
 @router.post('/telegram', response_model=AuthResponse)
 async def auth_telegram(
     request: TelegramAuthRequest,
+    raw_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """
@@ -342,7 +456,18 @@ async def auth_telegram(
     This endpoint validates the initData from Telegram WebApp and returns
     JWT tokens for authenticated access.
     """
-    user_data = validate_telegram_init_data(request.init_data)
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'telegram_initdata', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+    # Telegram Desktop/iOS cache initData with stale auth_date (known Telegram bug:
+    # https://github.com/telegramdesktop/tdesktop/issues/28303).
+    # Use generous max_age: HMAC signature proves authenticity,
+    # JWT tokens handle actual session expiration after login.
+    user_data = validate_telegram_init_data(request.init_data, max_age_seconds=86400 * 30)
 
     if not user_data:
         raise HTTPException(
@@ -371,10 +496,35 @@ async def auth_telegram(
         try:
             referrer = await get_user_by_referral_code(db, request.referral_code)
             if referrer:
-                referrer_id = referrer.id
+                # Self-referral protection by telegram_id (user doesn't exist yet, can't compare user.id)
+                if referrer.telegram_id and referrer.telegram_id == telegram_id:
+                    logger.warning(
+                        'Self-referral attempt blocked via telegram_id',
+                        telegram_id=telegram_id,
+                        referral_code=request.referral_code,
+                    )
+                else:
+                    referrer_id = referrer.id
         except Exception as e:
             logger.warning('Failed to resolve referral code', referral_code=request.referral_code, error=e)
 
+    # Fallback: check Redis for pending referral from /start (user opened cabinet before completing bot registration)
+    if not referrer_id and not user and telegram_id:
+        try:
+            from app.services.referral_service import get_pending_referral
+
+            pending = await get_pending_referral(telegram_id)
+            if pending and pending.get('referrer_id'):
+                referrer_id = pending['referrer_id']
+                logger.info(
+                    'Resolved referral from Redis pending_referral (cabinet)',
+                    telegram_id=telegram_id,
+                    referrer_id=referrer_id,
+                )
+        except Exception as e:
+            logger.warning('Failed to check pending referral', error=e)
+
+    is_new_user = not user
     if not user:
         # Create new user from Telegram initData
         logger.info('Creating new user from cabinet (initData): telegram_id', telegram_id=telegram_id)
@@ -403,7 +553,7 @@ async def auth_telegram(
         if updated:
             logger.info('User profile updated from initData', user_id=user.id)
 
-    if user.status != 'active':
+    if user.status != UserStatus.ACTIVE.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='User account is not active',
@@ -413,13 +563,22 @@ async def auth_telegram(
     user.cabinet_last_login = datetime.now(UTC)
     await db.commit()
 
-    response = _create_auth_response(user)
+    response = await _create_auth_response(user, db)
 
     # Store refresh token
     await _store_refresh_token(db, user.id, response.refresh_token)
 
-    # Process referral code (before campaign bonus, which may also set referrer)
-    await _process_referral_code(db, user, request.referral_code)
+    # Process referral code (only for new users — existing users cannot be assigned a referrer)
+    await _process_referral_code(db, user, request.referral_code, is_new_user=is_new_user)
+
+    # Clear Redis pending referral after successful user creation with referral
+    if referrer_id:
+        try:
+            from app.services.referral_service import clear_pending_referral
+
+            await clear_pending_referral(telegram_id)
+        except Exception:
+            pass
 
     # Process campaign bonus
     response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
@@ -432,6 +591,7 @@ async def auth_telegram(
 @router.post('/telegram/widget', response_model=AuthResponse)
 async def auth_telegram_widget(
     request: TelegramWidgetAuthRequest,
+    raw_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """
@@ -440,9 +600,19 @@ async def auth_telegram_widget(
     This endpoint validates data from Telegram Login Widget and returns
     JWT tokens for authenticated access.
     """
+    # Rate limit
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'telegram_widget', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
     widget_data = request.model_dump(exclude={'campaign_slug', 'referral_code'})
 
-    if not validate_telegram_login_widget(widget_data):
+    # Generous max_age: Telegram caches auth data with stale auth_date
+    if not validate_telegram_login_widget(widget_data, max_age_seconds=86400 * 30):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid or expired Telegram authentication data',
@@ -456,10 +626,19 @@ async def auth_telegram_widget(
         try:
             referrer = await get_user_by_referral_code(db, request.referral_code)
             if referrer:
-                referrer_id = referrer.id
+                # Self-referral protection by telegram_id (user doesn't exist yet, can't compare user.id)
+                if referrer.telegram_id and referrer.telegram_id == request.id:
+                    logger.warning(
+                        'Self-referral attempt blocked via telegram_id',
+                        telegram_id=request.id,
+                        referral_code=request.referral_code,
+                    )
+                else:
+                    referrer_id = referrer.id
         except Exception as e:
             logger.warning('Failed to resolve referral code', referral_code=request.referral_code, error=e)
 
+    is_new_user = not user
     if not user:
         # Create new user from Telegram data
         logger.info(
@@ -476,7 +655,7 @@ async def auth_telegram_widget(
         )
         logger.info('User created successfully: id=, telegram_id', user_id=user.id, telegram_id=user.telegram_id)
 
-    if user.status != 'active':
+    if user.status != UserStatus.ACTIVE.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='User account is not active',
@@ -493,11 +672,20 @@ async def auth_telegram_widget(
     user.cabinet_last_login = datetime.now(UTC)
     await db.commit()
 
-    response = _create_auth_response(user)
+    response = await _create_auth_response(user, db)
     await _store_refresh_token(db, user.id, response.refresh_token)
 
-    # Process referral code (before campaign bonus, which may also set referrer)
-    await _process_referral_code(db, user, request.referral_code)
+    # Process referral code (only for new users — existing users cannot be assigned a referrer)
+    await _process_referral_code(db, user, request.referral_code, is_new_user=is_new_user)
+
+    # Clear Redis pending referral after successful registration
+    if referrer_id and request.id:
+        try:
+            from app.services.referral_service import clear_pending_referral
+
+            await clear_pending_referral(request.id)
+        except Exception:
+            pass
 
     # Process campaign bonus
     response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
@@ -507,9 +695,256 @@ async def auth_telegram_widget(
     return response
 
 
+@router.post('/telegram/oidc', response_model=AuthResponse)
+async def auth_telegram_oidc(
+    request: TelegramOIDCAuthRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """
+    Authenticate using Telegram OIDC id_token (popup flow).
+
+    The frontend uses Telegram.Login.init() popup which returns an id_token.
+    We validate it via JWKS and create/login the user.
+    """
+    # Rate limit
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'telegram_oidc', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
+    # Check OIDC enabled from DB first, fallback to env
+    oidc_enabled_val = await get_setting_value(db, 'TELEGRAM_OIDC_ENABLED')
+    oidc_client_id_val = await get_setting_value(db, 'TELEGRAM_OIDC_CLIENT_ID')
+    oidc_client_id = oidc_client_id_val or settings.TELEGRAM_OIDC_CLIENT_ID
+    oidc_enabled = (
+        oidc_enabled_val.lower() == 'true' if oidc_enabled_val is not None else settings.TELEGRAM_OIDC_ENABLED
+    ) and bool(oidc_client_id)
+
+    if not oidc_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Telegram OIDC is not configured',
+        )
+
+    claims = await validate_telegram_oidc_token(
+        request.id_token,
+        oidc_client_id,
+    )
+    if not claims:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid or expired Telegram OIDC token',
+        )
+
+    # Replay detection: reject if this exact token was already used
+    token_hash = hashlib.sha256(request.id_token.encode()).hexdigest()
+    token_ttl = max(int(claims.get('exp', 0) - datetime.now(UTC).timestamp()), 60)
+    if await TokenReplayCache.is_token_replayed(token_hash, ttl=min(token_ttl, 600)):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid or expired Telegram OIDC token',
+        )
+
+    # Extract user info from OIDC claims
+    try:
+        telegram_id = int(claims.get('id', claims.get('sub', 0)))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid user ID in OIDC claims',
+        ) from e
+    if not telegram_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Missing user ID in OIDC claims',
+        )
+
+    first_name = claims.get('name', claims.get('given_name', ''))
+    username = claims.get('preferred_username')
+    last_name = claims.get('family_name')
+    language = claims.get('locale', 'ru')[:2] if claims.get('locale') else 'ru'
+
+    user = await get_user_by_telegram_id(db, telegram_id)
+
+    # Resolve referral code for new users
+    referrer_id = None
+    if request.referral_code and not user:
+        try:
+            referrer = await get_user_by_referral_code(db, request.referral_code)
+            if referrer:
+                # Self-referral protection by telegram_id (user doesn't exist yet, can't compare user.id)
+                if referrer.telegram_id and referrer.telegram_id == telegram_id:
+                    logger.warning(
+                        'Self-referral attempt blocked via telegram_id',
+                        telegram_id=telegram_id,
+                        referral_code=request.referral_code,
+                    )
+                else:
+                    referrer_id = referrer.id
+        except Exception as e:
+            logger.warning('Failed to resolve referral code', referral_code=request.referral_code, error=e)
+
+    is_new_user = not user
+    if not user:
+        logger.info('Creating new user from cabinet OIDC', telegram_id=telegram_id, username=username)
+        user = await create_user(
+            db=db,
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            language=language,
+            referred_by_id=referrer_id,
+        )
+        logger.info('User created successfully', user_id=user.id, telegram_id=user.telegram_id)
+
+    if user.status != UserStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='User account is not active',
+        )
+
+    # Update user info from OIDC claims
+    if username and username != user.username:
+        user.username = username
+    if first_name and first_name != user.first_name:
+        user.first_name = first_name
+    if last_name is not None and last_name != user.last_name:
+        user.last_name = last_name
+
+    user.cabinet_last_login = datetime.now(UTC)
+    await db.commit()
+
+    response = await _create_auth_response(user, db)
+    await _store_refresh_token(db, user.id, response.refresh_token)
+
+    # Process referral code (only for new users — existing users cannot be assigned a referrer)
+    await _process_referral_code(db, user, request.referral_code, is_new_user=is_new_user)
+
+    # Clear Redis pending referral after successful registration
+    if referrer_id and telegram_id:
+        try:
+            from app.services.referral_service import clear_pending_referral
+
+            await clear_pending_referral(telegram_id)
+        except Exception:
+            pass
+
+    response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
+    if response.campaign_bonus:
+        response.user = _user_to_response(user)
+
+    return response
+
+
+@router.post('/telegram/oidc/code', response_model=AuthResponse)
+async def auth_telegram_oidc_code(
+    request: TelegramOIDCCodeRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Authenticate using the Telegram OIDC Authorization Code flow.
+
+    Designed for native mobile apps. The app gets an authorization ``code`` from
+    oauth.telegram.org delivered straight to its custom-scheme redirect URI
+    (no browser bridge needed). We exchange the code for an id_token here —
+    server-side, because the token endpoint requires the confidential client
+    secret — then reuse the normal OIDC login path.
+    """
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'telegram_oidc', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
+    # Resolve client credentials (DB settings first, then env), mirroring
+    # auth_telegram_oidc.
+    oidc_enabled_val = await get_setting_value(db, 'TELEGRAM_OIDC_ENABLED')
+    oidc_client_id_val = await get_setting_value(db, 'TELEGRAM_OIDC_CLIENT_ID')
+    oidc_client_secret_val = await get_setting_value(db, 'TELEGRAM_OIDC_CLIENT_SECRET')
+    oidc_client_id = oidc_client_id_val or settings.TELEGRAM_OIDC_CLIENT_ID
+    oidc_client_secret = oidc_client_secret_val or settings.TELEGRAM_OIDC_CLIENT_SECRET
+    oidc_enabled = (
+        oidc_enabled_val.lower() == 'true' if oidc_enabled_val is not None else settings.TELEGRAM_OIDC_ENABLED
+    ) and bool(oidc_client_id)
+
+    if not oidc_enabled or not oidc_client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Telegram OIDC is not configured',
+        )
+
+    # Exchange the authorization code for tokens at the Telegram token endpoint.
+    token_form = {
+        'grant_type': 'authorization_code',
+        'code': request.code,
+        'redirect_uri': request.redirect_uri,
+        'client_id': oidc_client_id,
+        'client_secret': oidc_client_secret,
+    }
+    if request.code_verifier:
+        token_form['code_verifier'] = request.code_verifier
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_resp = await client.post(
+                'https://oauth.telegram.org/token',
+                data=token_form,
+                headers={'Accept': 'application/json'},
+            )
+    except httpx.HTTPError as exc:
+        logger.error('Telegram OIDC token exchange transport error', error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to reach Telegram token endpoint',
+        ) from exc
+
+    if token_resp.status_code != 200:
+        logger.warning(
+            'Telegram OIDC token exchange rejected',
+            status=token_resp.status_code,
+            body=token_resp.text[:300],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid or expired authorization code',
+        )
+
+    try:
+        token_data = token_resp.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Malformed token response from Telegram',
+        ) from exc
+
+    id_token = token_data.get('id_token')
+    if not id_token:
+        logger.warning('Telegram OIDC token response missing id_token')
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Telegram did not return an id_token',
+        )
+
+    # Reuse the exact same validation + login path as the popup flow.
+    oidc_req = TelegramOIDCAuthRequest(
+        id_token=id_token,
+        campaign_slug=request.campaign_slug,
+        referral_code=request.referral_code,
+    )
+    return await auth_telegram_oidc(oidc_req, raw_request, db)
+
+
 @router.post('/email/register')
 async def register_email(
     request: EmailRegisterRequest,
+    raw_request: Request,
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
@@ -518,7 +953,24 @@ async def register_email(
 
     Requires valid JWT token from Telegram authentication.
     Sends verification email to the provided address.
+    If the email belongs to another active user, offers account merge.
     """
+    # Rate limit
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'email_register', limit=5, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
+    # Check if user already has a verified email — block before doing anything else
+    if user.email and user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='You already have a verified email',
+        )
+
     # Check for disposable email
     if disposable_email_service.is_disposable(request.email):
         raise HTTPException(
@@ -526,68 +978,94 @@ async def register_email(
             detail='Disposable email addresses are not allowed',
         )
 
-    # Check if email already exists
-    existing_user = await db.execute(select(User).where(User.email == request.email))
-    if existing_user.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='This email is already registered',
+    # Check if email already exists (case-insensitive, exclude deleted users)
+    email_lower = (request.email or '').strip().lower()
+    existing_result = await db.execute(
+        select(User).where(
+            func.lower(User.email) == email_lower,
+            User.status != UserStatus.DELETED.value,
         )
-
-    # Check if user already has email
-    if user.email and user.email_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='You already have a verified email',
+    )
+    existing_email_user = existing_result.scalar_one_or_none()
+    if existing_email_user:
+        if existing_email_user.id == user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='This email is already linked to your account',
+            )
+        # Offer account merge instead of blocking
+        logger.info(
+            'Email register conflict: email already linked to another user, offering merge',
+            current_user_id=user.id,
+            existing_user_id=existing_email_user.id,
         )
-
-    # Generate verification token
-    verification_token = generate_verification_token()
-    verification_expires = get_verification_expires_at()
+        merge_token = await create_merge_token(
+            primary_user_id=user.id,
+            secondary_user_id=existing_email_user.id,
+            provider='email',
+            provider_id=email_lower,
+        )
+        return {
+            'message': 'Account merge required',
+            'merge_required': True,
+            'merge_token': merge_token,
+        }
 
     # Update user
     user.email = request.email
-    user.email_verified = False
     user.password_hash = hash_password(request.password)
-    user.email_verification_token = verification_token
-    user.email_verification_expires = verification_expires
 
-    await db.commit()
+    if not settings.is_cabinet_email_verification_enabled():
+        # Верификация отключена — сразу помечаем email как verified
+        user.email_verified = True
+        user.email_verified_at = datetime.now(UTC)
+        await db.commit()
+    else:
+        # Generate verification token
+        verification_token = generate_verification_token()
+        verification_expires = get_verification_expires_at()
 
-    # Send verification email asynchronously (smtplib is blocking)
-    if settings.is_cabinet_email_verification_enabled() and email_service.is_configured():
-        cabinet_url = settings.CABINET_URL
-        verification_url = f'{cabinet_url}/verify-email'
-        lang = user.language or 'ru'
-        full_url = f'{verification_url}?token={verification_token}'
-        expire_hours = settings.get_cabinet_email_verification_expire_hours()
+        user.email_verified = False
+        user.email_verification_token = verification_token
+        user.email_verification_expires = verification_expires
+        await db.commit()
 
-        # Check for admin template override
-        override = await get_rendered_override(
-            'email_verification',
-            lang,
-            context={
-                'username': user.first_name or '',
-                'verification_url': full_url,
-                'expire_hours': str(expire_hours),
-            },
-            db=db,
-        )
-        custom_subject, custom_body = override if override else (None, None)
+        # Send verification email asynchronously (smtplib is blocking)
+        if email_service.is_configured():
+            cabinet_url = settings.CABINET_URL
+            verification_url = f'{cabinet_url}/verify-email'
+            lang = user.language or 'ru'
+            full_url = f'{verification_url}?token={verification_token}'
+            expire_hours = settings.get_cabinet_email_verification_expire_hours()
 
-        await asyncio.to_thread(
-            email_service.send_verification_email,
-            to_email=request.email,
-            verification_token=verification_token,
-            verification_url=verification_url,
-            username=user.first_name,
-            language=lang,
-            custom_subject=custom_subject,
-            custom_body_html=custom_body,
-        )
+            # Check for admin template override
+            override = await get_rendered_override(
+                'email_verification',
+                lang,
+                context={
+                    'username': user.first_name or '',
+                    'verification_url': full_url,
+                    'expire_hours': str(expire_hours),
+                },
+                db=db,
+            )
+            custom_subject, custom_body = override or (None, None)
+
+            await asyncio.to_thread(
+                email_service.send_verification_email,
+                to_email=request.email,
+                verification_token=verification_token,
+                verification_url=verification_url,
+                username=user.first_name,
+                language=lang,
+                custom_subject=custom_subject,
+                custom_body_html=custom_body,
+            )
 
     return {
-        'message': 'Verification email sent',
+        'message': 'Email linked successfully'
+        if not settings.is_cabinet_email_verification_enabled()
+        else 'Verification email sent',
         'email': request.email,
     }
 
@@ -595,6 +1073,7 @@ async def register_email(
 @router.post('/email/register/standalone', response_model=RegisterResponse)
 async def register_email_standalone(
     request: EmailRegisterStandaloneRequest,
+    raw_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """
@@ -607,6 +1086,13 @@ async def register_email_standalone(
 
     If TEST_EMAIL is configured, test email accounts are auto-verified.
     """
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'email_register', limit=5, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
     # Check if this is a test email registration
     is_test_email = settings.is_test_email(request.email)
 
@@ -626,8 +1112,9 @@ async def register_email_standalone(
             detail='Disposable email addresses are not allowed',
         )
 
-    # Проверить что email не занят
-    existing = await db.execute(select(User).where(User.email == request.email))
+    # Проверить что email не занят (без учёта регистра)
+    email_lower = (request.email or '').strip().lower()
+    existing = await db.execute(select(User).where(func.lower(User.email) == email_lower))
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -667,12 +1154,17 @@ async def register_email_standalone(
         referred_by_id=referrer.id if referrer else None,
     )
 
-    # Для тестового email - автоматически верифицировать
-    if is_test_email:
+    # Для тестового email или отключённой верификации - автоматически верифицировать
+    if is_test_email or not settings.is_cabinet_email_verification_enabled():
         user.email_verified = True
         user.email_verified_at = datetime.now(UTC)
         await db.commit()
-        logger.info('Test email auto-verified: user_id', email=request.email, user_id=user.id)
+        logger.info('Email auto-verified (test or verification disabled)', email=request.email, user_id=user.id)
+        # Sync existing panel subscription (same as manual verification flow)
+        try:
+            await _sync_subscription_from_panel_by_email(db, user)
+        except Exception:
+            logger.warning('Failed to sync panel subscription after auto-verify', user_id=user.id, exc_info=True)
     else:
         # Сгенерировать токен верификации
         verification_token = generate_verification_token()
@@ -700,7 +1192,7 @@ async def register_email_standalone(
                 },
                 db=db,
             )
-            custom_subject, custom_body = override if override else (None, None)
+            custom_subject, custom_body = override or (None, None)
 
             await asyncio.to_thread(
                 email_service.send_verification_email,
@@ -716,7 +1208,10 @@ async def register_email_standalone(
     # Обработать реферальную регистрацию (если есть реферер)
     if referrer:
         try:
-            await process_referral_registration(db, user.id, referrer.id, bot=None)
+            from app.bot_factory import create_bot
+
+            async with create_bot() as bot:
+                await process_referral_registration(db, user.id, referrer.id, bot=bot)
             logger.info(
                 'Processed referral registration: user_id=, referrer_id', user_id=user.id, referrer_id=referrer.id
             )
@@ -725,20 +1220,29 @@ async def register_email_standalone(
             # Не прерываем регистрацию из-за ошибки реферальной системы
 
     # Для тестового email - сразу можно логиниться (уже verified)
-    # Для обычного email - требуется верификация
+    # Для обычного email - требуется верификация (если включена)
+    verification_required = not is_test_email and settings.is_cabinet_email_verification_enabled()
     return RegisterResponse(
         message='Verification email sent. Please check your inbox.',
         email=request.email,
-        requires_verification=not is_test_email,
+        requires_verification=verification_required,
     )
 
 
 @router.post('/email/verify', response_model=AuthResponse)
 async def verify_email(
     request: EmailVerifyRequest,
+    raw_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Verify email with token and return auth tokens."""
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'email_verify', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
     # Find user with this token
     result = await db.execute(select(User).where(User.email_verification_token == request.token))
     user = result.scalar_one_or_none()
@@ -768,7 +1272,7 @@ async def verify_email(
     await _sync_subscription_from_panel_by_email(db, user)
 
     # Return auth tokens so user is logged in after verification
-    response = _create_auth_response(user)
+    response = await _create_auth_response(user, db)
     await _store_refresh_token(db, user.id, response.refresh_token)
 
     # Process campaign bonus
@@ -824,7 +1328,7 @@ async def resend_verification(
             },
             db=db,
         )
-        custom_subject, custom_body = override if override else (None, None)
+        custom_subject, custom_body = override or (None, None)
 
         await asyncio.to_thread(
             email_service.send_verification_email,
@@ -853,17 +1357,27 @@ async def resend_verification(
 @router.post('/email/login', response_model=AuthResponse)
 async def login_email(
     request: EmailLoginRequest,
+    raw_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Login with email and password.
 
     Test email accounts (configured via TEST_EMAIL) bypass email verification.
     """
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'email_login', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
     # Check if this is a test email login
     is_test_email = settings.is_test_email(request.email)
 
-    # Find user by email
-    result = await db.execute(select(User).where(User.email == request.email))
+    # Find user by email (case-insensitive)
+    email_lower = (request.email or '').strip().lower()
+    result = await db.execute(select(User).where(func.lower(User.email) == email_lower))
     user = result.scalar_one_or_none()
 
     if not user:
@@ -899,14 +1413,14 @@ async def login_email(
             detail='Invalid email or password',
         )
 
-    # Test email bypasses verification check
-    if not user.email_verified and not is_test_email:
+    # Test email and disabled verification bypass the check
+    if not user.email_verified and not is_test_email and settings.is_cabinet_email_verification_enabled():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='Please verify your email first',
         )
 
-    if user.status != 'active':
+    if user.status != UserStatus.ACTIVE.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='User account is not active',
@@ -915,7 +1429,7 @@ async def login_email(
     user.cabinet_last_login = datetime.now(UTC)
     await db.commit()
 
-    response = _create_auth_response(user)
+    response = await _create_auth_response(user, db)
     await _store_refresh_token(db, user.id, response.refresh_token)
 
     # Process campaign bonus
@@ -942,11 +1456,11 @@ async def refresh_token(
 
     try:
         user_id = int(payload.get('sub'))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid token payload',
-        )
+        ) from e
 
     # Verify token exists in database and is not revoked
     token_hash = hashlib.sha256(request.refresh_token.encode()).hexdigest()
@@ -978,7 +1492,14 @@ async def refresh_token(
             detail='User not found or inactive',
         )
 
-    access_token = create_access_token(user.id, user.telegram_id)
+    user_permissions, user_role_names, user_role_level = await UserRoleCRUD.get_user_permissions(db, user.id)
+    access_token = create_access_token(
+        user.id,
+        user.telegram_id,
+        permissions=user_permissions,
+        roles=user_role_names,
+        role_level=user_role_level,
+    )
     expires_in = settings.get_cabinet_access_token_expire_minutes() * 60
 
     return TokenResponse(
@@ -1011,17 +1532,92 @@ async def logout(
     return {'message': 'Logged out successfully'}
 
 
+@router.post('/login/auto', response_model=AuthResponse)
+async def auto_login(
+    request: AutoLoginRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Auto-login using a short-lived JWT from guest purchase success page."""
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'auto_login', limit=5, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
+    logger.info('auto_login request received', client_ip=client_ip)
+
+    payload = get_token_payload(request.token, expected_type='auto_login')
+    if not payload:
+        logger.warning('auto_login rejected: invalid or expired token', client_ip=client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid or expired auto-login token',
+        )
+
+    try:
+        user_id = int(payload['sub'])
+    except (KeyError, ValueError, TypeError) as e:
+        logger.warning('auto_login rejected: invalid token payload', client_ip=client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid token payload',
+        ) from e
+
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        logger.warning('auto_login rejected: user not found', user_id=user_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='User not found',
+        )
+
+    # No status check here on purpose — matches oauth_callback/_finalize_oauth_login
+    # (the web cabinet's OAuth login), which never checked status either. A
+    # user auto-deleted for inactivity (status=deleted) has no reactivation
+    # flow anywhere in the API surface, so blocking them here just strands
+    # them with no way back in; keep this consistent with the web flow
+    # instead of half-blocking only the mobile path.
+
+    response = await _create_auth_response(user, db)
+    await _store_refresh_token(db, user.id, response.refresh_token)
+    user.cabinet_last_login = datetime.now(UTC)
+    await db.commit()
+
+    return response
+
+
 @router.post('/password/forgot')
 async def forgot_password(
     request: PasswordForgotRequest,
+    raw_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Request password reset."""
-    result = await db.execute(select(User).where(User.email == request.email))
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'password_forgot', limit=3, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+    email_lower = (request.email or '').strip().lower()
+    result = await db.execute(select(User).where(func.lower(User.email) == email_lower))
     user = result.scalar_one_or_none()
 
     # Always return success to prevent email enumeration
-    if not user or not user.email_verified:
+    if not user:
+        return {'message': 'If the email exists, a password reset link has been sent'}
+
+    # Auto-fix guest-created email users who have a password but weren't verified
+    if not user.email_verified and user.password_hash and user.auth_type == 'email':
+        user.email_verified = True
+        user.email_verified_at = datetime.now(UTC)
+        await db.commit()
+
+    if not user.email_verified:
         return {'message': 'If the email exists, a password reset link has been sent'}
 
     # Generate reset token
@@ -1047,7 +1643,7 @@ async def forgot_password(
             context={'username': user.first_name or '', 'reset_url': full_url, 'expire_hours': str(expire_hours)},
             db=db,
         )
-        custom_subject, custom_body = override if override else (None, None)
+        custom_subject, custom_body = override or (None, None)
 
         await asyncio.to_thread(
             email_service.send_password_reset_email,
@@ -1066,9 +1662,17 @@ async def forgot_password(
 @router.post('/password/reset')
 async def reset_password(
     request: PasswordResetRequest,
+    raw_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Reset password with token."""
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'password_reset', limit=5, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
     result = await db.execute(select(User).where(User.password_reset_token == request.token))
     user = result.scalar_one_or_none()
 
@@ -1102,12 +1706,32 @@ async def get_current_user(
     return _user_to_response(user)
 
 
+@router.get('/me/permissions')
+async def get_my_permissions(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get current user's RBAC permissions, roles, and level."""
+    from app.services.permission_service import PermissionService
+
+    return await PermissionService.get_user_permissions(db, user.id, user=user)
+
+
 @router.get('/me/is-admin')
 async def check_is_admin(
     user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
 ):
-    """Check if current user is an admin."""
+    """Check if current user is an admin (legacy config or RBAC)."""
+    # Legacy check: config-based admin list
     is_admin = settings.is_admin(telegram_id=user.telegram_id, email=user.email if user.email_verified else None)
+
+    if not is_admin:
+        # RBAC check: user has any active role with level > 0
+        _permissions, _role_names, max_level = await UserRoleCRUD.get_user_permissions(db, user.id)
+        if max_level > 0:
+            is_admin = True
+
     return {'is_admin': is_admin}
 
 
@@ -1187,7 +1811,7 @@ async def request_email_change(
                 },
                 db=db,
             )
-            custom_subject, custom_body = override if override else (None, None)
+            custom_subject, custom_body = override or (None, None)
 
             try:
                 await asyncio.to_thread(
@@ -1242,7 +1866,7 @@ async def request_email_change(
             },
             db=db,
         )
-        custom_subject, custom_body = override if override else (None, None)
+        custom_subject, custom_body = override or (None, None)
 
         await asyncio.to_thread(
             email_service.send_email_change_code,
@@ -1333,3 +1957,130 @@ async def get_email_change_status(
         'new_email': user.email_change_new,
         'expires_at': user.email_change_expires.isoformat() if user.email_change_expires else None,
     }
+
+
+# --- Deep link auth (fallback when oauth.telegram.org is blocked) ---
+
+
+@router.post('/deeplink/request', response_model=DeepLinkTokenResponse)
+async def request_deep_link_token(
+    raw_request: Request,
+):
+    """Generate a one-time deep link auth token.
+
+    Frontend shows t.me/{bot}?start=webauth_{token} to the user.
+    No auth required (user is not logged in yet).
+    """
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'deeplink_request', limit=10, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
+    try:
+        token = await create_web_auth_token()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Service temporarily unavailable',
+        )
+
+    bot_username = settings.get_bot_username()
+    if not bot_username:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Bot not configured',
+        )
+
+    return DeepLinkTokenResponse(
+        token=token,
+        bot_username=bot_username,
+        expires_in=WEB_AUTH_TOKEN_TTL,
+    )
+
+
+@router.post('/deeplink/poll', response_model=AuthResponse)
+async def poll_deep_link_token(
+    request: DeepLinkPollRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Poll for deep link auth completion.
+
+    Returns 202 if still pending, AuthResponse if completed, 410 if expired.
+    """
+    client_ip = get_client_ip(raw_request)
+    if await RateLimitCache.is_ip_rate_limited(client_ip, 'deeplink_poll', limit=60, window=60, fail_closed=True):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many requests',
+            headers={'Retry-After': '60'},
+        )
+
+    data = await poll_web_auth_token(request.token)
+
+    if data is None:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Token expired or not found',
+        )
+
+    if data.get('status') == 'pending':
+        raise HTTPException(
+            status_code=status.HTTP_202_ACCEPTED,
+            detail='Waiting for confirmation',
+        )
+
+    if data.get('status') != 'linked':
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Invalid token state',
+        )
+
+    # Token is linked - consume it atomically
+    consumed = await consume_web_auth_token(request.token)
+    if not consumed:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Token already consumed',
+        )
+
+    user_id = consumed.get('user_id')
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Invalid token data',
+        )
+
+    user = await get_user_by_id(db, int(user_id))
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='User not found',
+        )
+
+    if user.status != UserStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Account is deactivated',
+        )
+
+    user.cabinet_last_login = datetime.now(UTC)
+    await db.commit()
+
+    response = await _create_auth_response(user, db)
+    await _store_refresh_token(db, user.id, response.refresh_token, device_info='deep_link')
+
+    # Deep link auth is always for existing users — referral code not applicable
+    # (kept for campaign bonus processing only)
+
+    # Process campaign bonus
+    response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
+    if response.campaign_bonus:
+        response.user = _user_to_response(user)
+
+    logger.info('Deep link auth successful', user_id=user.id, telegram_id=user.telegram_id)
+
+    return response

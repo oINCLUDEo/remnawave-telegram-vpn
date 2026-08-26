@@ -5,7 +5,13 @@ from aiogram import Dispatcher, F, types
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.crud.promo_group import get_promo_groups_with_counts
+from app.database.crud.public_catalog_hidden_host import (
+    get_hidden_host_uuids,
+    hide_host,
+    unhide_host,
+)
 from app.database.crud.server_squad import (
     delete_server_squad,
     get_all_server_squads,
@@ -44,8 +50,8 @@ def _build_server_edit_view(server):
 <b>Информация:</b>
 • ID: {server.id}
 • UUID: <code>{server.squad_uuid}</code>
-• Название: {server.display_name}
-• Оригинальное: {server.original_name or 'Не указано'}
+• Название: {html.escape(server.display_name)}
+• Оригинальное: {html.escape(server.original_name) if server.original_name else 'Не указано'}
 • Статус: {status_emoji}
 
 <b>Настройки:</b>
@@ -149,11 +155,121 @@ async def show_servers_menu(callback: types.CallbackQuery, db_user: User, db: As
             types.InlineKeyboardButton(text='📊 Синхронизировать счетчики', callback_data='admin_servers_sync_counts'),
             types.InlineKeyboardButton(text='📈 Подробная статистика', callback_data='admin_servers_stats'),
         ],
+        [
+            types.InlineKeyboardButton(text='🌐 Гостевой каталог', callback_data='admin_public_catalog'),
+        ],
         [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_panel')],
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
+
+
+_PUBLIC_CATALOG_PAGE_SIZE = 8
+
+
+async def _fetch_live_hosts():
+    """Raw panel host list — same source GET /mobile/v1/servers reads from.
+    Returns None if RemnaWave isn't configured."""
+    remnawave_service = RemnaWaveService()
+    if not remnawave_service.is_configured:
+        return None
+    async with remnawave_service.get_api_client() as api:
+        return await api.get_hosts()
+
+
+@admin_required
+@error_handler
+async def show_public_catalog_hosts(callback: types.CallbackQuery, db_user: User, db: AsyncSession, page: int = 1):
+    """Lets an admin hide specific panel hosts from the guest/no-subscription
+    server catalog preview (GET /mobile/v1/servers). Needed because raw panel
+    hosts include special-purpose entries (e.g. the reserve-grace squad's
+    hosts, or per-client-app config variants) that real subscribers never see
+    as "regular servers" but which the unfiltered host list otherwise dumps
+    into the public preview wholesale.
+    """
+    hosts = await _fetch_live_hosts()
+    if hosts is None:
+        await callback.message.edit_text(
+            '❌ RemnaWave API не настроен.',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')]]
+            ),
+        )
+        await callback.answer()
+        return
+
+    hidden_uuids = await get_hidden_host_uuids(db)
+
+    total_count = len(hosts)
+    total_pages = max(1, (total_count + _PUBLIC_CATALOG_PAGE_SIZE - 1) // _PUBLIC_CATALOG_PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * _PUBLIC_CATALOG_PAGE_SIZE
+    page_hosts = hosts[start : start + _PUBLIC_CATALOG_PAGE_SIZE]
+
+    text = (
+        '🌐 <b>Гостевой каталог серверов</b>\n\n'
+        'Управляет тем, что видит пользователь без подписки в списке серверов '
+        '(предпросмотр). Скрытые здесь хосты не пропадают из реальных подписок — '
+        'только из этого превью.\n\n'
+        f'📊 Всего хостов в панели: {total_count} | Скрыто: {len(hidden_uuids)} | '
+        f'Страница: {page}/{total_pages}\n\n'
+        '✅ — виден в превью, 🚫 — скрыт. Нажмите, чтобы переключить.'
+    )
+
+    keyboard = []
+    for host in page_hosts:
+        is_hidden = host.uuid in hidden_uuids
+        emoji = '🚫' if is_hidden else '✅'
+        keyboard.append(
+            [
+                types.InlineKeyboardButton(
+                    text=f'{emoji} {host.name[:28]}',
+                    callback_data=f'admin_hh_toggle_{page}_{host.uuid}',
+                )
+            ]
+        )
+
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(types.InlineKeyboardButton(text='⬅️', callback_data=f'admin_hh_page_{page - 1}'))
+        nav_row.append(types.InlineKeyboardButton(text=f'{page}/{total_pages}', callback_data='current_page'))
+        if page < total_pages:
+            nav_row.append(types.InlineKeyboardButton(text='➡️', callback_data=f'admin_hh_page_{page + 1}'))
+        keyboard.append(nav_row)
+
+    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')])
+
+    await callback.message.edit_text(
+        text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode='HTML'
+    )
+    await callback.answer()
+
+
+@admin_required
+@error_handler
+async def toggle_public_catalog_host(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    # callback_data format: admin_hh_toggle_{page}_{host_uuid}
+    _, _, _, page_str, host_uuid = callback.data.split('_', 4)
+    page = int(page_str)
+
+    hidden_uuids = await get_hidden_host_uuids(db)
+    if host_uuid in hidden_uuids:
+        await unhide_host(db, host_uuid)
+    else:
+        hosts = await _fetch_live_hosts()
+        host_name = next((h.name for h in (hosts or []) if h.uuid == host_uuid), None)
+        await hide_host(db, host_uuid, host_name)
+
+    await show_public_catalog_hosts(callback, db_user, db, page)
+
+
+@admin_required
+@error_handler
+async def handle_public_catalog_pagination(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    page = int(callback.data.split('_')[-1])
+    await show_public_catalog_hosts(callback, db_user, db, page)
 
 
 @admin_required
@@ -172,7 +288,7 @@ async def show_servers_list(callback: types.CallbackQuery, db_user: User, db: As
             status_emoji = '✅' if server.is_available else '❌'
             price_text = f'{int(server.price_rubles)} ₽' if server.price_kopeks > 0 else 'Бесплатно'
 
-            text += f'{i}. {status_emoji} {server.display_name}\n'
+            text += f'{i}. {status_emoji} {html.escape(server.display_name)}\n'
             text += f'   💰 Цена: {price_text}'
 
             if server.max_users:
@@ -362,7 +478,17 @@ async def show_server_users(callback: types.CallbackQuery, db_user: User, db: As
         if len(display_name) > 30:
             display_name = display_name[:27] + '...'
 
-        subscription_status = user.subscription.status_display if user.subscription else '❌ Нет подписки'
+        if settings.is_multi_tariff_enabled() and hasattr(user, 'subscriptions') and user.subscriptions:
+            status_parts = []
+            for sub in user.subscriptions:
+                emoji = '🟢' if sub.is_active else '🔴'
+                name = sub.tariff.name if sub.tariff else f'#{sub.id}'
+                status_parts.append(f'{emoji}{name}')
+            subscription_status = ', '.join(status_parts)
+        elif user.subscription:
+            subscription_status = user.subscription.status_display
+        else:
+            subscription_status = '❌ Нет подписки'
         status_icon = _get_status_icon(subscription_status)
 
         if status_icon:
@@ -559,7 +685,7 @@ async def start_server_edit_name(callback: types.CallbackQuery, state: FSMContex
 
     await callback.message.edit_text(
         f'✏️ <b>Редактирование названия</b>\n\n'
-        f'Текущее название: <b>{server.display_name}</b>\n\n'
+        f'Текущее название: <b>{html.escape(server.display_name)}</b>\n\n'
         f'Отправьте новое название для сервера:',
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[
@@ -621,7 +747,7 @@ async def delete_server_confirm(callback: types.CallbackQuery, db_user: User, db
 🗑️ <b>Удаление сервера</b>
 
 Вы действительно хотите удалить сервер:
-<b>{server.display_name}</b>
+<b>{html.escape(server.display_name)}</b>
 
 ⚠️ <b>Внимание!</b>
 Сервер можно удалить только если к нему нет активных подключений.
@@ -658,7 +784,7 @@ async def delete_server_execute(callback: types.CallbackQuery, db_user: User, db
         await cache.delete_pattern('available_countries*')
 
         await callback.message.edit_text(
-            f'✅ Сервер <b>{server.display_name}</b> успешно удален!',
+            f'✅ Сервер <b>{html.escape(server.display_name)}</b> успешно удален!',
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text='📋 К списку серверов', callback_data='admin_servers_list')]
@@ -668,7 +794,7 @@ async def delete_server_execute(callback: types.CallbackQuery, db_user: User, db
         )
     else:
         await callback.message.edit_text(
-            f'❌ Не удалось удалить сервер <b>{server.display_name}</b>\n\nВозможно, к нему есть активные подключения.',
+            f'❌ Не удалось удалить сервер <b>{html.escape(server.display_name)}</b>\n\nВозможно, к нему есть активные подключения.',
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text='🔙 К серверу', callback_data=f'admin_server_edit_{server_id}')]
@@ -706,7 +832,7 @@ async def show_server_detailed_stats(callback: types.CallbackQuery, db_user: Use
 
     for i, server in enumerate(sorted_servers[:5], 1):
         price_text = f'{int(server.price_rubles)} ₽' if server.price_kopeks > 0 else 'Бесплатно'
-        text += f'{i}. {server.display_name} - {price_text}\n'
+        text += f'{i}. {html.escape(server.display_name)} - {price_text}\n'
 
     if not sorted_servers:
         text += 'Нет доступных серверов\n'
@@ -968,7 +1094,7 @@ async def start_server_edit_promo_groups(
 
     text = (
         '🎯 <b>Настройка промогрупп</b>\n\n'
-        f'Сервер: <b>{server.display_name}</b>\n\n'
+        f'Сервер: <b>{html.escape(server.display_name)}</b>\n\n'
         'Выберите промогруппы, которым будет доступен этот сервер.\n'
         'Должна быть выбрана минимум одна промогруппа.'
     )
@@ -1116,6 +1242,10 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(sync_servers_with_remnawave, F.data == 'admin_servers_sync')
     dp.callback_query.register(sync_server_user_counts_handler, F.data == 'admin_servers_sync_counts')
     dp.callback_query.register(show_server_detailed_stats, F.data == 'admin_servers_stats')
+
+    dp.callback_query.register(show_public_catalog_hosts, F.data == 'admin_public_catalog')
+    dp.callback_query.register(toggle_public_catalog_host, F.data.startswith('admin_hh_toggle_'))
+    dp.callback_query.register(handle_public_catalog_pagination, F.data.startswith('admin_hh_page_'))
 
     dp.callback_query.register(
         show_server_edit_menu,

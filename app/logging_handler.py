@@ -258,25 +258,35 @@ class TelegramNotifierProcessor:
             pass
 
 
+_EVENT_DICT_MESSAGE_SKIP_KEYS: Final[frozenset[str]] = frozenset(
+    {'event', 'logger', 'level', 'timestamp', 'exc_info', '_admin_notified', 'user_id', 'username', 'error'}
+)
+
+
 def _make_event_dict_error(event_dict: dict[str, Any]) -> Exception:
     """Create an Exception wrapper for a structlog event_dict.
 
     ``send_error_to_admin_chat`` uses ``type(error).__name__`` as error_type.
     If exc_info contains a real exception, use its type name.
     Otherwise, create a descriptive class from the log level.
+
+    The resulting message is enriched with the bound exception's text (if any)
+    and the log call's structured kwargs (body/endpoint/status/etc.) — a bare
+    ``logger.error('RemnaWave API error', body=..., status=400)`` call has no
+    traceback to show, so without this the admin chat report only ever showed
+    the generic event text with no way to tell what actually went wrong.
     """
     # Prefer the real exception type from exc_info or error kwarg
     exc_info = event_dict.get('exc_info')
+    error_kwarg = event_dict.get('error')
     if exc_info and isinstance(exc_info, tuple) and exc_info[1] is not None:
         real_exc = exc_info[1]
         class_name = type(real_exc).__name__
+    elif error_kwarg and isinstance(error_kwarg, BaseException):
+        class_name = type(error_kwarg).__name__
     else:
-        error_kwarg = event_dict.get('error')
-        if error_kwarg and isinstance(error_kwarg, BaseException):
-            class_name = type(error_kwarg).__name__
-        else:
-            level = event_dict.get('level', 'error')
-            class_name = f'Log{level.capitalize()}'
+        level = event_dict.get('level', 'error')
+        class_name = f'Log{level.capitalize()}'
 
     error_cls = type(
         class_name,
@@ -285,7 +295,18 @@ def _make_event_dict_error(event_dict: dict[str, Any]) -> Exception:
             '__str__': lambda self: self.args[0] if self.args else '',
         },
     )
+
     message = str(event_dict.get('event', ''))
+
+    if error_kwarg and isinstance(error_kwarg, BaseException) and str(error_kwarg):
+        message = f'{message}: {error_kwarg}'
+
+    extra_parts = [
+        f'{key}={value}' for key, value in event_dict.items() if key not in _EVENT_DICT_MESSAGE_SKIP_KEYS and value is not None
+    ]
+    if extra_parts:
+        message = f'{message} | ' + ' '.join(extra_parts)
+
     error = error_cls(message)
     error.event_dict = event_dict  # type: ignore[attr-defined]
     return error

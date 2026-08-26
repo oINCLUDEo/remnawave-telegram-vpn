@@ -25,6 +25,7 @@ from app.mobile.schemas.me import MeMobileResponse
 
 def _make_user(*, status='active', subscription=None):
     user = MagicMock()
+    user.id = 1
     user.status = status
     user.telegram_id = 123456789
     user.first_name = 'Ivan'
@@ -44,44 +45,25 @@ def _make_subscription(*, sub_status='active', is_trial=False, end_ts=9999999999
     sub.purchased_traffic_gb = 0
     sub.subscription_url = 'https://example.com/sub/abc'
     sub.device_limit = 3
+    sub.reserve_access_granted_at = None
     return sub
 
 
-def _db_ctx(user):
-    """Return a mock async DB context that yields the mock session."""
+def _mock_db():
+    """Return a mock AsyncSession — get_me only ever calls db.refresh() on it."""
     mock_db = AsyncMock()
-    mock_db.refresh = AsyncMock(side_effect=lambda u, attrs: None)
-    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_db.__aexit__ = AsyncMock(return_value=False)
-    mock_session_class = MagicMock(return_value=mock_db)
-    mock_engine = AsyncMock()
-    mock_engine.dispose = AsyncMock()
-    return mock_db, mock_session_class, mock_engine
+    mock_db.refresh = AsyncMock(side_effect=lambda obj, attrs=None: None)
+    return mock_db
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_me_returns_404_for_unknown_user():
-    from fastapi import HTTPException
-
-    mock_db, mock_session_class, mock_engine = _db_ctx(None)
-
-    with (
-        patch('app.mobile.routes.me.settings') as mock_settings,
-        patch('app.mobile.routes.me.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.me.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.me.get_user_by_telegram_id', new_callable=AsyncMock, return_value=None),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-
-        with pytest.raises(HTTPException) as exc_info:
-            await get_me(x_telegram_id=9999999)
-
-    assert exc_info.value.status_code == 404
+# Note: user lookup and the "account not found / not authenticated" cases now
+# live entirely in get_current_cabinet_user (Bearer JWT dependency) — get_me
+# itself only ever receives an already-resolved User, so there's no 404 case
+# to test here anymore. The "blocked account" 403 check IS still get_me's own
+# (defense in depth on top of the dependency's identical check).
 
 
 @pytest.mark.asyncio
@@ -89,18 +71,9 @@ async def test_get_me_returns_403_for_blocked_user():
     from fastapi import HTTPException
 
     user = _make_user(status='banned')
-    mock_db, mock_session_class, mock_engine = _db_ctx(user)
 
-    with (
-        patch('app.mobile.routes.me.settings') as mock_settings,
-        patch('app.mobile.routes.me.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.me.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.me.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-
-        with pytest.raises(HTTPException) as exc_info:
-            await get_me(x_telegram_id=123456789)
+    with pytest.raises(HTTPException) as exc_info:
+        await get_me(user=user, db=_mock_db())
 
     assert exc_info.value.status_code == 403
 
@@ -108,17 +81,8 @@ async def test_get_me_returns_403_for_blocked_user():
 @pytest.mark.asyncio
 async def test_get_me_returns_user_without_subscription():
     user = _make_user(subscription=None)
-    mock_db, mock_session_class, mock_engine = _db_ctx(user)
 
-    with (
-        patch('app.mobile.routes.me.settings') as mock_settings,
-        patch('app.mobile.routes.me.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.me.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.me.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-
-        result = await get_me(x_telegram_id=123456789)
+    result = await get_me(user=user, db=_mock_db())
 
     assert isinstance(result, MeMobileResponse)
     assert result.telegram_id == 123456789
@@ -131,17 +95,10 @@ async def test_get_me_returns_user_without_subscription():
 async def test_get_me_returns_subscription_data():
     sub = _make_subscription()
     user = _make_user(subscription=sub)
-    mock_db, mock_session_class, mock_engine = _db_ctx(user)
 
-    with (
-        patch('app.mobile.routes.me.settings') as mock_settings,
-        patch('app.mobile.routes.me.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.me.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.me.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-
-        result = await get_me(x_telegram_id=123456789)
+    with patch('app.mobile.routes.me.settings') as mock_settings:
+        mock_settings.RESERVE_GRACE_TRAFFIC_GB = 3
+        result = await get_me(user=user, db=_mock_db())
 
     assert isinstance(result, MeMobileResponse)
     assert result.has_subscription is True
@@ -158,17 +115,28 @@ async def test_get_me_subscription_includes_purchased_traffic():
     sub.traffic_limit_gb = 50
     sub.purchased_traffic_gb = 20
     user = _make_user(subscription=sub)
-    mock_db, mock_session_class, mock_engine = _db_ctx(user)
 
-    with (
-        patch('app.mobile.routes.me.settings') as mock_settings,
-        patch('app.mobile.routes.me.create_async_engine', return_value=mock_engine),
-        patch('app.mobile.routes.me.sessionmaker', return_value=mock_session_class),
-        patch('app.mobile.routes.me.get_user_by_telegram_id', new_callable=AsyncMock, return_value=user),
-    ):
-        mock_settings.get_database_url.return_value = 'sqlite+aiosqlite://'
-
-        result = await get_me(x_telegram_id=123456789)
+    with patch('app.mobile.routes.me.settings') as mock_settings:
+        mock_settings.RESERVE_GRACE_TRAFFIC_GB = 3
+        result = await get_me(user=user, db=_mock_db())
 
     # traffic_limit_gb should combine base + purchased
     assert result.subscription['traffic_limit_gb'] == 70
+
+
+@pytest.mark.asyncio
+async def test_get_me_reports_reserve_grace_distinctly():
+    """A subscription currently in reserve-squad grace must not look like a
+    normal active subscription to the client: status stays 'active' for
+    backend bookkeeping, but is_reserve_grace must be true and the reported
+    traffic limit must be the small grace cap, not the underlying tariff's."""
+    sub = _make_subscription()
+    sub.reserve_access_granted_at = datetime.now(UTC)
+    user = _make_user(subscription=sub)
+
+    with patch('app.mobile.routes.me.settings') as mock_settings:
+        mock_settings.RESERVE_GRACE_TRAFFIC_GB = 3
+        result = await get_me(user=user, db=_mock_db())
+
+    assert result.subscription['is_reserve_grace'] is True
+    assert result.subscription['traffic_limit_gb'] == 3

@@ -62,6 +62,10 @@ class EmailNotificationTemplates:
             NotificationType.PAYMENT_RECEIVED: self._payment_received_template,
             NotificationType.EMAIL_VERIFICATION: self._email_verification_template,
             NotificationType.PASSWORD_RESET: self._password_reset_template,
+            NotificationType.GUEST_SUBSCRIPTION_DELIVERED: self._guest_subscription_delivered_template,
+            NotificationType.GUEST_ACTIVATION_REQUIRED: self._guest_activation_required_template,
+            NotificationType.GUEST_GIFT_RECEIVED: self._guest_gift_received_template,
+            NotificationType.GUEST_CABINET_CREDENTIALS: self._guest_cabinet_credentials_template,
         }
 
         template_func = template_map.get(notification_type)
@@ -69,6 +73,39 @@ class EmailNotificationTemplates:
             return None
 
         return template_func(language, context)
+
+    def _wrap_override_template(self, content: str, language: str = 'ru') -> str:
+        """Wrap override template content appropriately based on its structure.
+
+        Three-tier detection:
+        1. Full HTML document (<!DOCTYPE or <html>) — return as-is, no wrapping
+        2. Styled content (has <style> tag or background CSS) — minimal HTML wrapper
+           without forced colors, headers, or footers
+        3. Simple HTML fragment — wrap with base template (header, footer, white bg)
+           for backward compatibility
+        """
+        content_stripped = content.strip()
+        content_lower = content_stripped.lower()
+
+        # Tier 1: Full HTML document — return as-is
+        if content_lower.startswith('<!doctype') or content_lower.startswith('<html'):
+            return content_stripped
+
+        # Tier 2: Styled content — minimal wrapper without forced styling
+        if '<style' in content_lower or 'background' in content_lower:
+            return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0;">
+    {content}
+</body>
+</html>"""
+
+        # Tier 3: Simple HTML fragment — use base template for structure
+        return self._get_base_template(content, language)
 
     def _get_base_template(self, content: str, language: str = 'ru') -> str:
         """Wrap content in base HTML template."""
@@ -314,18 +351,26 @@ class EmailNotificationTemplates:
         """Template for subscription expiring notification."""
         days_left = context.get('days_left', 0)
         expires_at = context.get('expires_at', '')
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        tariff_suffix_ru = f' «{tariff_name}»' if tariff_name else ''
+        tariff_suffix_en = f' "{tariff_name}"' if tariff_name else ''
+        tariff_line_ru = f'<p>Тариф: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_en = f'<p>Plan: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_zh = f'<p>套餐: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_ua = f'<p>Тариф: <strong>{tariff_name}</strong></p>' if tariff_name else ''
 
         subjects = {
-            'ru': f'Подписка истекает через {days_left} дн.',
-            'en': f'Subscription expires in {days_left} day(s)',
+            'ru': f'Подписка{tariff_suffix_ru} истекает через {days_left} дн.',
+            'en': f'Subscription{tariff_suffix_en} expires in {days_left} day(s)',
             'zh': f'订阅将在 {days_left} 天后到期',
-            'ua': f'Підписка закінчується через {days_left} дн.',
+            'ua': f'Підписка{tariff_suffix_ru} закінчується через {days_left} дн.',
         }
 
         bodies = {
             'ru': f"""
                 <h2>Подписка скоро истекает</h2>
                 <div class="highlight warning">
+                    {tariff_line_ru}
                     <p>Ваша подписка истекает через <strong>{days_left}</strong> дн.</p>
                     <p>Дата истечения: <strong>{expires_at}</strong></p>
                 </div>
@@ -335,6 +380,7 @@ class EmailNotificationTemplates:
             'en': f"""
                 <h2>Subscription Expiring Soon</h2>
                 <div class="highlight warning">
+                    {tariff_line_en}
                     <p>Your subscription expires in <strong>{days_left}</strong> day(s).</p>
                     <p>Expiration date: <strong>{expires_at}</strong></p>
                 </div>
@@ -344,6 +390,7 @@ class EmailNotificationTemplates:
             'zh': f"""
                 <h2>订阅即将到期</h2>
                 <div class="highlight warning">
+                    {tariff_line_zh}
                     <p>您的订阅将在 <strong>{days_left}</strong> 天后到期。</p>
                     <p>到期日期: <strong>{expires_at}</strong></p>
                 </div>
@@ -353,6 +400,7 @@ class EmailNotificationTemplates:
             'ua': f"""
                 <h2>Підписка скоро закінчується</h2>
                 <div class="highlight warning">
+                    {tariff_line_ua}
                     <p>Ваша підписка закінчується через <strong>{days_left}</strong> дн.</p>
                     <p>Дата закінчення: <strong>{expires_at}</strong></p>
                 </div>
@@ -368,17 +416,26 @@ class EmailNotificationTemplates:
 
     def _subscription_expired_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
         """Template for subscription expired notification."""
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        tariff_suffix_ru = f' «{tariff_name}»' if tariff_name else ''
+        tariff_suffix_en = f' "{tariff_name}"' if tariff_name else ''
+        tariff_line_ru = f'<p>Тариф: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_en = f'<p>Plan: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_zh = f'<p>套餐: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_ua = f'<p>Тариф: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+
         subjects = {
-            'ru': 'Подписка истекла',
-            'en': 'Subscription Expired',
+            'ru': f'Подписка{tariff_suffix_ru} истекла',
+            'en': f'Subscription{tariff_suffix_en} Expired',
             'zh': '订阅已到期',
-            'ua': 'Підписка закінчилась',
+            'ua': f'Підписка{tariff_suffix_ru} закінчилась',
         }
 
         bodies = {
             'ru': f"""
                 <h2>Подписка истекла</h2>
                 <div class="highlight danger">
+                    {tariff_line_ru}
                     <p>Ваша подписка истекла. Доступ к VPN отключён.</p>
                 </div>
                 <p>Оформите новую подписку, чтобы продолжить использование сервиса.</p>
@@ -387,6 +444,7 @@ class EmailNotificationTemplates:
             'en': f"""
                 <h2>Subscription Expired</h2>
                 <div class="highlight danger">
+                    {tariff_line_en}
                     <p>Your subscription has expired. VPN access has been disabled.</p>
                 </div>
                 <p>Purchase a new subscription to continue using our service.</p>
@@ -395,6 +453,7 @@ class EmailNotificationTemplates:
             'zh': f"""
                 <h2>订阅已到期</h2>
                 <div class="highlight danger">
+                    {tariff_line_zh}
                     <p>您的订阅已到期。VPN访问已被禁用。</p>
                 </div>
                 <p>请购买新订阅以继续使用我们的服务。</p>
@@ -403,6 +462,7 @@ class EmailNotificationTemplates:
             'ua': f"""
                 <h2>Підписка закінчилась</h2>
                 <div class="highlight danger">
+                    {tariff_line_ua}
                     <p>Ваша підписка закінчилась. Доступ до VPN вимкнено.</p>
                 </div>
                 <p>Оформіть нову підписку, щоб продовжити використання сервісу.</p>
@@ -418,18 +478,24 @@ class EmailNotificationTemplates:
     def _subscription_renewed_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
         """Template for subscription renewed notification."""
         new_expires_at = context.get('new_expires_at', '')
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        tariff_suffix_ru = f' «{tariff_name}»' if tariff_name else ''
+        tariff_suffix_en = f' "{tariff_name}"' if tariff_name else ''
+        tariff_line_ru = f'<p>Тариф: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_en = f'<p>Plan: <strong>{tariff_name}</strong></p>' if tariff_name else ''
 
         subjects = {
-            'ru': 'Подписка продлена',
-            'en': 'Subscription Renewed',
+            'ru': f'Подписка{tariff_suffix_ru} продлена',
+            'en': f'Subscription{tariff_suffix_en} Renewed',
             'zh': '订阅已续订',
-            'ua': 'Підписку продовжено',
+            'ua': f'Підписку{tariff_suffix_ru} продовжено',
         }
 
         bodies = {
             'ru': f"""
                 <h2>Подписка успешно продлена!</h2>
                 <div class="highlight success">
+                    {tariff_line_ru}
                     <p>Ваша подписка была успешно продлена.</p>
                     <p>Новая дата истечения: <strong>{new_expires_at}</strong></p>
                 </div>
@@ -439,6 +505,7 @@ class EmailNotificationTemplates:
             'en': f"""
                 <h2>Subscription Successfully Renewed!</h2>
                 <div class="highlight success">
+                    {tariff_line_en}
                     <p>Your subscription has been successfully renewed.</p>
                     <p>New expiration date: <strong>{new_expires_at}</strong></p>
                 </div>
@@ -455,18 +522,24 @@ class EmailNotificationTemplates:
     def _subscription_activated_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
         """Template for subscription activated notification."""
         expires_at = context.get('expires_at', '')
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        tariff_suffix_ru = f' «{tariff_name}»' if tariff_name else ''
+        tariff_suffix_en = f' "{tariff_name}"' if tariff_name else ''
+        tariff_line_ru = f'<p>Тариф: <strong>{tariff_name}</strong></p>' if tariff_name else ''
+        tariff_line_en = f'<p>Plan: <strong>{tariff_name}</strong></p>' if tariff_name else ''
 
         subjects = {
-            'ru': 'Подписка активирована',
-            'en': 'Subscription Activated',
+            'ru': f'Подписка{tariff_suffix_ru} активирована',
+            'en': f'Subscription{tariff_suffix_en} Activated',
             'zh': '订阅已激活',
-            'ua': 'Підписку активовано',
+            'ua': f'Підписку{tariff_suffix_ru} активовано',
         }
 
         bodies = {
             'ru': f"""
                 <h2>Подписка активирована!</h2>
                 <div class="highlight success">
+                    {tariff_line_ru}
                     <p>Ваша VPN подписка успешно активирована.</p>
                     <p>Действует до: <strong>{expires_at}</strong></p>
                 </div>
@@ -476,6 +549,7 @@ class EmailNotificationTemplates:
             'en': f"""
                 <h2>Subscription Activated!</h2>
                 <div class="highlight success">
+                    {tariff_line_en}
                     <p>Your VPN subscription has been successfully activated.</p>
                     <p>Valid until: <strong>{expires_at}</strong></p>
                 </div>
@@ -1185,8 +1259,8 @@ class EmailNotificationTemplates:
 
     def _email_verification_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
         """Template for email verification."""
-        username = context.get('username', '')
-        verification_url = context.get('verification_url', '#')
+        username = html.escape(context.get('username', ''))
+        verification_url = html.escape(context.get('verification_url', '#'))
         expire_hours = context.get('expire_hours', 24)
 
         subjects = {
@@ -1257,8 +1331,8 @@ class EmailNotificationTemplates:
 
     def _password_reset_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
         """Template for password reset."""
-        username = context.get('username', '')
-        reset_url = context.get('reset_url', '#')
+        username = html.escape(context.get('username', ''))
+        reset_url = html.escape(context.get('reset_url', '#'))
         expire_hours = context.get('expire_hours', 1)
 
         subjects = {
@@ -1319,6 +1393,460 @@ class EmailNotificationTemplates:
                 <p><a href="{reset_url}">{reset_url}</a></p>
                 <p>Посилання дійсне протягом {expire_hours} годин.</p>
                 <p class="warning" style="color: #dc3545; font-weight: bold;">Якщо ви не запитували скидання пароля, проігноруйте цей лист або зв'яжіться з підтримкою.</p>
+            """,
+        }
+
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    # ============================================================================
+    # Guest Purchase Templates
+    # ============================================================================
+
+    def _guest_subscription_delivered_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for guest subscription delivered notification."""
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        period_days = context.get('period_days', 0)
+        cabinet_url = html.escape(context.get('cabinet_url', ''))
+        cabinet_email = html.escape(context.get('cabinet_email', ''))
+        cabinet_password = context.get('cabinet_password', '')
+
+        subjects = {
+            'ru': 'Ваша VPN подписка готова',
+            'en': 'Your VPN subscription is ready',
+            'zh': '您的VPN订阅已准备就绪',
+            'ua': 'Ваша VPN підписка готова',
+            'fa': 'اشتراک VPN شما آماده است',
+        }
+
+        creds_block_ru = (
+            f"""
+                <div class="highlight">
+                    <p><strong>Данные для входа в личный кабинет:</strong></p>
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>Пароль:</strong> <code>{cabinet_password}</code></p>
+                </div>
+        """
+            if cabinet_password
+            else ''
+        )
+
+        creds_block_en = (
+            f"""
+                <div class="highlight">
+                    <p><strong>Your cabinet login credentials:</strong></p>
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>Password:</strong> <code>{cabinet_password}</code></p>
+                </div>
+        """
+            if cabinet_password
+            else ''
+        )
+
+        creds_block_zh = (
+            f"""
+                <div class="highlight">
+                    <p><strong>个人中心登录信息：</strong></p>
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>密码:</strong> <code>{cabinet_password}</code></p>
+                </div>
+        """
+            if cabinet_password
+            else ''
+        )
+
+        creds_block_ua = (
+            f"""
+                <div class="highlight">
+                    <p><strong>Дані для входу в особистий кабінет:</strong></p>
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>Пароль:</strong> <code>{cabinet_password}</code></p>
+                </div>
+        """
+            if cabinet_password
+            else ''
+        )
+
+        creds_block_fa = (
+            f"""
+                <div class="highlight">
+                    <p><strong>اطلاعات ورود به پنل کاربری:</strong></p>
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>رمز عبور:</strong> <code>{cabinet_password}</code></p>
+                </div>
+        """
+            if cabinet_password
+            else ''
+        )
+
+        bodies = {
+            'ru': f"""
+                <h2>Ваша VPN подписка готова!</h2>
+                <div class="highlight success">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Период: <strong>{period_days} дней</strong></p>
+                </div>
+                {creds_block_ru}
+                <p>Подписка активирована в вашем личном кабинете.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти в личный кабинет</a></p>
+            """,
+            'en': f"""
+                <h2>Your VPN subscription is ready!</h2>
+                <div class="highlight success">
+                    <p>Plan: <strong>{tariff_name}</strong></p>
+                    <p>Period: <strong>{period_days} days</strong></p>
+                </div>
+                {creds_block_en}
+                <p>Your subscription has been activated in your cabinet.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Go to Cabinet</a></p>
+            """,
+            'zh': f"""
+                <h2>您的VPN订阅已准备就绪！</h2>
+                <div class="highlight success">
+                    <p>套餐: <strong>{tariff_name}</strong></p>
+                    <p>期限: <strong>{period_days} 天</strong></p>
+                </div>
+                {creds_block_zh}
+                <p>订阅已在您的个人中心激活。</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">前往个人中心</a></p>
+            """,
+            'ua': f"""
+                <h2>Ваша VPN підписка готова!</h2>
+                <div class="highlight success">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Період: <strong>{period_days} днів</strong></p>
+                </div>
+                {creds_block_ua}
+                <p>Підписка активована у вашому особистому кабінеті.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти до кабінету</a></p>
+            """,
+            'fa': f"""
+                <h2>اشتراک VPN شما آماده است!</h2>
+                <div class="highlight success">
+                    <p>طرح: <strong>{tariff_name}</strong></p>
+                    <p>مدت: <strong>{period_days} روز</strong></p>
+                </div>
+                {creds_block_fa}
+                <p>اشتراک شما در پنل کاربری فعال شده است.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">رفتن به پنل کاربری</a></p>
+            """,
+        }
+
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    def _guest_activation_required_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for guest purchase pending activation (user already has a subscription)."""
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        period_days = context.get('period_days', 0)
+        success_page_url = html.escape(context.get('success_page_url', ''))
+        gift_message = context.get('gift_message')
+        is_gift = context.get('is_gift', False)
+
+        gift_block_ru = ''
+        gift_block_en = ''
+        gift_block_zh = ''
+        gift_block_ua = ''
+        gift_block_fa = ''
+        if is_gift and gift_message:
+            escaped_msg = html.escape(gift_message)
+            gift_block_ru = f'<div class="highlight"><p><em>Сообщение: {escaped_msg}</em></p></div>'
+            gift_block_en = f'<div class="highlight"><p><em>Message: {escaped_msg}</em></p></div>'
+            gift_block_zh = f'<div class="highlight"><p><em>留言: {escaped_msg}</em></p></div>'
+            gift_block_ua = f'<div class="highlight"><p><em>Повідомлення: {escaped_msg}</em></p></div>'
+            gift_block_fa = f'<div class="highlight"><p><em>پیام: {escaped_msg}</em></p></div>'
+
+        subjects = {
+            'ru': 'Требуется активация подписки',
+            'en': 'Subscription activation required',
+            'zh': '需要激活订阅',
+            'ua': 'Потрібна активація підписки',
+            'fa': 'فعال‌سازی اشتراک لازم است',
+        }
+
+        bodies = {
+            'ru': f"""
+                <h2>Требуется активация подписки</h2>
+                {gift_block_ru}
+                <div class="highlight">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Период: <strong>{period_days} дней</strong></p>
+                </div>
+                <p class="warning">У вас уже есть активная подписка. Активация новой заменит текущую.</p>
+                <p style="text-align: center;"><a href="{success_page_url}" class="button">Активировать подписку</a></p>
+            """,
+            'en': f"""
+                <h2>Subscription activation required</h2>
+                {gift_block_en}
+                <div class="highlight">
+                    <p>Plan: <strong>{tariff_name}</strong></p>
+                    <p>Period: <strong>{period_days} days</strong></p>
+                </div>
+                <p class="warning">You already have an active subscription. Activating will replace your current one.</p>
+                <p style="text-align: center;"><a href="{success_page_url}" class="button">Activate subscription</a></p>
+            """,
+            'zh': f"""
+                <h2>需要激活订阅</h2>
+                {gift_block_zh}
+                <div class="highlight">
+                    <p>套餐: <strong>{tariff_name}</strong></p>
+                    <p>期限: <strong>{period_days} 天</strong></p>
+                </div>
+                <p class="warning">您已有活跃订阅。激活新订阅将替换当前订阅。</p>
+                <p style="text-align: center;"><a href="{success_page_url}" class="button">激活订阅</a></p>
+            """,
+            'ua': f"""
+                <h2>Потрібна активація підписки</h2>
+                {gift_block_ua}
+                <div class="highlight">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Період: <strong>{period_days} днів</strong></p>
+                </div>
+                <p class="warning">У вас вже є активна підписка. Активація нової замінить поточну.</p>
+                <p style="text-align: center;"><a href="{success_page_url}" class="button">Активувати підписку</a></p>
+            """,
+            'fa': f"""
+                <h2>فعال‌سازی اشتراک لازم است</h2>
+                {gift_block_fa}
+                <div class="highlight">
+                    <p>طرح: <strong>{tariff_name}</strong></p>
+                    <p>مدت: <strong>{period_days} روز</strong></p>
+                </div>
+                <p class="warning">شما از قبل اشتراک فعالی دارید. فعال‌سازی اشتراک جدید جایگزین فعلی خواهد شد.</p>
+                <p style="text-align: center;"><a href="{success_page_url}" class="button">فعال‌سازی اشتراک</a></p>
+            """,
+        }
+
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    def _guest_gift_received_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for gift subscription received notification."""
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        period_days = context.get('period_days', 0)
+        gift_message = context.get('gift_message')
+        cabinet_password = context.get('cabinet_password')
+        cabinet_email = html.escape(context.get('cabinet_email', ''))
+        cabinet_url = html.escape(context.get('cabinet_url', ''))
+
+        # Credentials block for gift recipients who got a new cabinet account
+        cred_block = {'ru': '', 'en': '', 'zh': '', 'ua': '', 'fa': ''}
+        if cabinet_password and cabinet_email:
+            escaped_pw = html.escape(cabinet_password)
+            cred_block = {
+                'ru': f"""
+                    <div class="highlight">
+                        <p><strong>Данные для входа в личный кабинет:</strong></p>
+                        <p>Email: <code>{cabinet_email}</code></p>
+                        <p>Пароль: <code>{escaped_pw}</code></p>
+                    </div>
+                    <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти в личный кабинет</a></p>
+                """,
+                'en': f"""
+                    <div class="highlight">
+                        <p><strong>Your cabinet login credentials:</strong></p>
+                        <p>Email: <code>{cabinet_email}</code></p>
+                        <p>Password: <code>{escaped_pw}</code></p>
+                    </div>
+                    <p style="text-align: center;"><a href="{cabinet_url}" class="button">Go to Cabinet</a></p>
+                """,
+                'zh': f"""
+                    <div class="highlight">
+                        <p><strong>个人中心登录信息：</strong></p>
+                        <p>邮箱: <code>{cabinet_email}</code></p>
+                        <p>密码: <code>{escaped_pw}</code></p>
+                    </div>
+                    <p style="text-align: center;"><a href="{cabinet_url}" class="button">前往个人中心</a></p>
+                """,
+                'ua': f"""
+                    <div class="highlight">
+                        <p><strong>Дані для входу в особистий кабінет:</strong></p>
+                        <p>Email: <code>{cabinet_email}</code></p>
+                        <p>Пароль: <code>{escaped_pw}</code></p>
+                    </div>
+                    <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти до кабінету</a></p>
+                """,
+                'fa': f"""
+                    <div class="highlight">
+                        <p><strong>اطلاعات ورود به پنل کاربری:</strong></p>
+                        <p>ایمیل: <code dir="ltr">{cabinet_email}</code></p>
+                        <p>رمز عبور: <code dir="ltr">{escaped_pw}</code></p>
+                    </div>
+                    <p style="text-align: center;"><a href="{cabinet_url}" class="button">رفتن به پنل کاربری</a></p>
+                """,
+            }
+
+        gift_block_ru = ''
+        gift_block_en = ''
+        gift_block_zh = ''
+        gift_block_ua = ''
+        gift_block_fa = ''
+        if gift_message:
+            escaped_msg = html.escape(gift_message)
+            gift_block_ru = f'<div class="highlight"><p><em>Сообщение: {escaped_msg}</em></p></div>'
+            gift_block_en = f'<div class="highlight"><p><em>Message: {escaped_msg}</em></p></div>'
+            gift_block_zh = f'<div class="highlight"><p><em>留言: {escaped_msg}</em></p></div>'
+            gift_block_ua = f'<div class="highlight"><p><em>Повідомлення: {escaped_msg}</em></p></div>'
+            gift_block_fa = f'<div class="highlight"><p><em>پیام: {escaped_msg}</em></p></div>'
+
+        subjects = {
+            'ru': 'Вам подарили VPN подписку!',
+            'en': "You've been gifted a VPN subscription!",
+            'zh': '您收到了VPN订阅礼物！',
+            'ua': 'Вам подарували VPN підписку!',
+            'fa': 'یک اشتراک VPN به شما هدیه داده شده است!',
+        }
+
+        bodies = {
+            'ru': f"""
+                <h2>Вам подарили VPN подписку!</h2>
+                {gift_block_ru}
+                <div class="highlight success">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Период: <strong>{period_days} дней</strong></p>
+                </div>
+                <p>Подписка активирована в личном кабинете.</p>
+                {cred_block['ru']}
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти в личный кабинет</a></p>
+            """,
+            'en': f"""
+                <h2>You've been gifted a VPN subscription!</h2>
+                {gift_block_en}
+                <div class="highlight success">
+                    <p>Plan: <strong>{tariff_name}</strong></p>
+                    <p>Period: <strong>{period_days} days</strong></p>
+                </div>
+                <p>Your subscription has been activated in the cabinet.</p>
+                {cred_block['en']}
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Go to Cabinet</a></p>
+            """,
+            'zh': f"""
+                <h2>您收到了VPN订阅礼物！</h2>
+                {gift_block_zh}
+                <div class="highlight success">
+                    <p>套餐: <strong>{tariff_name}</strong></p>
+                    <p>期限: <strong>{period_days} 天</strong></p>
+                </div>
+                <p>订阅已在个人中心激活。</p>
+                {cred_block['zh']}
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">前往个人中心</a></p>
+            """,
+            'ua': f"""
+                <h2>Вам подарували VPN підписку!</h2>
+                {gift_block_ua}
+                <div class="highlight success">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Період: <strong>{period_days} днів</strong></p>
+                </div>
+                <p>Підписка активована в особистому кабінеті.</p>
+                {cred_block['ua']}
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти до кабінету</a></p>
+            """,
+            'fa': f"""
+                <h2>یک اشتراک VPN به شما هدیه داده شده است!</h2>
+                {gift_block_fa}
+                <div class="highlight success">
+                    <p>طرح: <strong>{tariff_name}</strong></p>
+                    <p>مدت: <strong>{period_days} روز</strong></p>
+                </div>
+                <p>اشتراک در پنل کاربری فعال شده است.</p>
+                {cred_block['fa']}
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">رفتن به پنل کاربری</a></p>
+            """,
+        }
+
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    def _guest_cabinet_credentials_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for cabinet login credentials email (sent separately from subscription)."""
+        cabinet_email = html.escape(context.get('cabinet_email', ''))
+        cabinet_password = html.escape(context.get('cabinet_password', ''))
+        cabinet_url = html.escape(context.get('cabinet_url', ''))
+        tariff_name = html.escape(context.get('tariff_name', ''))
+        period_days = context.get('period_days', 0)
+
+        subjects = {
+            'ru': 'Данные для входа в личный кабинет',
+            'en': 'Your cabinet login credentials',
+            'zh': '您的个人中心登录信息',
+            'ua': 'Дані для входу в особистий кабінет',
+            'fa': 'اطلاعات ورود به پنل کاربری',
+        }
+
+        bodies = {
+            'ru': f"""
+                <h2>Данные для входа в личный кабинет</h2>
+                <div class="highlight success">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Период: <strong>{period_days} дней</strong></p>
+                </div>
+                <div class="highlight">
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>Пароль:</strong> <code>{cabinet_password}</code></p>
+                </div>
+                <p>Сохраните эти данные для входа. Вы можете изменить пароль в настройках кабинета.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти в личный кабинет</a></p>
+            """,
+            'en': f"""
+                <h2>Your cabinet login credentials</h2>
+                <div class="highlight success">
+                    <p>Plan: <strong>{tariff_name}</strong></p>
+                    <p>Period: <strong>{period_days} days</strong></p>
+                </div>
+                <div class="highlight">
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>Password:</strong> <code>{cabinet_password}</code></p>
+                </div>
+                <p>Save these credentials. You can change your password in cabinet settings.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Go to Cabinet</a></p>
+            """,
+            'zh': f"""
+                <h2>您的个人中心登录信息</h2>
+                <div class="highlight success">
+                    <p>套餐: <strong>{tariff_name}</strong></p>
+                    <p>期限: <strong>{period_days} 天</strong></p>
+                </div>
+                <div class="highlight">
+                    <p><strong>邮箱:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>密码:</strong> <code>{cabinet_password}</code></p>
+                </div>
+                <p>请保存这些登录信息。您可以在个人中心设置中更改密码。</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">前往个人中心</a></p>
+            """,
+            'ua': f"""
+                <h2>Дані для входу в особистий кабінет</h2>
+                <div class="highlight success">
+                    <p>Тариф: <strong>{tariff_name}</strong></p>
+                    <p>Період: <strong>{period_days} днів</strong></p>
+                </div>
+                <div class="highlight">
+                    <p><strong>Email:</strong> <code>{cabinet_email}</code></p>
+                    <p><strong>Пароль:</strong> <code>{cabinet_password}</code></p>
+                </div>
+                <p>Збережіть ці дані. Ви можете змінити пароль у налаштуваннях кабінету.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">Перейти до кабінету</a></p>
+            """,
+            'fa': f"""
+                <h2>اطلاعات ورود به پنل کاربری</h2>
+                <div class="highlight success">
+                    <p>طرح: <strong>{tariff_name}</strong></p>
+                    <p>مدت: <strong>{period_days} روز</strong></p>
+                </div>
+                <div class="highlight">
+                    <p><strong>ایمیل:</strong> <code dir="ltr">{cabinet_email}</code></p>
+                    <p><strong>رمز عبور:</strong> <code dir="ltr">{cabinet_password}</code></p>
+                </div>
+                <p>این اطلاعات را ذخیره کنید. می‌توانید رمز عبور خود را در تنظیمات پنل تغییر دهید.</p>
+                <p style="text-align: center;"><a href="{cabinet_url}" class="button">رفتن به پنل کاربری</a></p>
             """,
         }
 

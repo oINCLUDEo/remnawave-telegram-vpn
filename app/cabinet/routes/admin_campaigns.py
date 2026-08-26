@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.cabinet.utils.links import get_campaign_deep_link, get_campaign_web_link
 from app.database.crud.campaign import (
     create_campaign,
     delete_campaign,
@@ -29,9 +29,11 @@ from app.database.models import (
     Tariff,
     User,
 )
+from app.services.partner_stats_service import PartnerStatsService
 
-from ..dependencies import get_cabinet_db, get_current_admin_user
+from ..dependencies import get_cabinet_db, require_permission
 from ..schemas.campaigns import (
+    AdminCampaignChartDataResponse,
     AvailablePartnerItem,
     CampaignCreateRequest,
     CampaignDetailResponse,
@@ -54,20 +56,9 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix='/admin/campaigns', tags=['Cabinet Admin Campaigns'])
 
 
-def _get_deep_link(start_parameter: str) -> str:
-    """Generate deep link for campaign."""
-    bot_username = settings.get_bot_username()
-    if bot_username:
-        return f'https://t.me/{bot_username}?start={start_parameter}'
-    return f'?start={start_parameter}'
-
-
-def _get_web_link(start_parameter: str) -> str | None:
-    """Generate web link for campaign."""
-    base_url = (settings.MINIAPP_CUSTOM_URL or '').rstrip('/')
-    if base_url:
-        return f'{base_url}/?campaign={start_parameter}'
-    return None
+def _safe_div(value: float | None, divisor: int = 100) -> float:
+    """Safely divide kopeks to rubles, handling None values."""
+    return (value or 0) / divisor
 
 
 def _get_partner_name(campaign: AdvertisingCampaign) -> str | None:
@@ -80,35 +71,44 @@ def _get_partner_name(campaign: AdvertisingCampaign) -> str | None:
 
 @router.get('/overview', response_model=CampaignsOverviewResponse)
 async def get_overview(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get campaigns overview statistics."""
-    overview = await get_campaigns_overview(db)
+    try:
+        overview = await get_campaigns_overview(db)
 
-    # Count tariff bonuses
-    tariff_result = await db.execute(
-        select(func.count(AdvertisingCampaignRegistration.id)).where(
-            AdvertisingCampaignRegistration.bonus_type == 'tariff'
+        # Count tariff bonuses
+        tariff_result = await db.execute(
+            select(func.count(AdvertisingCampaignRegistration.id)).where(
+                AdvertisingCampaignRegistration.bonus_type == 'tariff'
+            )
         )
-    )
-    tariff_count = tariff_result.scalar() or 0
+        tariff_count = tariff_result.scalar() or 0
 
-    return CampaignsOverviewResponse(
-        total=overview['total'],
-        active=overview['active'],
-        inactive=overview['inactive'],
-        total_registrations=overview['registrations'],
-        total_balance_issued_kopeks=overview['balance_total'],
-        total_balance_issued_rubles=overview['balance_total'] / 100,
-        total_subscription_issued=overview['subscription_total'],
-        total_tariff_issued=tariff_count,
-    )
+        return CampaignsOverviewResponse(
+            total=overview['total'],
+            active=overview['active'],
+            inactive=overview['inactive'],
+            total_registrations=overview['registrations'],
+            total_balance_issued_kopeks=overview['balance_total'],
+            total_balance_issued_rubles=_safe_div(overview['balance_total']),
+            total_subscription_issued=overview['subscription_total'],
+            total_tariff_issued=tariff_count,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error('Failed to get campaigns overview', error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to load campaigns overview',
+        )
 
 
 @router.get('/available-servers', response_model=list[ServerSquadInfo])
 async def get_available_servers(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get list of available server squads for campaign subscription bonus."""
@@ -126,7 +126,7 @@ async def get_available_servers(
 
 @router.get('/available-tariffs', response_model=list[TariffListItem])
 async def get_available_tariffs(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get list of available tariffs for campaign tariff bonus."""
@@ -155,7 +155,7 @@ async def get_available_tariffs(
 
 @router.get('/available-partners', response_model=list[AvailablePartnerItem])
 async def get_available_partners(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get list of approved partners for campaign partner selector."""
@@ -178,12 +178,12 @@ async def list_campaigns(
     include_inactive: bool = True,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get list of all campaigns."""
     campaigns = await get_campaigns_list(db, offset=offset, limit=limit, include_inactive=include_inactive)
-    total = await get_campaigns_count(db)
+    total = await get_campaigns_count(db, is_active=True if not include_inactive else None)
 
     items = []
     for campaign in campaigns:
@@ -211,7 +211,7 @@ async def list_campaigns(
 @router.get('/{campaign_id}', response_model=CampaignDetailResponse)
 async def get_campaign(
     campaign_id: int,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get detailed campaign info."""
@@ -236,7 +236,7 @@ async def get_campaign(
         bonus_type=campaign.bonus_type,
         is_active=campaign.is_active,
         balance_bonus_kopeks=campaign.balance_bonus_kopeks or 0,
-        balance_bonus_rubles=(campaign.balance_bonus_kopeks or 0) / 100,
+        balance_bonus_rubles=_safe_div(campaign.balance_bonus_kopeks),
         subscription_duration_days=campaign.subscription_duration_days,
         subscription_traffic_gb=campaign.subscription_traffic_gb,
         subscription_device_limit=campaign.subscription_device_limit,
@@ -249,53 +249,89 @@ async def get_campaign(
         created_by=campaign.created_by,
         created_at=campaign.created_at,
         updated_at=campaign.updated_at,
-        deep_link=_get_deep_link(campaign.start_parameter),
-        web_link=_get_web_link(campaign.start_parameter),
+        deep_link=get_campaign_deep_link(campaign.start_parameter),
+        web_link=get_campaign_web_link(campaign.start_parameter),
     )
+
+
+@router.get('/{campaign_id}/chart-data', response_model=AdminCampaignChartDataResponse)
+async def get_campaign_chart_data(
+    campaign_id: int,
+    admin: User = Depends(require_permission('campaigns:stats')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get chart data for admin campaign analytics."""
+    try:
+        campaign = await get_campaign_by_id(db, campaign_id)
+        if not campaign:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Campaign not found',
+            )
+
+        data = await PartnerStatsService.get_admin_campaign_chart_data(db, campaign_id)
+        return AdminCampaignChartDataResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error('Failed to get campaign chart data', error=str(e), campaign_id=campaign_id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to load campaign chart data',
+        )
 
 
 @router.get('/{campaign_id}/stats', response_model=CampaignStatisticsResponse)
 async def get_campaign_stats(
     campaign_id: int,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:stats')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get detailed campaign statistics."""
-    campaign = await get_campaign_by_id(db, campaign_id)
-    if not campaign:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail='Campaign not found',
+    try:
+        campaign = await get_campaign_by_id(db, campaign_id)
+        if not campaign:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Campaign not found',
+            )
+
+        stats = await get_campaign_statistics(db, campaign_id)
+
+        return CampaignStatisticsResponse(
+            id=campaign.id,
+            name=campaign.name,
+            start_parameter=campaign.start_parameter,
+            bonus_type=campaign.bonus_type,
+            is_active=campaign.is_active,
+            registrations=stats['registrations'],
+            balance_issued_kopeks=stats['balance_issued'],
+            balance_issued_rubles=_safe_div(stats['balance_issued']),
+            subscription_issued=stats['subscription_issued'],
+            last_registration=stats['last_registration'],
+            total_revenue_kopeks=stats['total_revenue_kopeks'],
+            total_revenue_rubles=_safe_div(stats['total_revenue_kopeks']),
+            avg_revenue_per_user_kopeks=stats['avg_revenue_per_user_kopeks'],
+            avg_revenue_per_user_rubles=_safe_div(stats['avg_revenue_per_user_kopeks']),
+            avg_first_payment_kopeks=stats['avg_first_payment_kopeks'],
+            avg_first_payment_rubles=_safe_div(stats['avg_first_payment_kopeks']),
+            trial_users_count=stats['trial_users_count'],
+            active_trials_count=stats['active_trials_count'],
+            conversion_count=stats['conversion_count'],
+            paid_users_count=stats['paid_users_count'],
+            conversion_rate=stats['conversion_rate'],
+            trial_conversion_rate=stats['trial_conversion_rate'],
+            deep_link=get_campaign_deep_link(campaign.start_parameter),
+            web_link=get_campaign_web_link(campaign.start_parameter),
         )
-
-    stats = await get_campaign_statistics(db, campaign_id)
-
-    return CampaignStatisticsResponse(
-        id=campaign.id,
-        name=campaign.name,
-        start_parameter=campaign.start_parameter,
-        bonus_type=campaign.bonus_type,
-        is_active=campaign.is_active,
-        registrations=stats['registrations'],
-        balance_issued_kopeks=stats['balance_issued'],
-        balance_issued_rubles=stats['balance_issued'] / 100,
-        subscription_issued=stats['subscription_issued'],
-        last_registration=stats['last_registration'],
-        total_revenue_kopeks=stats['total_revenue_kopeks'],
-        total_revenue_rubles=stats['total_revenue_kopeks'] / 100,
-        avg_revenue_per_user_kopeks=stats['avg_revenue_per_user_kopeks'],
-        avg_revenue_per_user_rubles=stats['avg_revenue_per_user_kopeks'] / 100,
-        avg_first_payment_kopeks=stats['avg_first_payment_kopeks'],
-        avg_first_payment_rubles=stats['avg_first_payment_kopeks'] / 100,
-        trial_users_count=stats['trial_users_count'],
-        active_trials_count=stats['active_trials_count'],
-        conversion_count=stats['conversion_count'],
-        paid_users_count=stats['paid_users_count'],
-        conversion_rate=stats['conversion_rate'],
-        trial_conversion_rate=stats['trial_conversion_rate'],
-        deep_link=_get_deep_link(campaign.start_parameter),
-        web_link=_get_web_link(campaign.start_parameter),
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error('Failed to get campaign stats', error=str(e), campaign_id=campaign_id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to load campaign statistics',
+        )
 
 
 @router.get('/{campaign_id}/registrations', response_model=CampaignRegistrationsResponse)
@@ -303,7 +339,7 @@ async def get_campaign_registrations(
     campaign_id: int,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:read')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get list of users registered through campaign."""
@@ -381,7 +417,7 @@ async def get_campaign_registrations(
 @router.post('', response_model=CampaignDetailResponse)
 async def create_new_campaign(
     request: CampaignCreateRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:create')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Create a new advertising campaign."""
@@ -411,7 +447,7 @@ async def create_new_campaign(
     # Validate partner exists and is approved
     if request.partner_user_id is not None:
         partner_user = await db.get(User, request.partner_user_id)
-        if not partner_user or partner_user.partner_status != 'approved':
+        if not partner_user or partner_user.partner_status != PartnerStatus.APPROVED.value:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Partner not found or not approved',
@@ -434,9 +470,6 @@ async def create_new_campaign(
         partner_user_id=request.partner_user_id,
     )
 
-    # Reload to get tariff relationship
-    campaign = await get_campaign_by_id(db, campaign.id)
-
     logger.info('Admin created campaign', admin_id=admin.id, campaign_id=campaign.id, campaign_name=campaign.name)
 
     return await get_campaign(campaign.id, admin, db)
@@ -446,7 +479,7 @@ async def create_new_campaign(
 async def update_existing_campaign(
     campaign_id: int,
     request: CampaignUpdateRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:edit')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Update an existing campaign."""
@@ -478,29 +511,29 @@ async def update_existing_campaign(
                     detail='Tariff not found',
                 )
 
-    # Build updates
+    # Build updates using model_fields_set to distinguish "not sent" from "sent as None"
     updates = {}
-    if request.name is not None:
+    if 'name' in request.model_fields_set:
         updates['name'] = request.name
-    if request.start_parameter is not None:
+    if 'start_parameter' in request.model_fields_set:
         updates['start_parameter'] = request.start_parameter
-    if request.bonus_type is not None:
+    if 'bonus_type' in request.model_fields_set:
         updates['bonus_type'] = request.bonus_type
-    if request.is_active is not None:
+    if 'is_active' in request.model_fields_set:
         updates['is_active'] = request.is_active
-    if request.balance_bonus_kopeks is not None:
+    if 'balance_bonus_kopeks' in request.model_fields_set:
         updates['balance_bonus_kopeks'] = request.balance_bonus_kopeks
-    if request.subscription_duration_days is not None:
+    if 'subscription_duration_days' in request.model_fields_set:
         updates['subscription_duration_days'] = request.subscription_duration_days
-    if request.subscription_traffic_gb is not None:
+    if 'subscription_traffic_gb' in request.model_fields_set:
         updates['subscription_traffic_gb'] = request.subscription_traffic_gb
-    if request.subscription_device_limit is not None:
+    if 'subscription_device_limit' in request.model_fields_set:
         updates['subscription_device_limit'] = request.subscription_device_limit
-    if request.subscription_squads is not None:
+    if 'subscription_squads' in request.model_fields_set:
         updates['subscription_squads'] = request.subscription_squads
-    if request.tariff_id is not None:
+    if 'tariff_id' in request.model_fields_set:
         updates['tariff_id'] = request.tariff_id
-    if request.tariff_duration_days is not None:
+    if 'tariff_duration_days' in request.model_fields_set:
         updates['tariff_duration_days'] = request.tariff_duration_days
 
     # Handle partner_user_id separately (allows explicit None to unassign)
@@ -509,7 +542,7 @@ async def update_existing_campaign(
         new_partner_id = request.partner_user_id
         if new_partner_id is not None:
             partner_user = await db.get(User, new_partner_id)
-            if not partner_user or partner_user.partner_status != 'approved':
+            if not partner_user or partner_user.partner_status != PartnerStatus.APPROVED.value:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail='Partner not found or not approved',
@@ -532,7 +565,7 @@ async def update_existing_campaign(
 @router.delete('/{campaign_id}')
 async def delete_existing_campaign(
     campaign_id: int,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:delete')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Delete a campaign."""
@@ -543,8 +576,13 @@ async def delete_existing_campaign(
             detail='Campaign not found',
         )
 
-    # Check if campaign has registrations
-    reg_count = len(campaign.registrations) if campaign.registrations else 0
+    # Check if campaign has registrations (COUNT query instead of loading all)
+    reg_count_result = await db.execute(
+        select(func.count(AdvertisingCampaignRegistration.id)).where(
+            AdvertisingCampaignRegistration.campaign_id == campaign_id
+        )
+    )
+    reg_count = reg_count_result.scalar() or 0
     if reg_count > 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -560,7 +598,7 @@ async def delete_existing_campaign(
 @router.post('/{campaign_id}/toggle', response_model=CampaignToggleResponse)
 async def toggle_campaign(
     campaign_id: int,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_permission('campaigns:edit')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Toggle campaign active status."""

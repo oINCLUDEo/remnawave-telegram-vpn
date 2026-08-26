@@ -45,6 +45,7 @@ from app.handlers.admin import (
     referrals as admin_referrals,
     remnawave as admin_remnawave,
     reports as admin_reports,
+    required_channels as admin_required_channels,
     rules as admin_rules,
     servers as admin_servers,
     statistics as admin_statistics,
@@ -58,11 +59,18 @@ from app.handlers.admin import (
     users as admin_users,
     welcome_text as admin_welcome_text,
 )
+from bot.handlers import sync_handler as sheets_sync_handler
+from bot.handlers import expense_handler as sheets_expense_handler
+from bot.handlers import server_handler as infra_server_handler
+from app.handlers.channel_member import register_handlers as register_channel_member_handlers
+from app.handlers.gift_activation import register_handlers as register_gift_activation_handlers
 from app.handlers.stars_payments import register_stars_handlers
 from app.middlewares.auth import AuthMiddleware
 from app.middlewares.blacklist import BlacklistMiddleware
 from app.middlewares.button_stats import ButtonStatsMiddleware
+from app.middlewares.chat_type_filter import ChatTypeFilterMiddleware
 from app.middlewares.context_binding import ContextVarsMiddleware
+from app.middlewares.display_name_restriction import DisplayNameRestrictionMiddleware
 from app.middlewares.global_error import GlobalErrorMiddleware
 from app.middlewares.logging import LoggingMiddleware
 from app.middlewares.maintenance import MaintenanceMiddleware
@@ -92,10 +100,21 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     except Exception as e:
         logger.warning('Кеш не инициализирован', error=e)
 
-    from aiogram.client.default import DefaultBotProperties
-    from aiogram.enums import ParseMode
+    from app.bot_factory import create_bot
 
-    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = create_bot()
+
+    proxy_url = settings.get_proxy_url()
+    nalogo_proxy_url = settings.get_nalogo_proxy_url()
+
+    if proxy_url or nalogo_proxy_url:
+        from app.utils.proxy import mask_proxy_url
+
+        if proxy_url:
+            logger.info('Proxy configured', proxy_url=mask_proxy_url(proxy_url))
+        if nalogo_proxy_url:
+            source = 'NALOGO_PROXY_URL' if settings.NALOGO_PROXY_URL else 'PROXY_URL (fallback)'
+            logger.info('Nalogo proxy configured', proxy_url=mask_proxy_url(nalogo_proxy_url), source=source)
 
     maintenance_service.set_bot(bot)
     logger.info('Бот установлен в maintenance_service')
@@ -115,19 +134,23 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     dp.message.middleware(ContextVarsMiddleware())
     dp.callback_query.middleware(ContextVarsMiddleware())
     dp.pre_checkout_query.middleware(ContextVarsMiddleware())
+    chat_type_filter = ChatTypeFilterMiddleware()
+    dp.message.middleware(chat_type_filter)
+    dp.callback_query.middleware(chat_type_filter)
+    dp.message.middleware(LoggingMiddleware())
+    dp.callback_query.middleware(LoggingMiddleware())
     dp.message.middleware(GlobalErrorMiddleware())
     dp.callback_query.middleware(GlobalErrorMiddleware())
     dp.pre_checkout_query.middleware(GlobalErrorMiddleware())
-    dp.message.middleware(LoggingMiddleware())
-    dp.callback_query.middleware(LoggingMiddleware())
     dp.message.middleware(MaintenanceMiddleware())
     dp.callback_query.middleware(MaintenanceMiddleware())
     blacklist_middleware = BlacklistMiddleware()
     dp.message.middleware(blacklist_middleware)
     dp.callback_query.middleware(blacklist_middleware)
     dp.pre_checkout_query.middleware(blacklist_middleware)
-    dp.message.middleware(ThrottlingMiddleware())
-    dp.callback_query.middleware(ThrottlingMiddleware())
+    throttling_middleware = ThrottlingMiddleware()
+    dp.message.middleware(throttling_middleware)
+    dp.callback_query.middleware(throttling_middleware)
 
     # Middleware для автоматического логирования кликов по кнопкам
     if settings.MENU_LAYOUT_ENABLED:
@@ -135,20 +158,20 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
         dp.callback_query.middleware(button_stats_middleware)
         logger.info('📊 ButtonStatsMiddleware активирован')
 
-    if settings.CHANNEL_IS_REQUIRED_SUB:
-        from app.middlewares.channel_checker import ChannelCheckerMiddleware
+    from app.middlewares.channel_checker import ChannelCheckerMiddleware
 
-        channel_checker_middleware = ChannelCheckerMiddleware()
-        dp.message.middleware(channel_checker_middleware)
-        dp.callback_query.middleware(channel_checker_middleware)
-        logger.info('🔒 Обязательная подписка включена - ChannelCheckerMiddleware активирован')
-    else:
-        logger.info('🔓 Обязательная подписка отключена - ChannelCheckerMiddleware не зарегистрирован')
+    channel_checker = ChannelCheckerMiddleware()
+    dp.message.middleware(channel_checker)
+    dp.callback_query.middleware(channel_checker)
     dp.message.middleware(AuthMiddleware())
     dp.callback_query.middleware(AuthMiddleware())
     dp.pre_checkout_query.middleware(AuthMiddleware())
+    display_name_restriction = DisplayNameRestrictionMiddleware()
+    dp.message.middleware(display_name_restriction)
+    dp.callback_query.middleware(display_name_restriction)
     dp.message.middleware(SubscriptionStatusMiddleware())
     dp.callback_query.middleware(SubscriptionStatusMiddleware())
+    dp.pre_checkout_query.middleware(SubscriptionStatusMiddleware())
     start.register_handlers(dp)
     menu.register_handlers(dp)
     subscription.register_handlers(dp)
@@ -194,11 +217,17 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     admin_bulk_ban.register_bulk_ban_handlers(dp)
     admin_blacklist.register_blacklist_handlers(dp)
     admin_blocked_users.register_handlers(dp)
+    admin_required_channels.register_handlers(dp)
+    register_channel_member_handlers(dp)
+    register_gift_activation_handlers(dp)
     common.register_handlers(dp)
     register_stars_handlers(dp)
     user_contests.register_handlers(dp)
     user_polls.register_handlers(dp)
     simple_subscription.register_simple_subscription_handlers(dp)
+    sheets_sync_handler.register_handlers(dp)
+    sheets_expense_handler.register_handlers(dp)
+    infra_server_handler.register_handlers(dp)
     logger.info('⭐ Зарегистрированы обработчики Telegram Stars платежей')
     logger.info('⚡ Зарегистрированы обработчики простой покупки')
     logger.info('⚡ Зарегистрированы обработчики простой подписки')
@@ -241,7 +270,7 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     elif settings.is_cabinet_mode():
         logger.info('🏠 Режим Cabinet активен, базовый URL', MINIAPP_CUSTOM_URL=settings.MINIAPP_CUSTOM_URL)
 
-    # Load per-section button styles cache
+    # Load per-section button styles cache and menu layout cache
     if settings.is_cabinet_mode():
         try:
             from app.utils.button_styles_cache import load_button_styles_cache
@@ -249,6 +278,13 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
             await load_button_styles_cache()
         except Exception as e:
             logger.warning('Failed to load button styles cache', error=e)
+
+        try:
+            from app.utils.menu_layout_cache import load_menu_layout_cache
+
+            await load_menu_layout_cache()
+        except Exception as e:
+            logger.warning('Failed to load menu layout cache', error=e)
 
     logger.info('Бот успешно настроен')
 

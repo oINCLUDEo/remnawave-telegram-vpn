@@ -3,7 +3,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database.models import PromoGroup, User, UserPromoGroup
+from app.database.models import PromoGroup, Subscription, User, UserPromoGroup
 
 
 def _normalize_period_discounts(period_discounts: dict[int, int] | None) -> dict[int, int]:
@@ -97,9 +97,9 @@ async def create_promo_group(
 ) -> PromoGroup:
     normalized_period_discounts = _normalize_period_discounts(period_discounts)
 
-    auto_assign_total_spent_kopeks = (
-        max(0, auto_assign_total_spent_kopeks) if auto_assign_total_spent_kopeks is not None else None
-    )
+    if auto_assign_total_spent_kopeks is not None:
+        value = max(0, auto_assign_total_spent_kopeks)
+        auto_assign_total_spent_kopeks = value if value > 0 else None
 
     existing_default = await get_default_promo_group(db)
     should_be_default = existing_default is None or is_default
@@ -168,7 +168,8 @@ async def update_promo_group(
         normalized_period_discounts = _normalize_period_discounts(period_discounts)
         group.period_discounts = normalized_period_discounts or None
     if auto_assign_total_spent_kopeks is not None:
-        group.auto_assign_total_spent_kopeks = max(0, auto_assign_total_spent_kopeks)
+        value = max(0, auto_assign_total_spent_kopeks)
+        group.auto_assign_total_spent_kopeks = value if value > 0 else None
     if apply_discounts_to_addons is not None:
         group.apply_discounts_to_addons = bool(apply_discounts_to_addons)
 
@@ -258,7 +259,7 @@ async def get_promo_group_members(
 ) -> list[User]:
     result = await db.execute(
         select(User)
-        .options(selectinload(User.subscription))
+        .options(selectinload(User.subscriptions).selectinload(Subscription.tariff))
         .where(User.promo_group_id == group_id)
         .order_by(User.created_at.desc())
         .offset(offset)

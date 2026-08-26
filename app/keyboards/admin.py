@@ -217,6 +217,18 @@ def get_admin_settings_submenu_keyboard(language: str = 'ru') -> InlineKeyboardM
                     callback_data='admin_faq',
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_SETTINGS_REQUIRED_CHANNELS', '📢 Обязательные каналы'),
+                    callback_data='reqch:list',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=_t(texts, 'ADMIN_SETTINGS_APP_CONFIG', '📱 Конфиг приложений'),
+                    callback_data='admin_remna_config',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_panel')],
         ]
     )
@@ -235,6 +247,9 @@ def get_admin_system_submenu_keyboard(language: str = 'ru') -> InlineKeyboardMar
             ],
             [InlineKeyboardButton(text=_t(texts, 'ADMIN_SYSTEM_LOGS', '🧾 Логи'), callback_data='admin_system_logs')],
             [InlineKeyboardButton(text=texts.t('ADMIN_REPORTS', '📊 Отчеты'), callback_data='admin_reports')],
+            [InlineKeyboardButton(text='📊 Google Sheets', callback_data='admin_sheets_sync')],
+            [InlineKeyboardButton(text='🖥 Серверы', callback_data='admin_servers'),
+             InlineKeyboardButton(text='💸 Добавить расход', callback_data='admin_add_expense')],
             [InlineKeyboardButton(text=texts.BACK, callback_data='admin_panel')],
         ]
     )

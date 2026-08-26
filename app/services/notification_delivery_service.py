@@ -7,6 +7,7 @@ This service handles notification delivery through appropriate channels:
 """
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -79,10 +80,17 @@ class NotificationType(Enum):
     WEBHOOK_USER_NOT_CONNECTED = 'webhook_user_not_connected'
     WEBHOOK_DEVICE_ADDED = 'webhook_device_added'
     WEBHOOK_DEVICE_DELETED = 'webhook_device_deleted'
+    WEBHOOK_TORRENT_DETECTED = 'webhook_torrent_detected'
 
     # Other
     BROADCAST = 'broadcast'
     PAYMENT_RECEIVED = 'payment_received'
+
+    # Guest purchase notifications
+    GUEST_SUBSCRIPTION_DELIVERED = 'guest_subscription_delivered'
+    GUEST_ACTIVATION_REQUIRED = 'guest_activation_required'
+    GUEST_GIFT_RECEIVED = 'guest_gift_received'
+    GUEST_CABINET_CREDENTIALS = 'guest_cabinet_credentials'
 
 
 class NotificationDeliveryService:
@@ -93,10 +101,21 @@ class NotificationDeliveryService:
     For email-only users: sends via Email and WebSocket (if connected)
     """
 
+    # Once a user blocks the bot, every notification attempt hits Telegram's
+    # API and logs a warning — during a retry loop (e.g. the grace-period
+    # flapping incident) that's dozens of identical "заблокировал бота"
+    # log lines per minute for the same telegram_id, for no benefit. Back off:
+    # try a few times, spaced well apart, then stop until the user proves
+    # they're reachable again (a successful send clears the entry).
+    _BLOCKED_MAX_ATTEMPTS = 3
+    _BLOCKED_RETRY_INTERVAL = timedelta(hours=24)
+
     def __init__(self):
         self._email_service = None
         self._email_templates = None
         self._ws_manager = None
+        # telegram_id -> {"attempts": int, "last_attempt": datetime}
+        self._blocked_users: dict[int, dict[str, Any]] = {}
 
     @property
     def email_service(self):
@@ -191,6 +210,38 @@ class NotificationDeliveryService:
         logger.debug('Пользователь не имеет telegram_id или verified email, пропускаем уведомление', user_id=user.id)
         return False
 
+    def should_skip_blocked_user(self, telegram_id: int | None) -> bool:
+        """True if we should skip sending to telegram_id right now because they
+        recently blocked the bot and either haven't waited out the retry
+        interval yet, or have already used up all retry attempts.
+
+        Shared by every direct bot.send_message() call site in the codebase
+        (not just send_notification()) so a user who blocked the bot doesn't
+        get hammered with retries from every different notification path.
+        """
+        if telegram_id is None:
+            return False
+        state = self._blocked_users.get(telegram_id)
+        if state is None:
+            return False
+        if state['attempts'] >= self._BLOCKED_MAX_ATTEMPTS:
+            return True
+        return datetime.now(UTC) - state['last_attempt'] < self._BLOCKED_RETRY_INTERVAL
+
+    def mark_blocked(self, telegram_id: int | None) -> int:
+        """Record a TelegramForbiddenError for telegram_id. Returns the attempt count."""
+        if telegram_id is None:
+            return 0
+        state = self._blocked_users.setdefault(telegram_id, {'attempts': 0, 'last_attempt': datetime.now(UTC)})
+        state['attempts'] += 1
+        state['last_attempt'] = datetime.now(UTC)
+        return state['attempts']
+
+    def mark_reachable(self, telegram_id: int | None) -> None:
+        """Clear any "blocked" bookkeeping — a send just succeeded."""
+        if telegram_id is not None:
+            self._blocked_users.pop(telegram_id, None)
+
     async def _send_telegram_notification(
         self,
         user: User,
@@ -213,6 +264,13 @@ class NotificationDeliveryService:
             )
             return False
 
+        if self.should_skip_blocked_user(user.telegram_id):
+            logger.debug(
+                'Пропускаем отправку — пользователь заблокировал бота, ждём/попытки исчерпаны',
+                telegram_id=user.telegram_id,
+            )
+            return False
+
         try:
             from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
@@ -225,6 +283,7 @@ class NotificationDeliveryService:
                 ),
                 timeout=15.0,
             )
+            self.mark_reachable(user.telegram_id)
             return True
 
         except TimeoutError:
@@ -232,7 +291,13 @@ class NotificationDeliveryService:
             return False
 
         except TelegramForbiddenError:
-            logger.warning('Telegram user заблокировал бота', telegram_id=user.telegram_id)
+            attempts = self.mark_blocked(user.telegram_id)
+            logger.warning(
+                'Telegram user заблокировал бота',
+                telegram_id=user.telegram_id,
+                attempt=attempts,
+                max_attempts=self._BLOCKED_MAX_ATTEMPTS,
+            )
             return False
 
         except TelegramBadRequest as e:
@@ -262,18 +327,17 @@ class NotificationDeliveryService:
             # Get email template (check DB override first, then fall back to hardcoded)
             language = user.language or 'ru'
 
-            # Try DB override
+            # Try DB override (get_rendered_override substitutes context vars and wraps in base template)
             template = None
             try:
-                from app.cabinet.services.email_template_overrides import get_template_override
+                from app.cabinet.services.email_template_overrides import get_rendered_override
 
-                override = await get_template_override(notification_type.value, language)
-                if override:
-                    # Wrap custom body in base template
-                    full_html = self.email_templates._get_base_template(override['body_html'], language)
+                rendered = await get_rendered_override(notification_type.value, language, context)
+                if rendered:
+                    subject, body_html = rendered
                     template = {
-                        'subject': override['subject'],
-                        'body_html': full_html,
+                        'subject': subject,
+                        'body_html': body_html,
                     }
             except Exception as e:
                 logger.debug('Не удалось проверить override шаблона', e=e)

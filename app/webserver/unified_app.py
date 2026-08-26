@@ -66,17 +66,38 @@ def _create_base_app() -> FastAPI:
             from fastapi.middleware.cors import CORSMiddleware
 
             cabinet_origins = settings.get_cabinet_allowed_origins()
-            app.add_middleware(
-                CORSMiddleware,
-                allow_origins=['*'] if '*' in cabinet_origins else cabinet_origins,
-                allow_credentials=True,
-                allow_methods=['*'],
-                allow_headers=['*'],
-            )
+            if '*' in cabinet_origins:
+                logger.warning('CORS wildcard with credentials is insecure, disabling credentials for wildcard')
+                app.add_middleware(
+                    CORSMiddleware,
+                    allow_origins=['*'],
+                    allow_credentials=False,
+                    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+                    allow_headers=['Authorization', 'Content-Type', 'X-CSRF-Token', 'X-Telegram-Init-Data'],
+                )
+            else:
+                app.add_middleware(
+                    CORSMiddleware,
+                    allow_origins=cabinet_origins,
+                    allow_credentials=True,
+                    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+                    allow_headers=['Authorization', 'Content-Type', 'X-CSRF-Token', 'X-Telegram-Init-Data'],
+                )
             app.include_router(cabinet_router)
 
     _attach_docs_alias(app, app.docs_url)
     return app
+
+
+def _mount_uploads_static(app: FastAPI) -> None:
+    """Mount the media uploads directory as a static file server at /uploads."""
+    uploads_path = settings.get_media_upload_path()
+    uploads_path.mkdir(parents=True, exist_ok=True)
+    try:
+        app.mount('/uploads', StaticFiles(directory=uploads_path), name='media-uploads')
+        logger.info('Media uploads static files mounted at /uploads', uploads_path=str(uploads_path))
+    except RuntimeError as error:  # pragma: no cover - defensive guard
+        logger.warning('Failed to mount media uploads static files', error=error)
 
 
 def _mount_miniapp_static(app: FastAPI) -> tuple[bool, Path]:
@@ -130,6 +151,7 @@ def create_unified_app(
         'wata': settings.is_wata_enabled(),
         'heleket': settings.is_heleket_enabled(),
         'freekassa': settings.is_freekassa_enabled(),
+        'riopay': settings.is_riopay_enabled(),
     }
 
     if enable_telegram_webhook:
@@ -164,6 +186,7 @@ def create_unified_app(
         await disposable_email_service.stop()
 
     miniapp_mounted, miniapp_path = _mount_miniapp_static(app)
+    _mount_uploads_static(app)
 
     unified_health_path = '/health/unified' if settings.is_web_api_enabled() else '/health'
 

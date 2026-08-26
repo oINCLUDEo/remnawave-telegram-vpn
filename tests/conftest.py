@@ -28,6 +28,13 @@ sys.modules.setdefault('aiosqlite', types.ModuleType('aiosqlite'))
 if 'redis.asyncio' not in sys.modules:
     redis_module = types.ModuleType('redis')
     redis_async_module = types.ModuleType('redis.asyncio')
+    redis_exceptions_module = types.ModuleType('redis.exceptions')
+
+    class NoScriptError(Exception):
+        """Заглушка исключения redis.exceptions.NoScriptError."""
+
+    redis_exceptions_module.NoScriptError = NoScriptError
+    redis_module.exceptions = redis_exceptions_module
 
     class _FakeRedisClient:
         async def ping(self):
@@ -65,6 +72,7 @@ if 'redis.asyncio' not in sys.modules:
     redis_async_module.Redis = _FakeRedisClient
     sys.modules['redis'] = redis_module
     sys.modules['redis.asyncio'] = redis_async_module
+    sys.modules['redis.exceptions'] = redis_exceptions_module
 
 # Минимальная реализация SDK YooKassa, чтобы импорт сервисов не падал.
 if 'yookassa' not in sys.modules:
@@ -146,11 +154,22 @@ if 'yookassa' not in sys.modules:
     payment_builder_module.PaymentRequestBuilder = _FakePaymentRequestBuilder
     confirmation_module.ConfirmationType = _FakeConfirmationType
 
+    exceptions_module = types.ModuleType('yookassa.domain.exceptions')
+    not_found_module = types.ModuleType('yookassa.domain.exceptions.not_found_error')
+
+    class _FakeNotFoundError(Exception):
+        pass
+
+    not_found_module.NotFoundError = _FakeNotFoundError
+    exceptions_module.not_found_error = not_found_module
+
     sys.modules['yookassa.domain'] = domain_module
     sys.modules['yookassa.domain.request'] = request_module
     sys.modules['yookassa.domain.request.payment_request_builder'] = payment_builder_module
     sys.modules['yookassa.domain.common'] = common_module
     sys.modules['yookassa.domain.common.confirmation_type'] = confirmation_module
+    sys.modules['yookassa.domain.exceptions'] = exceptions_module
+    sys.modules['yookassa.domain.exceptions.not_found_error'] = not_found_module
 
 
 @pytest.fixture

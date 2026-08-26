@@ -5,6 +5,7 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.database.crud.transaction import REAL_PAYMENT_METHODS
 from app.database.models import (
     AdvertisingCampaign,
     AdvertisingCampaignRegistration,
@@ -104,9 +105,9 @@ async def get_campaigns_list(
     stmt = (
         select(AdvertisingCampaign)
         .options(
-            selectinload(AdvertisingCampaign.registrations),
             selectinload(AdvertisingCampaign.tariff),
             selectinload(AdvertisingCampaign.partner),
+            selectinload(AdvertisingCampaign.registrations),
         )
         .order_by(AdvertisingCampaign.created_at.desc())
         .offset(offset)
@@ -148,10 +149,22 @@ async def update_campaign(
         'partner_user_id',
     }
 
+    nullable_fields = {
+        'partner_user_id',
+        'tariff_id',
+        'subscription_duration_days',
+        'subscription_traffic_gb',
+        'subscription_device_limit',
+        'tariff_duration_days',
+    }
+
     update_data = {}
     for key, value in kwargs.items():
-        if key in allowed_fields and value is not None:
-            update_data[key] = value
+        if key not in allowed_fields:
+            continue
+        if value is None and key not in nullable_fields:
+            continue
+        update_data[key] = value
 
     if not update_data:
         return campaign
@@ -256,11 +269,13 @@ async def get_campaign_statistics(
     )
     subscription_bonuses_issued = subscription_count_result.scalar() or 0
 
+    # Only count real deposits (exclude promo bonuses, wheel prizes, admin top-ups)
     deposits_result = await db.execute(
         select(func.coalesce(func.sum(Transaction.amount_kopeks), 0)).where(
             Transaction.user_id.in_(select(registrations_subquery.c.user_id)),
             Transaction.type == TransactionType.DEPOSIT.value,
             Transaction.is_completed.is_(True),
+            Transaction.payment_method.in_(REAL_PAYMENT_METHODS),
         )
     )
     deposits_total = deposits_result.scalar() or 0
@@ -351,7 +366,8 @@ async def get_campaign_statistics(
                 first_payment_amount_by_user[user_id] = amount_value
                 first_payment_time_by_user[user_id] = created_at
 
-    total_revenue = deposits_total + subscription_payments_total
+    # Revenue = only real deposits (exclude bonus-funded subscription spending)
+    total_revenue = deposits_total
 
     paid_user_ids = set(paid_users_from_transactions)
     paid_user_ids.update(conversion_user_ids)

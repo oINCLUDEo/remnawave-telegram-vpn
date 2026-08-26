@@ -14,6 +14,9 @@ def _build_user_with_subscription(actual_status: str, is_trial: bool, days_left:
     subscription.actual_status = actual_status
     subscription.is_trial = is_trial
     subscription.end_date = datetime.now(UTC) + timedelta(days=days_left, hours=1)
+    # Без явного None MagicMock отдаёт truthy-атрибут, и статус всегда уходил
+    # в ветку grace-периода резервного сквада вместо проверяемой.
+    subscription.reserve_access_granted_at = None
 
     user = MagicMock()
     user.subscription = subscription

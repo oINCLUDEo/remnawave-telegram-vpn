@@ -30,6 +30,18 @@ class MobileAuthResponse(BaseModel):
         False,
         description='True when subscription_url is available.',
     )
+    access_token: str | None = Field(
+        None,
+        description='Cabinet JWT access token — lets the mobile app call /cabinet/* endpoints (referral, subscription) with Bearer auth.',
+    )
+    refresh_token: str | None = Field(
+        None,
+        description='Cabinet refresh token for POST /cabinet/auth/refresh.',
+    )
+    expires_in: int | None = Field(
+        None,
+        description='Access token lifetime in seconds.',
+    )
 
 
 class MobileAuthInitResponse(BaseModel):

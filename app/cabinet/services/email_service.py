@@ -1,8 +1,10 @@
 """Email service for sending verification and password reset emails."""
 
+import html
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 
 import structlog
 
@@ -15,14 +17,33 @@ logger = structlog.get_logger(__name__)
 class EmailService:
     """Service for sending emails via SMTP."""
 
-    def __init__(self):
-        self.host = settings.SMTP_HOST
-        self.port = settings.SMTP_PORT
-        self.user = settings.SMTP_USER
-        self.password = settings.SMTP_PASSWORD
-        self.from_email = settings.get_smtp_from_email()
-        self.from_name = settings.SMTP_FROM_NAME
-        self.use_tls = settings.SMTP_USE_TLS
+    @property
+    def host(self) -> str | None:
+        return settings.SMTP_HOST
+
+    @property
+    def port(self) -> int:
+        return settings.SMTP_PORT
+
+    @property
+    def user(self) -> str | None:
+        return settings.SMTP_USER
+
+    @property
+    def password(self) -> str | None:
+        return settings.SMTP_PASSWORD
+
+    @property
+    def from_email(self) -> str | None:
+        return settings.get_smtp_from_email()
+
+    @property
+    def from_name(self) -> str:
+        return settings.SMTP_FROM_NAME
+
+    @property
+    def use_tls(self) -> bool:
+        return settings.SMTP_USE_TLS
 
     def is_configured(self) -> bool:
         """Check if SMTP is properly configured."""
@@ -30,7 +51,7 @@ class EmailService:
 
     def _get_smtp_connection(self) -> smtplib.SMTP:
         """Create and return SMTP connection."""
-        smtp = smtplib.SMTP(self.host, self.port)
+        smtp = smtplib.SMTP(self.host, self.port, timeout=30)
         smtp.ehlo()
 
         if self.use_tls:
@@ -69,11 +90,24 @@ class EmailService:
             logger.warning('SMTP is not configured, cannot send email')
             return False
 
+        sender_email = self.from_email
+        if not sender_email or '@' not in sender_email:
+            logger.error('Invalid or missing SMTP from_email, cannot send email', from_email=sender_email)
+            return False
+
+        # Defensive: strip newlines to prevent header injection
+        to_email = to_email.strip().replace('\n', '').replace('\r', '')
+        subject = subject.replace('\n', '').replace('\r', '')
+
         try:
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
-            msg['From'] = f'{self.from_name} <{self.from_email}>'
+            safe_from_name = self.from_name.replace('\n', '').replace('\r', '') if self.from_name else ''
+            safe_from_email = sender_email.replace('\n', '').replace('\r', '')
+            msg['From'] = f'{safe_from_name} <{safe_from_email}>'
             msg['To'] = to_email
+            msg['Date'] = formatdate(localtime=False)
+            msg['Message-ID'] = make_msgid(domain=safe_from_email.split('@')[-1])
 
             # Plain text version
             if body_text is None:
@@ -93,7 +127,7 @@ class EmailService:
             msg.attach(part2)
 
             with self._get_smtp_connection() as smtp:
-                smtp.sendmail(self.from_email, to_email, msg.as_string())
+                smtp.sendmail(safe_from_email, to_email, msg.as_string())
 
             logger.info('Email sent successfully to', to_email=to_email)
             return True
@@ -133,10 +167,13 @@ class EmailService:
         full_url = f'{verification_url}?token={verification_token}'
         expire_hours = settings.get_cabinet_email_verification_expire_hours()
 
+        # Escape user-provided values for HTML context
+        safe_username = html.escape(username) if username else None
+
         # Localized content
         texts = {
             'ru': {
-                'greeting': f'Здравствуйте{", " + username if username else ""}!',
+                'greeting': f'Здравствуйте{", " + safe_username if safe_username else ""}!',
                 'subject': 'Подтверждение email адреса',
                 'intro': 'Спасибо за регистрацию! Пожалуйста, подтвердите ваш email адрес, нажав на кнопку ниже:',
                 'button': 'Подтвердить email',
@@ -146,7 +183,7 @@ class EmailService:
                 'regards': 'С уважением,',
             },
             'en': {
-                'greeting': f'Hello{", " + username if username else ""}!',
+                'greeting': f'Hello{", " + safe_username if safe_username else ""}!',
                 'subject': 'Verify your email address',
                 'intro': 'Thank you for registering! Please verify your email address by clicking the button below:',
                 'button': 'Verify Email',
@@ -156,7 +193,7 @@ class EmailService:
                 'regards': 'Best regards,',
             },
             'zh': {
-                'greeting': f'您好{", " + username if username else ""}!',
+                'greeting': f'您好{", " + safe_username if safe_username else ""}!',
                 'subject': '验证您的邮箱地址',
                 'intro': '感谢您的注册！请点击下方按钮验证您的邮箱地址：',
                 'button': '验证邮箱',
@@ -166,7 +203,7 @@ class EmailService:
                 'regards': '此致,',
             },
             'ua': {
-                'greeting': f'Вітаємо{", " + username if username else ""}!',
+                'greeting': f'Вітаємо{", " + safe_username if safe_username else ""}!',
                 'subject': 'Підтвердження email адреси',
                 'intro': 'Дякуємо за реєстрацію! Будь ласка, підтвердіть вашу email адресу, натиснувши на кнопку нижче:',
                 'button': 'Підтвердити email',
@@ -176,7 +213,7 @@ class EmailService:
                 'regards': 'З повагою,',
             },
             'fa': {
-                'greeting': f'سلام{", " + username if username else ""}!',
+                'greeting': f'سلام{", " + safe_username if safe_username else ""}!',
                 'subject': 'تایید آدرس ایمیل',
                 'intro': 'از ثبت‌نام شما سپاسگزاریم! لطفاً با کلیک روی دکمه زیر ایمیل خود را تایید کنید:',
                 'button': 'تایید ایمیل',
@@ -260,10 +297,13 @@ class EmailService:
         full_url = f'{reset_url}?token={reset_token}'
         expire_hours = settings.get_cabinet_password_reset_expire_hours()
 
+        # Escape user-provided values for HTML context
+        safe_username = html.escape(username) if username else None
+
         # Localized content
         texts = {
             'ru': {
-                'greeting': f'Здравствуйте{", " + username if username else ""}!',
+                'greeting': f'Здравствуйте{", " + safe_username if safe_username else ""}!',
                 'subject': 'Сброс пароля',
                 'intro': 'Мы получили запрос на сброс вашего пароля. Нажмите на кнопку ниже, чтобы установить новый пароль:',
                 'button': 'Сбросить пароль',
@@ -273,7 +313,7 @@ class EmailService:
                 'regards': 'С уважением,',
             },
             'en': {
-                'greeting': f'Hello{", " + username if username else ""}!',
+                'greeting': f'Hello{", " + safe_username if safe_username else ""}!',
                 'subject': 'Reset your password',
                 'intro': 'We received a request to reset your password. Click the button below to set a new password:',
                 'button': 'Reset Password',
@@ -283,7 +323,7 @@ class EmailService:
                 'regards': 'Best regards,',
             },
             'zh': {
-                'greeting': f'您好{", " + username if username else ""}!',
+                'greeting': f'您好{", " + safe_username if safe_username else ""}!',
                 'subject': '重置您的密码',
                 'intro': '我们收到了重置您密码的请求。点击下方按钮设置新密码：',
                 'button': '重置密码',
@@ -293,7 +333,7 @@ class EmailService:
                 'regards': '此致,',
             },
             'ua': {
-                'greeting': f'Вітаємо{", " + username if username else ""}!',
+                'greeting': f'Вітаємо{", " + safe_username if safe_username else ""}!',
                 'subject': 'Скидання пароля',
                 'intro': 'Ми отримали запит на скидання вашого пароля. Натисніть на кнопку нижче, щоб встановити новий пароль:',
                 'button': 'Скинути пароль',
@@ -303,7 +343,7 @@ class EmailService:
                 'regards': 'З повагою,',
             },
             'fa': {
-                'greeting': f'سلام{", " + username if username else ""}!',
+                'greeting': f'سلام{", " + safe_username if safe_username else ""}!',
                 'subject': 'بازنشانی رمز عبور',
                 'intro': 'درخواستی برای بازنشانی رمز عبور شما دریافت شد. برای تعیین رمز جدید روی دکمه زیر بزنید:',
                 'button': 'بازنشانی رمز عبور',
@@ -385,9 +425,12 @@ class EmailService:
 
         expire_minutes = settings.get_cabinet_email_change_code_expire_minutes()
 
+        # Escape user-provided values for HTML context
+        safe_username = html.escape(username) if username else None
+
         texts = {
             'ru': {
-                'greeting': f'Здравствуйте{", " + username if username else ""}!',
+                'greeting': f'Здравствуйте{", " + safe_username if safe_username else ""}!',
                 'subject': 'Код подтверждения для смены email',
                 'intro': 'Вы запросили смену email адреса. Используйте код ниже для подтверждения:',
                 'code_label': 'Ваш код подтверждения:',
@@ -396,7 +439,7 @@ class EmailService:
                 'regards': 'С уважением,',
             },
             'en': {
-                'greeting': f'Hello{", " + username if username else ""}!',
+                'greeting': f'Hello{", " + safe_username if safe_username else ""}!',
                 'subject': 'Email change verification code',
                 'intro': 'You requested to change your email address. Use the code below to confirm:',
                 'code_label': 'Your verification code:',
@@ -405,7 +448,7 @@ class EmailService:
                 'regards': 'Best regards,',
             },
             'zh': {
-                'greeting': f'您好{", " + username if username else ""}!',
+                'greeting': f'您好{", " + safe_username if safe_username else ""}!',
                 'subject': '邮箱更换验证码',
                 'intro': '您请求更换邮箱地址。请使用以下验证码确认：',
                 'code_label': '您的验证码：',
@@ -414,7 +457,7 @@ class EmailService:
                 'regards': '此致,',
             },
             'ua': {
-                'greeting': f'Вітаємо{", " + username if username else ""}!',
+                'greeting': f'Вітаємо{", " + safe_username if safe_username else ""}!',
                 'subject': 'Код підтвердження для зміни email',
                 'intro': 'Ви запросили зміну email адреси. Використовуйте код нижче для підтвердження:',
                 'code_label': 'Ваш код підтвердження:',
@@ -423,7 +466,7 @@ class EmailService:
                 'regards': 'З повагою,',
             },
             'fa': {
-                'greeting': f'سلام{", " + username if username else ""}!',
+                'greeting': f'سلام{", " + safe_username if safe_username else ""}!',
                 'subject': 'کد تایید تغییر ایمیل',
                 'intro': 'شما درخواست تغییر ایمیل داده‌اید. برای تایید از کد زیر استفاده کنید:',
                 'code_label': 'کد تایید شما:',

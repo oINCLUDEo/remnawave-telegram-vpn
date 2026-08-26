@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.database.crud.discount_offer import get_latest_claimed_offer_for_user
 from app.database.crud.promo_group import get_default_promo_group
 from app.database.crud.promo_offer_log import log_promo_offer_action
@@ -22,6 +23,7 @@ from app.database.models import (
     UserPromoGroup,
     UserStatus,
 )
+from app.utils.pricing_utils import SUB_RUBLE_GRACE_KOPEKS
 from app.utils.validators import sanitize_telegram_name
 
 
@@ -54,7 +56,7 @@ def _build_spending_stats_select():
                 case(
                     (
                         Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
-                        Transaction.amount_kopeks,
+                        func.abs(Transaction.amount_kopeks),
                     ),
                     else_=0,
                 )
@@ -86,7 +88,7 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
     result = await db.execute(
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
             selectinload(User.referrer),
             selectinload(User.promo_group),
@@ -106,7 +108,7 @@ async def get_user_by_telegram_id(db: AsyncSession, telegram_id: int) -> User | 
     result = await db.execute(
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
             selectinload(User.referrer),
             selectinload(User.promo_group),
@@ -122,6 +124,31 @@ async def get_user_by_telegram_id(db: AsyncSession, telegram_id: int) -> User | 
     return user
 
 
+async def find_phantom_user_by_username(db: AsyncSession, username: str) -> User | None:
+    """Find a phantom user created by guest purchase (no telegram_id, auth_type=telegram).
+
+    Used during /start to reconcile phantom users with real Telegram accounts.
+    """
+    if not username:
+        return None
+
+    normalized = username.lower()
+    result = await db.execute(
+        select(User)
+        .options(
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
+        )
+        .where(
+            User.telegram_id.is_(None),
+            User.auth_type == 'telegram',
+            User.status != UserStatus.DELETED.value,
+            func.lower(User.username) == normalized,
+        )
+        .with_for_update()
+    )
+    return result.scalars().first()
+
+
 async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
     if not username:
         return None
@@ -131,7 +158,7 @@ async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
     result = await db.execute(
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
             selectinload(User.referrer),
             selectinload(User.promo_group),
@@ -152,7 +179,7 @@ async def get_user_by_referral_code(db: AsyncSession, referral_code: str) -> Use
     result = await db.execute(
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.promo_group),
             selectinload(User.referrer),
         )
@@ -171,13 +198,28 @@ async def get_user_by_remnawave_uuid(db: AsyncSession, remnawave_uuid: str) -> U
     result = await db.execute(
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.promo_group),
             selectinload(User.referrer),
         )
         .where(User.remnawave_uuid == remnawave_uuid)
     )
     user = result.scalar_one_or_none()
+
+    # Multi-tariff: UUID lives on Subscription, not User
+    if not user and settings.is_multi_tariff_enabled():
+        from app.database.models import Subscription as _Subscription
+
+        sub_result = await db.execute(
+            select(_Subscription)
+            .options(
+                selectinload(_Subscription.user).selectinload(User.subscriptions).selectinload(_Subscription.tariff)
+            )
+            .where(_Subscription.remnawave_uuid == remnawave_uuid)
+        )
+        sub = sub_result.scalar_one_or_none()
+        if sub and sub.user:
+            user = sub.user
 
     if user and user.subscription:
         # Загружаем дополнительные зависимости для subscription
@@ -291,6 +333,23 @@ async def create_user(
         referral_code = await create_unique_referral_code(db)
     normalized_language = _normalize_language_code(language)
 
+    # If no referrer provided, check Redis for pending referral from /start
+    if not referred_by_id and telegram_id:
+        try:
+            from app.services.referral_service import clear_pending_referral, get_pending_referral
+
+            pending = await get_pending_referral(telegram_id)
+            if pending and pending.get('referrer_id'):
+                referred_by_id = pending['referrer_id']
+                logger.info(
+                    'Resolved referral from Redis pending_referral',
+                    telegram_id=telegram_id,
+                    referrer_id=referred_by_id,
+                )
+                await clear_pending_referral(telegram_id)
+        except Exception as e:
+            logger.warning('Failed to check pending referral from Redis', error=e)
+
     attempts = 3
 
     for attempt in range(1, attempts + 1):
@@ -386,6 +445,28 @@ async def update_user(db: AsyncSession, user: User, **kwargs) -> User:
     return user
 
 
+async def lock_user_for_update(db: AsyncSession, user: User) -> User:
+    """Lock user row with SELECT FOR UPDATE to prevent concurrent balance modifications.
+
+    Returns the refreshed user object with current DB values.
+    Must be called within an active transaction before modifying balance_kopeks.
+    Eagerly loads key relationships to avoid MissingGreenlet in async context.
+    """
+    result = await db.execute(
+        select(User)
+        .where(User.id == user.id)
+        .options(
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
+            selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
+            selectinload(User.promo_group),
+            selectinload(User.referrer),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one()
+
+
 async def add_user_balance(
     db: AsyncSession,
     user: User,
@@ -395,8 +476,33 @@ async def add_user_balance(
     transaction_type: TransactionType = TransactionType.DEPOSIT,
     bot=None,
     payment_method: PaymentMethod | None = None,
+    commit: bool = True,
 ) -> bool:
     try:
+        # Lock the user row to prevent concurrent balance race conditions
+        # Eagerly load key relationships to avoid MissingGreenlet in async context
+        locked_result = await db.execute(
+            select(User)
+            .where(User.id == user.id)
+            .options(
+                selectinload(User.subscriptions).selectinload(Subscription.tariff),
+                selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
+                selectinload(User.promo_group),
+                selectinload(User.referrer),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        user = locked_result.scalar_one()
+
+        if amount_kopeks < 0:
+            logger.error(
+                'add_user_balance вызван с отрицательной суммой — используйте subtract_user_balance',
+                amount_kopeks=amount_kopeks,
+                user_id=user.id,
+            )
+            return False
+
         old_balance = user.balance_kopeks
         user.balance_kopeks += amount_kopeks
         user.updated_at = datetime.now(UTC)
@@ -413,8 +519,9 @@ async def add_user_balance(
                 payment_method=payment_method,
             )
 
-        await db.commit()
-        await db.refresh(user)
+        if commit:
+            await db.commit()
+            await db.refresh(user)
 
         user_id_display = user.telegram_id or user.email or f'#{user.id}'
         logger.info(
@@ -425,46 +532,17 @@ async def add_user_balance(
             amount_kopeks=amount_kopeks,
         )
 
-        # Автоматическое возобновление приостановленной суточной подписки
-        try:
-            from app.database.crud.subscription import get_subscription_by_user_id, resume_daily_subscription
-            from app.database.crud.tariff import get_tariff_by_id
-            from app.database.models import SubscriptionStatus
-
-            # Загружаем подписку явно, чтобы избежать lazy loading
-            subscription = await get_subscription_by_user_id(db, user.id)
-            if subscription and subscription.status == SubscriptionStatus.DISABLED.value:
-                # Проверяем что это суточный тариф
-                is_daily = getattr(subscription, 'is_daily_tariff', False)
-                if is_daily and subscription.tariff_id:
-                    # Загружаем тариф явно
-                    tariff = await get_tariff_by_id(db, subscription.tariff_id)
-                    if tariff:
-                        daily_price = getattr(tariff, 'daily_price_kopeks', 0)
-                        # Если баланс достаточный для суточной оплаты - возобновляем
-                        if daily_price > 0 and user.balance_kopeks >= daily_price:
-                            await resume_daily_subscription(db, subscription)
-                            logger.info(
-                                '✅ Автоматически возобновлена суточная подписка после пополнения баланса (user_id=)',
-                                subscription_id=subscription.id,
-                                user_id=user.id,
-                            )
-                            # Синхронизируем с RemnaWave
-                            try:
-                                from app.services.subscription_service import SubscriptionService
-
-                                subscription_service = SubscriptionService()
-                                await subscription_service.update_remnawave_user(db, subscription)
-                            except Exception as sync_err:
-                                logger.warning('Не удалось синхронизировать с RemnaWave', sync_err=sync_err)
-        except Exception as resume_err:
-            logger.warning('Ошибка при попытке возобновить суточную подписку', resume_err=resume_err)
+        # Авто-возобновление суточной подписки НЕ делаем здесь —
+        # это обязанность try_resume_disabled_daily_after_topup (через send_cart_notification_after_topup)
+        # и DailySubscriptionService.process_auto_resume (30-минутный цикл).
+        # Они корректно списывают суточную плату при возобновлении.
 
         return True
 
     except Exception as e:
         logger.error('Ошибка изменения баланса пользователя', user_id=user.id, error=e)
-        await db.rollback()
+        if commit:
+            await db.rollback()
         return False
 
 
@@ -496,6 +574,27 @@ async def add_user_balance_by_id(
         return False
 
 
+async def lock_user_for_pricing(db: AsyncSession, user_id: int) -> User:
+    """Lock user row with FOR UPDATE and return refreshed instance.
+
+    Call BEFORE computing prices that depend on promo offer state
+    to prevent TOCTOU race conditions where two concurrent requests
+    both read the same promo offer discount and charge a discounted price.
+    """
+    result = await db.execute(
+        select(User)
+        .where(User.id == user_id)
+        .options(
+            selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
+            selectinload(User.promo_group),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one()
+
+
 async def subtract_user_balance(
     db: AsyncSession,
     user: User,
@@ -504,17 +603,37 @@ async def subtract_user_balance(
     create_transaction: bool = False,
     payment_method: PaymentMethod | None = None,
     *,
+    transaction_type: TransactionType = TransactionType.WITHDRAWAL,
     consume_promo_offer: bool = False,
+    mark_as_paid_subscription: bool = False,
+    commit: bool = True,
 ) -> bool:
-    user_id_display = user.telegram_id or user.email or f'#{user.id}'
-    logger.info('💸 ОТЛАДКА subtract_user_balance:')
-    logger.info('👤 User ID: (ID: )', user_id=user.id, user_id_display=user_id_display)
-    logger.info('💰 Баланс до списания: копеек', balance_kopeks=user.balance_kopeks)
-    logger.info('💸 Сумма к списанию: копеек', amount_kopeks=amount_kopeks)
-    logger.info('📝 Описание', description=description)
+    if amount_kopeks < 0:
+        logger.error('subtract_user_balance called with negative amount', amount_kopeks=amount_kopeks, user_id=user.id)
+        return False
+
+    logger.debug(
+        'subtract_user_balance called',
+        user_id=user.id,
+        balance_kopeks=user.balance_kopeks,
+        amount_kopeks=amount_kopeks,
+        description=description,
+    )
 
     # Lock the user row to prevent concurrent balance race conditions
-    locked_result = await db.execute(select(User).where(User.id == user.id).with_for_update())
+    # Eagerly load key relationships to avoid MissingGreenlet in async context
+    locked_result = await db.execute(
+        select(User)
+        .where(User.id == user.id)
+        .options(
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
+            selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
+            selectinload(User.promo_group),
+            selectinload(User.referrer),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     user = locked_result.scalar_one()
 
     log_context: dict[str, object] | None = None
@@ -552,8 +671,19 @@ async def subtract_user_balance(
                     log_context['percent'] = offer.discount_percent
 
     if user.balance_kopeks < amount_kopeks:
-        logger.error('   ❌ НЕДОСТАТОЧНО СРЕДСТВ!')
-        return False
+        shortfall = amount_kopeks - user.balance_kopeks
+        if 0 < shortfall <= SUB_RUBLE_GRACE_KOPEKS:
+            logger.info(
+                'Списание: недостача < 1 руб. прощена, списан остаток баланса',
+                user_id=user.id,
+                requested_amount_kopeks=amount_kopeks,
+                balance_kopeks=user.balance_kopeks,
+                shortfall_kopeks=shortfall,
+            )
+            amount_kopeks = user.balance_kopeks
+        else:
+            logger.error('   ❌ НЕДОСТАТОЧНО СРЕДСТВ!')
+            return False
 
     try:
         old_balance = user.balance_kopeks
@@ -564,6 +694,9 @@ async def subtract_user_balance(
             user.promo_offer_discount_source = None
             user.promo_offer_discount_expires_at = None
 
+        if mark_as_paid_subscription:
+            user.has_had_paid_subscription = True
+
         user.updated_at = datetime.now(UTC)
 
         if create_transaction:
@@ -571,20 +704,22 @@ async def subtract_user_balance(
                 create_transaction as create_trans,
             )
 
-            # create_trans commits the session, atomically persisting
-            # both the balance change and the transaction record
             await create_trans(
                 db=db,
                 user_id=user.id,
-                type=TransactionType.WITHDRAWAL,
+                type=transaction_type,
                 amount_kopeks=amount_kopeks,
                 description=description,
                 payment_method=payment_method,
+                commit=commit,
             )
-        else:
+        elif commit:
             await db.commit()
+        else:
+            await db.flush()
 
-        await db.refresh(user)
+        if commit:
+            await db.refresh(user)
 
         if consume_promo_offer and log_context:
             try:
@@ -597,26 +732,30 @@ async def subtract_user_balance(
                     percent=log_context.get('percent'),
                     effect_type=log_context.get('effect_type'),
                     details=log_context.get('details'),
+                    commit=commit,
                 )
             except Exception as log_error:  # pragma: no cover - defensive logging
                 logger.warning(
                     'Failed to record promo offer consumption log for user', user_id=user.id, log_error=log_error
                 )
-                try:
-                    await db.rollback()
-                except Exception as rollback_error:  # pragma: no cover - defensive logging
-                    logger.warning(
-                        'Failed to rollback session after promo offer consumption log failure',
-                        rollback_error=rollback_error,
-                    )
+                if commit:
+                    try:
+                        await db.rollback()
+                    except Exception as rollback_error:  # pragma: no cover - defensive logging
+                        logger.warning(
+                            'Failed to rollback session after promo offer consumption log failure',
+                            rollback_error=rollback_error,
+                        )
 
         logger.info('✅ Средства списаны: →', old_balance=old_balance, balance_kopeks=user.balance_kopeks)
         return True
 
     except Exception as e:
         logger.error('❌ ОШИБКА СПИСАНИЯ', error=e)
-        await db.rollback()
-        return False
+        if commit:
+            await db.rollback()
+            return False
+        raise
 
 
 async def cleanup_expired_promo_offer_discounts(db: AsyncSession) -> int:
@@ -719,7 +858,7 @@ async def get_users_list(
     order_by_purchase_count: bool = False,
 ) -> list[User]:
     query = select(User).options(
-        selectinload(User.subscription).selectinload(Subscription.tariff),
+        selectinload(User.subscriptions).selectinload(Subscription.tariff),
         selectinload(User.promo_group),
         selectinload(User.referrer),
     )
@@ -794,7 +933,7 @@ async def get_users_list(
     query = query.offset(offset).limit(limit)
 
     result = await db.execute(query)
-    users = result.scalars().all()
+    users = result.scalars().unique().all()
 
     # Загружаем дополнительные зависимости для всех пользователей
     for user in users:
@@ -879,7 +1018,7 @@ async def get_referrals(db: AsyncSession, user_id: int) -> list[User]:
     result = await db.execute(
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
             selectinload(User.referrer),
             selectinload(User.promo_group),
@@ -904,7 +1043,7 @@ async def get_users_for_promo_segment(db: AsyncSession, segment: str) -> list[Us
     base_query = (
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.promo_group),
             selectinload(User.referrer),
         )
@@ -966,7 +1105,7 @@ async def get_inactive_users(db: AsyncSession, months: int = 3) -> list[User]:
     result = await db.execute(
         select(User)
         .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
+            selectinload(User.subscriptions).selectinload(Subscription.tariff),
             selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
             selectinload(User.referrer),
             selectinload(User.promo_group),
@@ -1050,7 +1189,7 @@ async def get_users_with_active_subscriptions(db: AsyncSession) -> list[User]:
                 Subscription.end_date > current_time,
             )
         )
-        .options(selectinload(User.subscription).selectinload(Subscription.tariff))
+        .options(selectinload(User.subscriptions).selectinload(Subscription.tariff))
     )
 
     return result.scalars().unique().all()
@@ -1130,8 +1269,11 @@ async def create_user_by_email(
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
-    """Get user by email address."""
-    result = await db.execute(select(User).where(User.email == email))
+    """Get user by email address (case-insensitive)."""
+    if not email or not email.strip():
+        return None
+    email_lower = email.strip().lower()
+    result = await db.execute(select(User).where(func.lower(User.email) == email_lower))
     return result.scalar_one_or_none()
 
 
@@ -1147,7 +1289,10 @@ async def is_email_taken(db: AsyncSession, email: str, exclude_user_id: int | No
     Returns:
         True if email is taken, False otherwise
     """
-    query = select(User.id).where(User.email == email)
+    if not email or not email.strip():
+        return False
+    email_lower = email.strip().lower()
+    query = select(User.id).where(func.lower(User.email) == email_lower)
     if exclude_user_id:
         query = query.where(User.id != exclude_user_id)
     result = await db.execute(query)
@@ -1259,7 +1404,9 @@ async def clear_email_change_pending(db: AsyncSession, user: User) -> None:
 
 # --- OAuth provider functions ---
 
-_OAUTH_PROVIDER_COLUMNS = {
+# Single source of truth: provider name → User model column name.
+# Imported by account_linking.py and account_merge_service.py.
+OAUTH_PROVIDER_COLUMNS: dict[str, str] = {
     'google': 'google_id',
     'yandex': 'yandex_id',
     'discord': 'discord_id',
@@ -1269,8 +1416,9 @@ _OAUTH_PROVIDER_COLUMNS = {
 
 async def get_user_by_oauth_provider(db: AsyncSession, provider: str, provider_id: str) -> User | None:
     """Find a user by OAuth provider ID."""
-    column_name = _OAUTH_PROVIDER_COLUMNS.get(provider)
+    column_name = OAUTH_PROVIDER_COLUMNS.get(provider)
     if not column_name:
+        logger.warning('Unknown OAuth provider in lookup', provider=provider)
         return None
     column = getattr(User, column_name)
     # VK uses BigInteger, so convert
@@ -1281,13 +1429,25 @@ async def get_user_by_oauth_provider(db: AsyncSession, provider: str, provider_i
 
 async def set_user_oauth_provider_id(db: AsyncSession, user: User, provider: str, provider_id: str) -> None:
     """Link an OAuth provider ID to an existing user."""
-    column_name = _OAUTH_PROVIDER_COLUMNS.get(provider)
+    column_name = OAUTH_PROVIDER_COLUMNS.get(provider)
     if not column_name:
+        logger.warning('Unknown OAuth provider in set', provider=provider, user_id=user.id)
         return
     value: str | int = int(provider_id) if provider == 'vk' else provider_id
     setattr(user, column_name, value)
     user.updated_at = datetime.now(UTC)
-    logger.info('Linked (id=) to user', provider=provider, provider_id=provider_id, user_id=user.id)
+    logger.info('OAuth provider linked to user', provider=provider, provider_id=provider_id, user_id=user.id)
+
+
+async def clear_user_oauth_provider_id(db: AsyncSession, user: User, provider: str) -> None:
+    """Unlink an OAuth provider from an existing user (set column to None)."""
+    column_name = OAUTH_PROVIDER_COLUMNS.get(provider)
+    if not column_name:
+        logger.warning('Unknown OAuth provider in clear', provider=provider, user_id=user.id)
+        return
+    setattr(user, column_name, None)
+    user.updated_at = datetime.now(UTC)
+    logger.info('Unlinked OAuth provider from user', provider=provider, user_id=user.id)
 
 
 async def create_user_by_oauth(
@@ -1307,7 +1467,7 @@ async def create_user_by_oauth(
     normalized_language = _normalize_language_code(language)
     default_group = await _get_or_create_default_promo_group(db)
 
-    column_name = _OAUTH_PROVIDER_COLUMNS.get(provider)
+    column_name = OAUTH_PROVIDER_COLUMNS.get(provider)
     provider_value: str | int = int(provider_id) if provider == 'vk' else provider_id
 
     user = User(
@@ -1357,3 +1517,14 @@ async def create_user_by_oauth(
         logger.warning('Failed to emit user.created event', error=error)
 
     return user
+
+
+async def lock_user_subscriptions_for_update(db: AsyncSession, user_id: int) -> list[Subscription]:
+    """Lock all subscriptions for a user using SELECT FOR UPDATE."""
+    result = await db.execute(
+        select(Subscription)
+        .where(Subscription.user_id == user_id)
+        .with_for_update()
+        .order_by(Subscription.created_at.desc())
+    )
+    return list(result.scalars().all())

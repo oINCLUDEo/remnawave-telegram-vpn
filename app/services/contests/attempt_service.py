@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.contest import create_attempt, get_attempt, update_attempt
-from app.database.crud.subscription import extend_subscription, get_subscription_by_user_id
+from app.database.crud.subscription import (
+    extend_subscription,
+    get_subscription_by_user_id,
+    restore_reserve_grace_if_active,
+)
 from app.database.crud.user import get_user_by_id
 from app.database.models import ContestAttempt, ContestRound, ContestTemplate
 from app.services.contests.enums import PrizeType
@@ -293,12 +297,26 @@ class ContestAttemptService:
         prize_value = template.prize_value or '1'
 
         if prize_type == PrizeType.DAYS.value:
-            subscription = await get_subscription_by_user_id(db, user_id)
+            if settings.is_multi_tariff_enabled():
+                from app.database.crud.subscription import get_active_subscriptions_by_user_id
+
+                active_subs = await get_active_subscriptions_by_user_id(db, user_id)
+                # Contest prize: prefer non-daily subscription with most days left
+                non_daily = [s for s in active_subs if not (s.tariff and getattr(s.tariff, 'is_daily', False))]
+                eligible = non_daily or active_subs
+                subscription = max(eligible, key=lambda s: s.days_left) if eligible else None
+            else:
+                subscription = await get_subscription_by_user_id(db, user_id)
             if not subscription:
                 return ''
             days = int(prize_value) if prize_value.isdigit() else 1
+            restore_reserve_grace_if_active(subscription)
             await extend_subscription(db, subscription, days)
-            return texts.t('CONTEST_PRIZE_GRANTED', 'Бонус {days} дней зачислен!').format(days=days)
+            tariff_name = getattr(subscription.tariff, 'name', None) if subscription.tariff else None
+            prize_text = texts.t('CONTEST_PRIZE_GRANTED', 'Бонус {days} дней зачислен!').format(days=days)
+            if tariff_name:
+                prize_text += f' (подписка "{tariff_name}")'
+            return prize_text
 
         if prize_type == PrizeType.BALANCE.value:
             user = await get_user_by_id(db, user_id)
@@ -306,6 +324,9 @@ class ContestAttemptService:
                 return ''
             kopeks = int(prize_value) if prize_value.isdigit() else 0
             if kopeks > 0:
+                from app.database.crud.user import lock_user_for_update
+
+                user = await lock_user_for_update(db, user)
                 user.balance_kopeks += kopeks
                 await db.commit()
                 return texts.t('CONTEST_BALANCE_GRANTED', 'Бонус {amount} зачислен!').format(

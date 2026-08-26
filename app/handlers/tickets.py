@@ -1,4 +1,5 @@
 import asyncio
+import html
 import time
 
 import structlog
@@ -256,7 +257,7 @@ async def handle_ticket_message_input(message: types.Message, state: FSMContext,
 
         texts = get_texts(db_user.language)
         # Ограничим длину подтверждения чтобы не упереться в лимиты
-        safe_title = title if len(title) <= 200 else (title[:197] + '...')
+        safe_title = html.escape(title if len(title) <= 200 else (title[:197] + '...'))
         creation_text = (
             f'✅ <b>Тикет #{ticket.id} создан</b>\n\n'
             f'📝 Заголовок: {safe_title}\n'
@@ -504,7 +505,7 @@ def _split_text_into_pages(header: str, message_blocks: list[str], max_len: int 
     if current.strip():
         pages.append(current)
 
-    return pages if pages else [header]
+    return pages or [header]
 
 
 async def view_ticket(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
@@ -542,7 +543,7 @@ async def view_ticket(callback: types.CallbackQuery, db_user: User, db: AsyncSes
 
     header = (
         f'🎫 Тикет #{ticket.id}\n\n'
-        f'📝 Заголовок: {ticket.title}\n'
+        f'📝 Заголовок: {html.escape(ticket.title or "")}\n'
         f'📊 Статус: {ticket.status_emoji} {status_text}\n'
         f'📅 Создан: {format_local_datetime(ticket.created_at, "%d.%m.%Y %H:%M")}\n\n'
     )
@@ -551,7 +552,7 @@ async def view_ticket(callback: types.CallbackQuery, db_user: User, db: AsyncSes
         message_blocks.append(f'💬 Сообщения ({len(ticket.messages)}):\n\n')
         for msg in ticket.messages:
             sender = '👤 Вы' if msg.is_user_message else '🛠️ Поддержка'
-            block = f'{sender} ({format_local_datetime(msg.created_at, "%d.%m %H:%M")}):\n{msg.message_text}\n\n'
+            block = f'{sender} ({format_local_datetime(msg.created_at, "%d.%m %H:%M")}):\n{html.escape(msg.message_text or "")}\n\n'
             if getattr(msg, 'has_media', False) and getattr(msg, 'media_type', None) == 'photo':
                 block += '📎 Вложение: фото\n\n'
             message_blocks.append(block)
@@ -890,7 +891,9 @@ async def handle_ticket_reply(message: types.Message, state: FSMContext, db_user
 
         # Уведомить админов об ответе пользователя
         logger.info('Attempting to notify admins about ticket reply #', ticket_id=ticket_id)
-        await notify_admins_about_ticket_reply(ticket, reply_text, db)
+        await notify_admins_about_ticket_reply(
+            ticket, reply_text, db, media_file_id=media_file_id, media_type=media_type
+        )
 
     except Exception as e:
         logger.error('Error adding ticket reply', error=e)
@@ -995,21 +998,32 @@ async def notify_admins_about_new_ticket(ticket: Ticket, db: AsyncSession):
             )
             return
 
-        # Получаем язык пользователя для локализации заголовков в уведомлении
-        # и формируем удобный текст уведомления для админов
         get_texts(settings.DEFAULT_LANGUAGE)
         title = (ticket.title or '').strip()
         if len(title) > 60:
             title = title[:57] + '...'
 
-        # Загрузим пользователя, чтобы отобразить реальный Telegram ID и username
         try:
             user = await get_user_by_id(db, ticket.user_id)
         except Exception:
             user = None
-        full_name = user.full_name if user else 'Unknown'
+        full_name = html.escape(user.full_name or '') if user else 'Unknown'
         telegram_id_display = (user.telegram_id or user.email or f'#{user.id}') if user else '—'
-        username_display = (user.username or 'отсутствует') if user else 'отсутствует'
+        username_display = html.escape((user.username or 'отсутствует') if user else 'отсутствует')
+
+        # Загружаем первое сообщение для получения медиа и превью текста
+        first_message = await TicketMessageCRUD.get_first_message(db, ticket.id)
+        media_file_id = None
+        media_type = None
+        message_preview = ''
+        if first_message:
+            media_file_id = first_message.media_file_id if first_message.has_media else None
+            media_type = first_message.media_type if first_message.has_media else None
+            msg_text = (first_message.message_text or '').strip()
+            if msg_text:
+                message_preview = msg_text[:200] + '...' if len(msg_text) > 200 else msg_text
+
+        safe_title = html.escape(title) if title else '—'
 
         notification_text = (
             f'🎫 <b>НОВЫЙ ТИКЕТ</b>\n\n'
@@ -1017,14 +1031,14 @@ async def notify_admins_about_new_ticket(ticket: Ticket, db: AsyncSession):
             f'👤 <b>Пользователь:</b> {full_name}\n'
             f'🆔 <b>ID:</b> <code>{telegram_id_display}</code>\n'
             f'📱 <b>Username:</b> @{username_display}\n'
-            f'📝 <b>Заголовок:</b> {title or "—"}\n'
-            f'📅 <b>Создан:</b> {format_local_datetime(ticket.created_at, "%d.%m.%Y %H:%M")}\n'
+            f'📝 <b>Заголовок:</b> {safe_title}\n'
         )
 
-        # Клавиатура с быстрыми действиями для админов в топике
-        # Отправляем через общий сервис админ-уведомлений (поддерживает топики)
-        # bot доступен из Dispatcher в middlewares; безопаснее взять из уже используемого контекста
-        # Здесь используем lazy импорт из maintenance_service, где хранится бот
+        if message_preview:
+            notification_text += f'\n📩 <b>Сообщение:</b>\n{html.escape(message_preview)}\n'
+
+        notification_text += f'\n📅 <b>Создан:</b> {format_local_datetime(ticket.created_at, "%d.%m.%Y %H:%M")}\n'
+
         from app.services.maintenance_service import maintenance_service
 
         bot = maintenance_service._bot or None
@@ -1033,12 +1047,21 @@ async def notify_admins_about_new_ticket(ticket: Ticket, db: AsyncSession):
             return
 
         service = AdminNotificationService(bot)
-        await service.send_ticket_event_notification(notification_text, None)
+        await service.send_ticket_event_notification(
+            notification_text, None, media_file_id=media_file_id, media_type=media_type
+        )
     except Exception as e:
         logger.error('Error notifying admins about new ticket', error=e)
 
 
-async def notify_admins_about_ticket_reply(ticket: Ticket, reply_text: str, db: AsyncSession):
+async def notify_admins_about_ticket_reply(
+    ticket: Ticket,
+    reply_text: str,
+    db: AsyncSession,
+    *,
+    media_file_id: str | None = None,
+    media_type: str | None = None,
+):
     """Уведомить админов об ответе пользователя на тикет"""
     logger.info('notify_admins_about_ticket_reply called for ticket #', ticket_id=ticket.id)
     try:
@@ -1052,26 +1075,25 @@ async def notify_admins_about_ticket_reply(ticket: Ticket, reply_text: str, db: 
         if len(title) > 60:
             title = title[:57] + '...'
 
-        # Загрузим пользователя
         try:
             user = await get_user_by_id(db, ticket.user_id)
         except Exception:
             user = None
-        full_name = user.full_name if user else 'Unknown'
+        full_name = html.escape(user.full_name or '') if user else 'Unknown'
         telegram_id_display = (user.telegram_id or user.email or f'#{user.id}') if user else '—'
-        username_display = (user.username or 'отсутствует') if user else 'отсутствует'
+        username_display = html.escape((user.username or 'отсутствует') if user else 'отсутствует')
 
-        # Обрезаем текст ответа для уведомления
-        reply_preview = reply_text[:150] + '...' if len(reply_text) > 150 else reply_text
+        reply_preview = reply_text[:200] + '...' if len(reply_text) > 200 else reply_text
+        safe_title = html.escape(title) if title else '—'
 
         notification_text = (
             f'💬 <b>ОТВЕТ НА ТИКЕТ</b>\n\n'
             f'🆔 <b>ID тикета:</b> <code>{ticket.id}</code>\n'
-            f'📝 <b>Заголовок:</b> {title or "—"}\n'
+            f'📝 <b>Заголовок:</b> {safe_title}\n'
             f'👤 <b>Пользователь:</b> {full_name}\n'
             f'🆔 <b>ID:</b> <code>{telegram_id_display}</code>\n'
             f'📱 <b>Username:</b> @{username_display}\n\n'
-            f'📩 <b>Сообщение:</b>\n{reply_preview}\n'
+            f'📩 <b>Сообщение:</b>\n{html.escape(reply_preview)}\n'
         )
 
         from app.services.maintenance_service import maintenance_service
@@ -1082,7 +1104,9 @@ async def notify_admins_about_ticket_reply(ticket: Ticket, reply_text: str, db: 
             return
 
         service = AdminNotificationService(bot)
-        result = await service.send_ticket_event_notification(notification_text, None)
+        result = await service.send_ticket_event_notification(
+            notification_text, None, media_file_id=media_file_id, media_type=media_type
+        )
         logger.info('Ticket # reply notification sent', ticket_id=ticket.id, result=result)
     except Exception as e:
         logger.error('Error notifying admins about ticket reply', error=e)

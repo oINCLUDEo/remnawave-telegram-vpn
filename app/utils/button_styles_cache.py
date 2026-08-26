@@ -23,6 +23,8 @@ DEFAULT_BUTTON_STYLES: dict[str, dict] = {
     'support': {'style': 'primary', 'icon_custom_emoji_id': '', 'enabled': True, 'labels': {}},
     'info': {'style': 'primary', 'icon_custom_emoji_id': '', 'enabled': True, 'labels': {}},
     'admin': {'style': 'danger', 'icon_custom_emoji_id': '', 'enabled': True, 'labels': {}},
+    'language': {'style': 'primary', 'icon_custom_emoji_id': '', 'enabled': True, 'labels': {}},
+    'cabinet': {'style': 'primary', 'icon_custom_emoji_id': '', 'enabled': True, 'labels': {}},
 }
 
 BOT_LOCALES = ('ru', 'en', 'ua', 'zh', 'fa')
@@ -49,6 +51,8 @@ CALLBACK_TO_SECTION: dict[str, str] = {
     'menu_support': 'support',
     'menu_info': 'info',
     'admin_panel': 'admin',
+    'menu_language': 'language',
+    'open_cabinet': 'cabinet',
 }
 
 # DB key used for storage.

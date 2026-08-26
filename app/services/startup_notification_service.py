@@ -4,6 +4,7 @@
 Отправляет красивое сообщение с информацией о системе при запуске бота.
 """
 
+import html
 from datetime import UTC, datetime
 from typing import Final
 
@@ -64,7 +65,10 @@ class StartupNotificationService:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self.chat_id = getattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None)
-        self.topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_TOPIC_ID', None)
+        # Стартовые/краш-уведомления → топик инфраструктуры, fallback на общий
+        self.topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_INFRASTRUCTURE_TOPIC_ID', None) or getattr(
+            settings, 'ADMIN_NOTIFICATIONS_TOPIC_ID', None
+        )
         self.enabled = getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False)
 
     def _get_version(self) -> str:
@@ -380,7 +384,10 @@ async def send_crash_notification(bot: Bot, error: Exception, traceback_str: str
         bool: True если уведомление отправлено успешно
     """
     chat_id = getattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None)
-    topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_TOPIC_ID', None)
+    # Краш → топик ошибок, fallback на общий
+    topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_ERRORS_TOPIC_ID', None) or getattr(
+        settings, 'ADMIN_NOTIFICATIONS_TOPIC_ID', None
+    )
     enabled = getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False)
 
     if not enabled or not chat_id:
@@ -413,12 +420,12 @@ async def send_crash_notification(bot: Bot, error: Exception, traceback_str: str
             filename=file_name,
         )
 
-        # Текст сообщения
+        # Текст сообщения (escape HTML в error_type/message — они могут содержать <class ...>)
         message_text = (
             f'<b>Remnawave Bedolaga Bot</b>\n\n'
             f'❌ Бот упал с ошибкой\n\n'
-            f'<b>Тип:</b> <code>{error_type}</code>\n'
-            f'<b>Сообщение:</b> <code>{error_message[:CRASH_ERROR_PREVIEW_LENGTH]}</code>\n'
+            f'<b>Тип:</b> <code>{html.escape(error_type)}</code>\n'
+            f'<b>Сообщение:</b> <code>{html.escape(error_message[:CRASH_ERROR_PREVIEW_LENGTH])}</code>\n'
         )
 
         # Добавляем рекомендации если есть

@@ -1,8 +1,10 @@
+import html
 import re
 
 import structlog
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.fsm.context import FSMContext
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -66,8 +68,8 @@ def _format_campaign_summary(campaign, texts) -> str:
         bonus_info = '❓ Неизвестный тип бонуса'
 
     return (
-        f'<b>{campaign.name}</b>\n'
-        f'Стартовый параметр: <code>{campaign.start_parameter}</code>\n'
+        f'<b>{html.escape(campaign.name)}</b>\n'
+        f'Стартовый параметр: <code>{html.escape(campaign.start_parameter)}</code>\n'
         f'Статус: {status}\n'
         f'{bonus_info}\n'
     )
@@ -237,11 +239,13 @@ async def show_campaigns_list(
     text_lines = ['📋 <b>Список кампаний</b>\n']
 
     for campaign in campaigns:
-        registrations = len(campaign.registrations or [])
-        total_balance = sum(r.balance_bonus_kopeks or 0 for r in campaign.registrations or [])
+        # Access from instance dict to avoid MissingGreenlet on lazy load
+        regs = sa_inspect(campaign).dict.get('registrations', []) or []
+        registrations = len(regs)
+        total_balance = sum(r.balance_bonus_kopeks or 0 for r in regs)
         status = '🟢' if campaign.is_active else '⚪'
         line = (
-            f'{status} <b>{campaign.name}</b> — <code>{campaign.start_parameter}</code>\n'
+            f'{status} <b>{html.escape(campaign.name)}</b> — <code>{html.escape(campaign.start_parameter)}</code>\n'
             f'   Регистраций: {registrations}, баланс: {texts.format_price(total_balance)}'
         )
         if campaign.is_subscription_bonus:
@@ -380,7 +384,7 @@ async def start_edit_campaign_name(
     await callback.message.edit_text(
         (
             '✏️ <b>Изменение названия кампании</b>\n\n'
-            f'Текущее название: <b>{campaign.name}</b>\n'
+            f'Текущее название: <b>{html.escape(campaign.name)}</b>\n'
             'Введите новое название (3-100 символов):'
         ),
         reply_markup=types.InlineKeyboardMarkup(
@@ -1180,8 +1184,8 @@ async def confirm_delete_campaign(
 
     text = (
         '🗑️ <b>Удаление кампании</b>\n\n'
-        f'Название: <b>{campaign.name}</b>\n'
-        f'Параметр: <code>{campaign.start_parameter}</code>\n\n'
+        f'Название: <b>{html.escape(campaign.name)}</b>\n'
+        f'Параметр: <code>{html.escape(campaign.start_parameter)}</code>\n\n'
         'Вы уверены, что хотите удалить кампанию?'
     )
 
@@ -1588,7 +1592,7 @@ async def select_campaign_tariff(
     await state.update_data(campaign_tariff_id=tariff_id, campaign_tariff_name=tariff.name)
     await state.set_state(AdminStates.creating_campaign_tariff_days)
     await callback.message.edit_text(
-        f'🎁 Выбран тариф: <b>{tariff.name}</b>\n\n📅 Введите длительность тарифа в днях (1-730):',
+        f'🎁 Выбран тариф: <b>{html.escape(tariff.name)}</b>\n\n📅 Введите длительность тарифа в днях (1-730):',
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_campaigns')]]
         ),

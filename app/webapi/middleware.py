@@ -17,7 +17,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Логирование входящих запросов в административный API."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        with bound_contextvars(http_method=request.method, http_path=request.url.path):
+        ctx: dict = {'http_method': request.method, 'http_path': request.url.path}
+        # Bind telegram_id for mobile API requests so all log entries carry it
+        tg_id = request.headers.get('X-Telegram-Id')
+        if tg_id:
+            ctx['telegram_id'] = tg_id
+        with bound_contextvars(**ctx):
             start = monotonic()
             response: Response | None = None
             try:

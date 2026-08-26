@@ -61,6 +61,7 @@ class BroadcastConfig:
     selected_buttons: list[str]
     media: BroadcastMediaConfig | None = None
     initiator_name: str | None = None
+    custom_buttons: list[dict] | None = None
 
 
 @dataclass
@@ -179,7 +180,7 @@ class BroadcastService:
                 await self._mark_finished(broadcast_id, sent_count, failed_count, blocked_count, cancelled=False)
                 return
 
-            keyboard = self._build_keyboard(config.selected_buttons)
+            keyboard = self._build_keyboard(config.selected_buttons, config.custom_buttons)
 
             logger.info(
                 'Рассылка : начинаем отправку получателям (batch delay=s)',
@@ -358,10 +359,14 @@ class BroadcastService:
 
         return sent_count, failed_count, blocked_count, False
 
-    def _build_keyboard(self, selected_buttons: list[str] | None) -> InlineKeyboardMarkup | None:
+    def _build_keyboard(
+        self,
+        selected_buttons: list[str] | None,
+        custom_buttons: list[dict] | None = None,
+    ) -> InlineKeyboardMarkup | None:
         if selected_buttons is None:
             selected_buttons = []
-        return create_broadcast_keyboard(selected_buttons)
+        return create_broadcast_keyboard(selected_buttons, custom_buttons=custom_buttons)
 
     async def _deliver_message(
         self,
@@ -535,8 +540,23 @@ async def cleanup_blocked_broadcast_users(blocked_telegram_ids: list[int]) -> No
 
                 user.status = UserStatus.BLOCKED.value
 
-                # Отключаем активные подписки
-                sub_result = await session.execute(
+                # Проверяем, есть ли активная оплаченная подписка
+                from app.database.crud.subscription import is_active_paid_subscription
+
+                sub_result = await session.execute(select(Subscription).where(Subscription.user_id == user.id))
+                all_subs = sub_result.scalars().all()
+
+                if any(is_active_paid_subscription(s) for s in all_subs):
+                    logger.info(
+                        '⏭️ Пропуск отключения подписки: у пользователя активная оплаченная подписка',
+                        telegram_id=telegram_id,
+                        user_id=user.id,
+                    )
+                    await session.commit()
+                    continue
+
+                # Отключаем активные подписки (только триальные или истёкшие)
+                active_sub_result = await session.execute(
                     select(Subscription).where(
                         Subscription.user_id == user.id,
                         Subscription.status.in_(
@@ -547,14 +567,21 @@ async def cleanup_blocked_broadcast_users(blocked_telegram_ids: list[int]) -> No
                         ),
                     )
                 )
-                subscriptions = sub_result.scalars().all()
+                subscriptions = active_sub_result.scalars().all()
                 for sub in subscriptions:
                     sub.status = SubscriptionStatus.DISABLED.value
 
                 await session.commit()
 
                 # Отключаем в Remnawave панели (вне транзакции)
-                if user.remnawave_uuid:
+                from app.config import settings
+
+                if settings.is_multi_tariff_enabled():
+                    await session.refresh(user, ['subscriptions'])
+                    for sub in user.subscriptions or []:
+                        if sub.remnawave_uuid:
+                            await subscription_service.disable_remnawave_user(sub.remnawave_uuid)
+                elif user.remnawave_uuid:
                     await subscription_service.disable_remnawave_user(user.remnawave_uuid)
 
                 logger.info(

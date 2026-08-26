@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from importlib import import_module
 from typing import Any
 
@@ -10,9 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import PaymentMethod, TransactionType
-from app.services.subscription_auto_purchase_service import (
-    auto_purchase_saved_cart_after_topup,
-)
 from app.utils.payment_logger import payment_logger as logger
 from app.utils.user_utils import format_referrer_info
 
@@ -23,7 +21,7 @@ class MulenPayPaymentMixin:
     async def create_mulenpay_payment(
         self,
         db: AsyncSession,
-        user_id: int,
+        user_id: int | None,
         amount_kopeks: int,
         description: str,
         language: str | None = None,
@@ -55,7 +53,7 @@ class MulenPayPaymentMixin:
 
         payment_module = import_module('app.services.payment_service')
         try:
-            payment_uuid = f'mulen_{user_id}_{uuid.uuid4().hex}'
+            payment_uuid = f'mulen_{user_id or "guest"}_{uuid.uuid4().hex}'
             amount_rubles = amount_kopeks / 100
 
             items = [
@@ -176,6 +174,14 @@ class MulenPayPaymentMixin:
                 )
                 return False
 
+            # Lock payment row immediately to prevent concurrent webhook processing (TOCTOU race)
+            mulenpay_lock_crud = import_module('app.database.crud.mulenpay')
+            locked = await mulenpay_lock_crud.get_mulenpay_payment_by_id_for_update(db, payment.id)
+            if not locked:
+                logger.error('MulenPay: не удалось заблокировать платёж', payment_id=payment.id)
+                return False
+            payment = locked
+
             metadata = dict(getattr(payment, 'metadata_json', {}) or {})
             invoice_message = metadata.get('invoice_message') or {}
 
@@ -201,11 +207,9 @@ class MulenPayPaymentMixin:
             if payment.is_paid:
                 if invoice_message_removed:
                     try:
-                        await payment_module.update_mulenpay_payment_metadata(
-                            db,
-                            payment=payment,
-                            metadata=metadata,
-                        )
+                        payment.metadata_json = metadata
+                        payment.updated_at = datetime.now(UTC)
+                        await db.commit()
                     except Exception as error:  # pragma: no cover - diagnostics
                         logger.warning(
                             'Не удалось обновить метаданные после удаления счёта',
@@ -219,17 +223,33 @@ class MulenPayPaymentMixin:
                 return True
 
             if payment_status == 'success':
-                await payment_module.update_mulenpay_payment_status(
-                    db,
-                    payment=payment,
-                    status='success',
-                    callback_payload=callback_data,
-                    mulen_payment_id=mulen_payment_id_int,
-                    metadata=metadata,
-                )
+                # Inline field updates — NO intermediate commit that would release FOR UPDATE lock
+                payment.status = 'success'
+                payment.is_paid = True
+                payment.paid_at = datetime.now(UTC)
+                payment.callback_payload = callback_data
+                if mulen_payment_id_int is not None and not payment.mulen_payment_id:
+                    payment.mulen_payment_id = mulen_payment_id_int
+                payment.metadata_json = metadata
+                payment.updated_at = datetime.now(UTC)
+                await db.flush()
 
                 if payment.transaction_id:
                     logger.info('Для платежа уже создана транзакция', display_name=display_name, uuid=payment.uuid)
+                    return True
+
+                # --- Guest purchase flow (landing page) ---
+                payment_meta = dict(getattr(payment, 'metadata_json', {}) or {})
+                from app.services.payment.common import try_fulfill_guest_purchase
+
+                guest_result = await try_fulfill_guest_purchase(
+                    db,
+                    metadata=payment_meta,
+                    payment_amount_kopeks=payment.amount_kopeks,
+                    provider_payment_id=payment.uuid,
+                    provider_name='mulenpay',
+                )
+                if guest_result is not None:
                     return True
 
                 payment_description = getattr(
@@ -248,6 +268,7 @@ class MulenPayPaymentMixin:
                     external_id=payment.uuid,
                     is_completed=True,
                     created_at=getattr(payment, 'created_at', None),
+                    commit=False,
                 )
 
                 await payment_module.link_mulenpay_payment_to_transaction(
@@ -263,15 +284,31 @@ class MulenPayPaymentMixin:
                     )
                     return False
 
+                # Lock user row to prevent concurrent balance race conditions
+                from app.database.crud.user import lock_user_for_update
+
+                user = await lock_user_for_update(db, user)
+
                 old_balance = user.balance_kopeks
                 was_first_topup = not user.has_made_first_topup
 
-                await payment_module.add_user_balance(
+                # Начисляем баланс напрямую (без add_user_balance, который делает db.commit())
+                user.balance_kopeks += payment.amount_kopeks
+                user.updated_at = datetime.now(UTC)
+
+                await db.commit()
+
+                # Emit deferred side-effects after atomic commit
+                from app.database.crud.transaction import emit_transaction_side_effects
+
+                await emit_transaction_side_effects(
                     db,
-                    user,
-                    payment.amount_kopeks,
-                    f'Пополнение {display_name}: {payment.amount_kopeks // 100}₽',
-                    create_transaction=False,
+                    transaction,
+                    amount_kopeks=payment.amount_kopeks,
+                    user_id=payment.user_id,
+                    type=TransactionType.DEPOSIT,
+                    payment_method=PaymentMethod.MULENPAY,
+                    external_id=payment.uuid,
                 )
 
                 try:
@@ -286,7 +323,7 @@ class MulenPayPaymentMixin:
                 except Exception as error:
                     logger.error('Ошибка обработки реферального пополнения', display_name=display_name, error=error)
 
-                if was_first_topup and not user.has_made_first_topup:
+                if was_first_topup and not user.has_made_first_topup and not user.referred_by_id:
                     user.has_made_first_topup = True
                     await db.commit()
 
@@ -346,68 +383,11 @@ class MulenPayPaymentMixin:
 
                 # Проверяем наличие сохраненной корзины для возврата к оформлению подписки
                 try:
-                    from aiogram import types
+                    from app.services.payment.common import send_cart_notification_after_topup
 
-                    from app.services.user_cart_service import user_cart_service
-
-                    has_saved_cart = await user_cart_service.has_user_cart(user.id)
-                    auto_purchase_success = False
-                    if has_saved_cart:
-                        try:
-                            auto_purchase_success = await auto_purchase_saved_cart_after_topup(
-                                db,
-                                user,
-                                bot=getattr(self, 'bot', None),
-                            )
-                        except Exception as auto_error:
-                            logger.error(
-                                'Ошибка автоматической покупки подписки для пользователя',
-                                user_id=user.id,
-                                auto_error=auto_error,
-                                exc_info=True,
-                            )
-
-                        if auto_purchase_success:
-                            has_saved_cart = False
-
-                    if has_saved_cart and getattr(self, 'bot', None) and user.telegram_id:
-                        # Если у пользователя есть сохраненная корзина,
-                        # отправляем ему уведомление с кнопкой вернуться к оформлению
-                        from app.localization.texts import get_texts
-
-                        texts = get_texts(user.language)
-                        cart_message = texts.t(
-                            'BALANCE_TOPUP_CART_REMINDER_DETAILED',
-                            '🛒 У вас есть неоформленный заказ.\n\n'
-                            'Вы можете продолжить оформление с теми же параметрами.',
-                        ).format(total_amount=settings.format_price(payment.amount_kopeks))
-
-                        # Создаем клавиатуру с кнопками
-                        keyboard = types.InlineKeyboardMarkup(
-                            inline_keyboard=[
-                                [
-                                    types.InlineKeyboardButton(
-                                        text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT, callback_data='return_to_saved_cart'
-                                    )
-                                ],
-                                [types.InlineKeyboardButton(text='💰 Мой баланс', callback_data='menu_balance')],
-                                [types.InlineKeyboardButton(text='🏠 Главное меню', callback_data='back_to_menu')],
-                            ]
-                        )
-
-                        await self.bot.send_message(
-                            chat_id=user.telegram_id,
-                            text=f'✅ Баланс пополнен на {settings.format_price(payment.amount_kopeks)}!\n\n'
-                            f'⚠️ <b>Важно:</b> Пополнение баланса не активирует подписку автоматически. '
-                            f'Обязательно активируйте подписку отдельно!\n\n'
-                            f'🔄 При наличии сохранённой корзины подписки и включенной автопокупке, '
-                            f'подписка будет приобретена автоматически после пополнения баланса.\n\n{cart_message}',
-                            reply_markup=keyboard,
-                        )
-                        logger.info(
-                            'Отправлено уведомление с кнопкой возврата к оформлению подписки пользователю',
-                            user_id=user.id,
-                        )
+                    await send_cart_notification_after_topup(
+                        user, payment.amount_kopeks, db, getattr(self, 'bot', None)
+                    )
                 except Exception as e:
                     logger.error(
                         'Ошибка при работе с сохраненной корзиной для пользователя',

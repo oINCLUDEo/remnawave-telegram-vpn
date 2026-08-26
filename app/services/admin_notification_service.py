@@ -1,5 +1,6 @@
 import html
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 import structlog
@@ -15,13 +16,30 @@ from app.database.crud.transaction import get_transaction_by_id
 from app.database.crud.user import get_user_by_id
 from app.database.models import (
     AdvertisingCampaign,
+    GuestPurchase,
     PromoCodeType,
     PromoGroup,
     Subscription,
     Transaction,
     User,
 )
+from app.utils.message_patch import caption_exceeds_telegram_limit
 from app.utils.timezone import format_local_datetime
+
+
+class NotificationCategory(StrEnum):
+    """Категории уведомлений для маршрутизации по топикам."""
+
+    PURCHASES = 'purchases'  # Покупки подписок, покупки с лендинга
+    RENEWALS = 'renewals'  # Продления
+    TRIALS = 'trials'  # Триалы
+    BALANCE = 'balance'  # Пополнение баланса
+    ADDONS = 'addons'  # Докупка трафика/устройств/серверов
+    INFRASTRUCTURE = 'infrastructure'  # Ноды, техработы, статус панели, вебхуки
+    ERRORS = 'errors'  # Ошибки бота, краши
+    PROMO = 'promo'  # Промокоды, кампании, промогруппы
+    PARTNERS = 'partners'  # Партнёрки, выводы, админ-действия
+    TICKETS = 'tickets'  # Тикеты (уже существует)
 
 
 logger = structlog.get_logger(__name__)
@@ -35,6 +53,20 @@ class AdminNotificationService:
         self.ticket_topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_TICKET_TOPIC_ID', None)
         self.enabled = getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False)
 
+        # Маппинг категорий на topic_id (None = fallback на self.topic_id)
+        self.category_topics: dict[NotificationCategory, int | None] = {
+            NotificationCategory.PURCHASES: getattr(settings, 'ADMIN_NOTIFICATIONS_PURCHASES_TOPIC_ID', None),
+            NotificationCategory.RENEWALS: getattr(settings, 'ADMIN_NOTIFICATIONS_RENEWALS_TOPIC_ID', None),
+            NotificationCategory.TRIALS: getattr(settings, 'ADMIN_NOTIFICATIONS_TRIALS_TOPIC_ID', None),
+            NotificationCategory.BALANCE: getattr(settings, 'ADMIN_NOTIFICATIONS_BALANCE_TOPIC_ID', None),
+            NotificationCategory.ADDONS: getattr(settings, 'ADMIN_NOTIFICATIONS_ADDONS_TOPIC_ID', None),
+            NotificationCategory.INFRASTRUCTURE: getattr(settings, 'ADMIN_NOTIFICATIONS_INFRASTRUCTURE_TOPIC_ID', None),
+            NotificationCategory.ERRORS: getattr(settings, 'ADMIN_NOTIFICATIONS_ERRORS_TOPIC_ID', None),
+            NotificationCategory.PROMO: getattr(settings, 'ADMIN_NOTIFICATIONS_PROMO_TOPIC_ID', None),
+            NotificationCategory.PARTNERS: getattr(settings, 'ADMIN_NOTIFICATIONS_PARTNERS_TOPIC_ID', None),
+            NotificationCategory.TICKETS: self.ticket_topic_id,
+        }
+
     async def _get_referrer_info(self, db: AsyncSession, referred_by_id: int | None) -> str:
         if not referred_by_id:
             return 'Нет'
@@ -45,11 +77,11 @@ class AdminNotificationService:
                 return f'ID {referred_by_id} (не найден)'
 
             if referrer.username:
-                return f'@{referrer.username} (ID: {referred_by_id})'
+                return f'@{html.escape(referrer.username)} (ID: {referred_by_id})'
             if referrer.telegram_id:
                 return f'ID {referrer.telegram_id}'
             if referrer.email:
-                return f'📧 {referrer.email}'
+                return f'📧 {html.escape(referrer.email)}'
             return f'User#{referred_by_id}'
 
         except Exception as e:
@@ -86,17 +118,17 @@ class AdminNotificationService:
     def _get_user_display(self, user: User) -> str:
         first_name = getattr(user, 'first_name', '') or ''
         if first_name:
-            return first_name
+            return html.escape(first_name)
 
         username = getattr(user, 'username', '') or ''
         if username:
-            return username
+            return html.escape(username)
 
         telegram_id = getattr(user, 'telegram_id', None)
         if telegram_id is None:
             email = getattr(user, 'email', None)
             if email:
-                return email
+                return html.escape(email)
             return f'User#{getattr(user, "id", "Unknown")}'
         return f'ID{telegram_id}'
 
@@ -108,7 +140,7 @@ class AdminNotificationService:
 
         email = getattr(user, 'email', None)
         if email:
-            return f'📧 {email}'
+            return f'📧 {html.escape(email)}'
 
         return f'User#{getattr(user, "id", "Unknown")}'
 
@@ -217,7 +249,7 @@ class AdminNotificationService:
         if not promo_group:
             return f'{icon} <b>{title}:</b> —'
 
-        lines = [f'{icon} <b>{title}:</b> {promo_group.name}']
+        lines = [f'{icon} <b>{title}:</b> {html.escape(promo_group.name)}']
 
         discount_lines = self._format_promo_group_discounts(promo_group)
         if discount_lines:
@@ -233,6 +265,8 @@ class AdminNotificationService:
             PromoCodeType.BALANCE.value: '💰 Бонус на баланс',
             PromoCodeType.SUBSCRIPTION_DAYS.value: '⏰ Доп. дни подписки',
             PromoCodeType.TRIAL_SUBSCRIPTION.value: '🎁 Триал подписка',
+            PromoCodeType.PROMO_GROUP.value: '👥 Промогруппа',
+            PromoCodeType.DISCOUNT.value: '💸 Скидка',
         }
 
         if not promo_type:
@@ -240,7 +274,7 @@ class AdminNotificationService:
 
         return mapping.get(promo_type, f'ℹ️ {promo_type}')
 
-    def _format_campaign_bonus(self, campaign: AdvertisingCampaign) -> list[str]:
+    def _format_campaign_bonus(self, campaign: AdvertisingCampaign, *, tariff_name: str | None = None) -> list[str]:
         if campaign.is_balance_bonus:
             return [
                 f'💰 Баланс: {settings.format_price(campaign.balance_bonus_kopeks or 0)}',
@@ -249,13 +283,23 @@ class AdminNotificationService:
         if campaign.is_subscription_bonus:
             default_devices = getattr(settings, 'DEFAULT_DEVICE_LIMIT', 1)
             details = [
-                f'📅 Дней подписки: {campaign.subscription_duration_days or 0}',
-                f'📊 Трафик: {campaign.subscription_traffic_gb or 0} ГБ',
-                f'📱 Устройства: {campaign.subscription_device_limit or default_devices}',
+                f'📅 {campaign.subscription_duration_days or 0} дн. '
+                f'• 📊 {campaign.subscription_traffic_gb or 0} ГБ '
+                f'• 📱 {campaign.subscription_device_limit or default_devices} устр.',
             ]
             if campaign.subscription_squads:
                 details.append(f'🌐 Сквады: {len(campaign.subscription_squads)} шт.')
             return details
+
+        if campaign.is_tariff_bonus:
+            name = tariff_name or f'ID {campaign.tariff_id}'
+            details = [f'📦 Тариф: <b>{name}</b>']
+            if campaign.tariff_duration_days:
+                details.append(f'📅 Период: {campaign.tariff_duration_days} дней')
+            return details
+
+        if campaign.is_none_bonus:
+            return ['🔗 Только отслеживание']
 
         return ['ℹ️ Бонусы не предусмотрены']
 
@@ -315,14 +359,14 @@ class AdminNotificationService:
                 '',
                 f'👤 <b>Пользователь:</b> {user_display}',
                 f'🆔 <b>{user_id_label}:</b> {user_id_display}',
-                f'📱 <b>Username:</b> @{getattr(user, "username", None) or "отсутствует"}',
+                f'📱 <b>Username:</b> @{html.escape(getattr(user, "username", None) or "отсутствует")}',
                 f'👥 <b>Статус:</b> {user_status}',
                 '',
             ]
 
             # Промогруппа — только название, без скидок
             if promo_group:
-                message_lines.append(f'🏷️ <b>Промогруппа:</b> {promo_group.name}')
+                message_lines.append(f'🏷️ <b>Промогруппа:</b> {html.escape(promo_group.name)}')
             else:
                 message_lines.append('🏷️ <b>Промогруппа:</b> —')
 
@@ -359,7 +403,7 @@ class AdminNotificationService:
             message_lines.append('')
             message_lines.append(f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>')
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.TRIALS)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о триале', error=e)
@@ -375,7 +419,7 @@ class AdminNotificationService:
 
             tariff = await get_tariff_by_id(db, subscription.tariff_id)
             if tariff:
-                return tariff.name
+                return html.escape(tariff.name)
         except Exception:
             pass
         return None
@@ -389,11 +433,12 @@ class AdminNotificationService:
         period_days: int,
         was_trial_conversion: bool = False,
         amount_kopeks: int | None = None,
-        purchase_type: str | None = None,  # 'tariff_switch', 'renewal', None (auto)
+        purchase_type: str | None = None,  # 'first_purchase', 'renewal', 'tariff_switch', None (auto-detect)
+        source: str | None = None,  # e.g. '📱 Мобильное приложение'
     ) -> bool:
         try:
             total_amount = (
-                amount_kopeks if amount_kopeks is not None else (transaction.amount_kopeks if transaction else 0)
+                amount_kopeks if amount_kopeks is not None else (abs(transaction.amount_kopeks) if transaction else 0)
             )
 
             await self._record_subscription_event(
@@ -424,7 +469,10 @@ class AdminNotificationService:
             elif was_trial_conversion:
                 event_title = '🔄 КОНВЕРСИЯ ИЗ ТРИАЛА'
                 user_status = 'Конверсия'
-            elif purchase_type == 'renewal' or user.has_had_paid_subscription:
+            elif purchase_type == 'first_purchase':
+                event_title = '💎 ПОКУПКА ПОДПИСКИ'
+                user_status = 'Первая покупка'
+            elif purchase_type == 'renewal' or (purchase_type is None and user.has_had_paid_subscription):
                 event_title = '💎 ПРОДЛЕНИЕ ПОДПИСКИ'
                 user_status = 'Продление'
             else:
@@ -449,9 +497,13 @@ class AdminNotificationService:
             # Добавляем username только если есть
             username = getattr(user, 'username', None)
             if username:
-                message_lines.append(f'📱 @{username}')
+                message_lines.append(f'📱 @{html.escape(username)}')
 
             message_lines.append(f'📋 {user_status}')
+
+            # Источник (мобильное приложение, бот и т.д.)
+            if source:
+                message_lines.append(f'📲 {html.escape(source)}')
 
             # Тариф (если есть)
             if tariff_name:
@@ -487,7 +539,15 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            # Маршрутизация по категориям (зеркалит логику заголовков выше)
+            if purchase_type == 'renewal' or (
+                not was_trial_conversion and purchase_type is None and user.has_had_paid_subscription
+            ):
+                cat = NotificationCategory.RENEWALS
+            else:
+                cat = NotificationCategory.PURCHASES
+
+            return await self._send_message('\n'.join(message_lines), category=cat)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о покупке', error=e)
@@ -550,7 +610,7 @@ class AdminNotificationService:
             else:
                 message = f'{message_prefix}{message_suffix}'
 
-            return await self._send_message(message)
+            return await self._send_message(message, category=NotificationCategory.INFRASTRUCTURE)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления об обновлении', error=e)
@@ -571,7 +631,7 @@ class AdminNotificationService:
 
     ⚙️ <i>Система автоматических обновлений • {format_local_datetime(datetime.now(UTC), '%d.%m.%Y %H:%M:%S')}</i>"""
 
-            return await self._send_message(message)
+            return await self._send_message(message, category=NotificationCategory.ERRORS)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления об ошибке проверки версий', error=e)
@@ -604,13 +664,13 @@ class AdminNotificationService:
 
         username = getattr(user, 'username', None)
         if username:
-            message_lines.append(f'📱 @{username}')
+            message_lines.append(f'📱 @{html.escape(username)}')
 
         message_lines.append(f'💳 {topup_status}')
 
         # Промогруппа -- только название
         if promo_group:
-            message_lines.append(f'🏷️ Промогруппа: {promo_group.name}')
+            message_lines.append(f'🏷️ Промогруппа: {html.escape(promo_group.name)}')
 
         message_lines.append('')
 
@@ -644,7 +704,7 @@ class AdminNotificationService:
             desc = transaction.description
             if len(desc) > 120:
                 desc = desc[:117] + '...'
-            detail_lines.append(f'Описание: {desc}')
+            detail_lines.append(f'Описание: {html.escape(desc)}')
 
         if transaction.created_at:
             detail_lines.append(f'Создана: {format_local_datetime(transaction.created_at, "%d.%m.%Y %H:%M:%S")}')
@@ -809,7 +869,7 @@ class AdminNotificationService:
                 return False
 
         try:
-            return await self._send_message(message)
+            return await self._send_message(message, category=NotificationCategory.BALANCE)
         except Exception as e:
             logger.error('Ошибка отправки уведомления о пополнении', error=e, exc_info=True)
             return False
@@ -836,7 +896,7 @@ class AdminNotificationService:
                 user=user,
                 subscription=subscription,
                 transaction=transaction,
-                amount_kopeks=transaction.amount_kopeks,
+                amount_kopeks=abs(transaction.amount_kopeks),
                 message='Subscription renewed',
                 occurred_at=transaction.completed_at or transaction.created_at,
                 extra={
@@ -863,7 +923,7 @@ class AdminNotificationService:
 
 👤 <b>Пользователь:</b> {user_display}
 🆔 <b>{user_id_label}:</b> {user_id_display}
-📱 <b>Username:</b> @{getattr(user, 'username', None) or 'отсутствует'}
+📱 <b>Username:</b> @{html.escape(getattr(user, 'username', None) or 'отсутствует')}
 
 {promo_block}
 
@@ -886,7 +946,7 @@ class AdminNotificationService:
 
 ⏰ <i>{format_local_datetime(datetime.now(UTC), '%d.%m.%Y %H:%M:%S')}</i>"""
 
-            return await self._send_message(message)
+            return await self._send_message(message, category=NotificationCategory.RENEWALS)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о продлении', error=e)
@@ -950,7 +1010,7 @@ class AdminNotificationService:
                 '',
                 f'👤 <b>Пользователь:</b> {user_display}',
                 f'🆔 <b>{user_id_label}:</b> {user_id_display}',
-                f'📱 <b>Username:</b> @{getattr(user, "username", None) or "отсутствует"}',
+                f'📱 <b>Username:</b> @{html.escape(getattr(user, "username", None) or "отсутствует")}',
                 '',
                 promo_block,
                 '',
@@ -960,13 +1020,21 @@ class AdminNotificationService:
                 f'📊 Использования: {usage_info}',
             ]
 
+            promo_type = promocode_data.get('type')
             balance_bonus = promocode_data.get('balance_bonus_kopeks', 0)
-            if balance_bonus:
-                message_lines.append(f'💰 Бонус на баланс: {settings.format_price(balance_bonus)}')
-
             subscription_days = promocode_data.get('subscription_days', 0)
-            if subscription_days:
-                message_lines.append(f'📅 Доп. дни подписки: {subscription_days}')
+
+            if promo_type == PromoCodeType.DISCOUNT.value:
+                message_lines.append(f'💸 Скидка: {balance_bonus}%')
+                if subscription_days:
+                    message_lines.append(f'⏳ Срок действия скидки: {subscription_days} ч.')
+                else:
+                    message_lines.append('⏳ Срок действия скидки: до первой покупки')
+            else:
+                if balance_bonus:
+                    message_lines.append(f'💰 Бонус на баланс: {settings.format_price(balance_bonus)}')
+                if subscription_days:
+                    message_lines.append(f'📅 Доп. дни подписки: {subscription_days}')
 
             valid_until = promocode_data.get('valid_until')
             if valid_until:
@@ -993,7 +1061,7 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.PROMO)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления об активации промокода', error=e)
@@ -1035,44 +1103,54 @@ class AdminNotificationService:
             return False
 
         try:
-            user_status = '🆕 Новый пользователь' if not user else '👥 Уже зарегистрирован'
-            promo_block = (
-                self._format_promo_group_block(await self._get_user_promo_group(db, user))
-                if user
-                else self._format_promo_group_block(None)
-            )
-
             full_name = telegram_user.full_name or telegram_user.username or str(telegram_user.id)
-            username = f'@{telegram_user.username}' if telegram_user.username else 'отсутствует'
+            user_status = '🆕 Новый' if not user else '👥 Существующий'
 
             message_lines = [
-                '📣 <b>ПЕРЕХОД ПО РЕКЛАМНОЙ КАМПАНИИ</b>',
+                '📣 <b>ПЕРЕХОД ПО РК</b>',
                 '',
-                f'🧾 <b>Кампания:</b> {campaign.name}',
-                f'🆔 ID кампании: {campaign.id}',
-                f'🔗 Start-параметр: <code>{campaign.start_parameter}</code>',
+                f'🧾 {html.escape(campaign.name)} (<code>{html.escape(campaign.start_parameter)}</code>)',
                 '',
-                f'👤 <b>Пользователь:</b> {full_name}',
-                f'🆔 <b>Telegram ID:</b> <code>{telegram_user.id}</code>',
-                f'📱 <b>Username:</b> {username}',
-                user_status,
-                '',
-                promo_block,
-                '',
-                '🎯 <b>Бонус кампании:</b>',
+                f'👤 {html.escape(full_name)} (<code>{telegram_user.id}</code>)',
             ]
 
-            bonus_lines = self._format_campaign_bonus(campaign)
+            if telegram_user.username:
+                message_lines.append(f'📱 @{html.escape(telegram_user.username)}')
+
+            message_lines.append(f'📋 {user_status}')
+
+            # Промогруппа — только если есть
+            if user:
+                promo_group = await self._get_user_promo_group(db, user)
+                if promo_group:
+                    message_lines.append(f'🏷️ Промогруппа: {html.escape(promo_group.name)}')
+
+            message_lines.append('')
+
+            # Загружаем название тарифа для tariff-бонуса
+            tariff_name = None
+            if campaign.is_tariff_bonus and campaign.tariff_id:
+                try:
+                    from app.database.crud.tariff import get_tariff_by_id
+
+                    tariff = await get_tariff_by_id(db, campaign.tariff_id)
+                    if tariff:
+                        tariff_name = html.escape(tariff.name)
+                except Exception:
+                    pass
+
+            # Бонус кампании
+            bonus_lines = self._format_campaign_bonus(campaign, tariff_name=tariff_name)
             message_lines.extend(bonus_lines)
 
             message_lines.extend(
                 [
                     '',
-                    f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
+                    f'<i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.PROMO)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о переходе по кампании', error=e)
@@ -1123,7 +1201,9 @@ class AdminNotificationService:
             title = '🤖 АВТОМАТИЧЕСКАЯ СМЕНА ПРОМОГРУППЫ' if automatic else '👥 СМЕНА ПРОМОГРУППЫ'
             initiator_line = None
             if initiator:
-                initiator_line = f'👮 <b>Инициатор:</b> {initiator.full_name} (ID: {initiator.telegram_id})'
+                initiator_line = (
+                    f'👮 <b>Инициатор:</b> {html.escape(initiator.full_name)} (ID: {initiator.telegram_id})'
+                )
             elif automatic:
                 initiator_line = '🤖 Автоматическое назначение'
             user_display = self._get_user_display(user)
@@ -1135,7 +1215,7 @@ class AdminNotificationService:
                 '',
                 f'👤 <b>Пользователь:</b> {user_display}',
                 f'🆔 <b>{user_id_label}:</b> {user_id_display}',
-                f'📱 <b>Username:</b> @{getattr(user, "username", None) or "отсутствует"}',
+                f'📱 <b>Username:</b> @{html.escape(getattr(user, "username", None) or "отсутствует")}',
                 '',
                 self._format_promo_group_block(new_group, title='Новая промогруппа', icon='🏆'),
             ]
@@ -1162,14 +1242,30 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.PROMO)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о смене промогруппы', error=e)
             return False
 
+    def _resolve_topic_id(self, category: NotificationCategory | None = None) -> int | None:
+        """Определяет topic_id для сообщения.
+
+        Если указана category и для неё настроен топик — возвращает его.
+        Иначе — fallback на self.topic_id (общий топик).
+        """
+        if category:
+            topic = self.category_topics.get(category)
+            if topic is not None:
+                return topic
+        return self.topic_id
+
     async def _send_message(
-        self, text: str, reply_markup: types.InlineKeyboardMarkup | None = None, *, ticket_event: bool = False
+        self,
+        text: str,
+        reply_markup: types.InlineKeyboardMarkup | None = None,
+        *,
+        category: NotificationCategory | None = None,
     ) -> bool:
         if not self.chat_id:
             logger.warning('ADMIN_NOTIFICATIONS_CHAT_ID не настроен')
@@ -1183,19 +1279,14 @@ class AdminNotificationService:
                 'disable_web_page_preview': True,
             }
 
-            # route to ticket-specific topic if provided
-            thread_id = None
-            if ticket_event and self.ticket_topic_id:
-                thread_id = self.ticket_topic_id
-            elif self.topic_id:
-                thread_id = self.topic_id
+            thread_id = self._resolve_topic_id(category)
             if thread_id:
                 message_kwargs['message_thread_id'] = thread_id
             if reply_markup is not None:
                 message_kwargs['reply_markup'] = reply_markup
 
             await self.bot.send_message(**message_kwargs)
-            logger.info('Уведомление отправлено в чат', chat_id=self.chat_id)
+            logger.info('Уведомление отправлено в чат', chat_id=self.chat_id, category=category)
             return True
 
         except TelegramForbiddenError:
@@ -1216,11 +1307,109 @@ class AdminNotificationService:
         """Public check for whether admin notifications are configured and active."""
         return self._is_enabled()
 
-    async def send_admin_notification(self, text: str, reply_markup: types.InlineKeyboardMarkup | None = None) -> bool:
+    async def send_admin_notification(
+        self,
+        text: str,
+        reply_markup: types.InlineKeyboardMarkup | None = None,
+        *,
+        category: NotificationCategory | None = None,
+    ) -> bool:
         """Send a generic notification to admin chat with optional inline keyboard."""
         if not self._is_enabled():
             return False
-        return await self._send_message(text, reply_markup=reply_markup)
+        return await self._send_message(text, reply_markup=reply_markup, category=category)
+
+    async def send_guest_purchase_notification(
+        self,
+        purchase: GuestPurchase,
+        tariff_name: str,
+        *,
+        is_pending_activation: bool = False,
+    ) -> bool:
+        """Send admin notification for a guest/gift purchase (landing or cabinet)."""
+        if not self._is_enabled():
+            return False
+
+        try:
+            is_cabinet = purchase.source == 'cabinet'
+
+            # Event title
+            if is_cabinet and purchase.is_gift:
+                event_title = '🎁 ПОДАРОК ИЗ КАБИНЕТА'
+            elif is_pending_activation:
+                event_title = '⏳ ПОКУПКА С ЛЕНДИНГА (ожидает активации)'
+            elif purchase.is_gift:
+                event_title = '🎁 ПОКУПКА В ПОДАРОК С ЛЕНДИНГА'
+            else:
+                event_title = '🛒 ПОКУПКА С ЛЕНДИНГА'
+
+            # Contact info
+            contact_display = html.escape(purchase.contact_value or '—')
+            contact_icon = '📧' if purchase.contact_type == 'email' else '📱'
+
+            payment_method = self._get_payment_method_display(purchase.payment_method)
+
+            message_lines = [
+                f'<b>{event_title}</b>',
+                '',
+            ]
+
+            if is_cabinet:
+                # Cabinet gift: show buyer with link to user profile
+                buyer = getattr(purchase, 'buyer', None)
+                if buyer:
+                    buyer_name = f'@{buyer.username}' if buyer.username else buyer.email or f'id:{buyer.id}'
+                    message_lines.append(f'👤 Покупатель: <code>{html.escape(buyer_name)}</code>')
+                else:
+                    message_lines.append(f'{contact_icon} Покупатель: <code>{contact_display}</code>')
+            else:
+                # Landing: show page slug and buyer contact
+                landing_slug = '—'
+                try:
+                    landing = purchase.landing
+                    if landing:
+                        landing_slug = landing.slug
+                    elif purchase.landing_id:
+                        landing_slug = f'ID:{purchase.landing_id}'
+                except Exception:
+                    if purchase.landing_id:
+                        landing_slug = f'ID:{purchase.landing_id}'
+                message_lines.append(f'🌐 Страница: <b>/buy/{html.escape(landing_slug)}</b>')
+                message_lines.append(f'{contact_icon} Покупатель: <code>{contact_display}</code>')
+
+            if purchase.is_gift:
+                if purchase.gift_recipient_value:
+                    recipient_icon = '📧' if purchase.gift_recipient_type == 'email' else '📱'
+                    recipient_value = html.escape(purchase.gift_recipient_value)
+                    message_lines.append(f'{recipient_icon} Получатель: <code>{recipient_value}</code>')
+                else:
+                    message_lines.append('🔗 Получатель: <i>по коду активации</i>')
+                if purchase.gift_message:
+                    raw_msg = purchase.gift_message[:100]
+                    suffix = '…' if len(purchase.gift_message) > 100 else ''
+                    message_lines.append(f'💬 <i>{html.escape(raw_msg)}{suffix}</i>')
+
+            # Payment details in blockquote
+            payment_lines = [
+                '<blockquote>',
+                f'🏷️ Тариф: <b>{html.escape(tariff_name)}</b>',
+                f'📅 Период: {purchase.period_days} дн.',
+                f'💵 <b>{settings.format_price(purchase.amount_kopeks)}</b> • {payment_method}',
+            ]
+
+            if purchase.payment_id:
+                payment_lines.append(f'🆔 {html.escape(str(purchase.payment_id))}')
+
+            payment_lines.append('</blockquote>')
+            message_lines.extend(payment_lines)
+
+            message_lines.append(f'<i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M")}</i>')
+
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.PURCHASES)
+
+        except Exception as e:
+            logger.error('Ошибка отправки уведомления о гостевой покупке', error=e)
+            return False
 
     async def send_webhook_notification(self, text: str) -> bool:
         """Send a generic webhook/infrastructure notification to admin chat.
@@ -1230,7 +1419,7 @@ class AdminNotificationService:
         """
         if not self._is_enabled():
             return False
-        return await self._send_message(text)
+        return await self._send_message(text, category=NotificationCategory.INFRASTRUCTURE)
 
     def _get_payment_method_display(self, payment_method: str | None) -> str:
         if not payment_method:
@@ -1253,7 +1442,7 @@ class AdminNotificationService:
             'balance': '💰 С баланса',
         }
 
-        return method_names.get(payment_method, f'💳 {payment_method}')
+        return method_names.get(payment_method, f'💳 {html.escape(payment_method)}')
 
     def _format_traffic(self, traffic_gb: int) -> str:
         if traffic_gb == 0:
@@ -1416,7 +1605,7 @@ class AdminNotificationService:
 
             message = '\n'.join(message_parts)
 
-            return await self._send_message(message)
+            return await self._send_message(message, category=NotificationCategory.INFRASTRUCTURE)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о техработах', error=e)
@@ -1488,7 +1677,7 @@ class AdminNotificationService:
 
             elif status == 'maintenance':
                 if details.get('maintenance_reason'):
-                    message_parts.append(f'🔧 <b>Причина:</b> {details["maintenance_reason"]}')
+                    message_parts.append(f'🔧 <b>Причина:</b> {html.escape(details["maintenance_reason"])}')
 
                 if details.get('estimated_duration'):
                     message_parts.append(f'⏰ <b>Ожидаемая длительность:</b> {details["estimated_duration"]}')
@@ -1501,7 +1690,7 @@ class AdminNotificationService:
 
             message = '\n'.join(message_parts)
 
-            return await self._send_message(message)
+            return await self._send_message(message, category=NotificationCategory.INFRASTRUCTURE)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о статусе панели Remnawave', error=e)
@@ -1516,6 +1705,7 @@ class AdminNotificationService:
         old_value: Any,
         new_value: Any,
         price_paid: int = 0,
+        source: str | None = None,
     ) -> bool:
         if not self._is_enabled():
             return False
@@ -1545,7 +1735,11 @@ class AdminNotificationService:
             # Добавляем username только если есть
             username = getattr(user, 'username', None)
             if username:
-                message_lines.append(f'📱 @{username}')
+                message_lines.append(f'📱 @{html.escape(username)}')
+
+            # Источник (мобильное приложение, бот и т.д.)
+            if source:
+                message_lines.append(f'📲 {html.escape(source)}')
 
             # Тариф (если есть)
             if tariff_name:
@@ -1594,7 +1788,7 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.ADDONS)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления об изменении подписки', error=e)
@@ -1651,7 +1845,7 @@ class AdminNotificationService:
 
             username = getattr(user, 'username', None)
             if username:
-                message_lines.append(f'📱 @{username}')
+                message_lines.append(f'📱 @{html.escape(username)}')
 
             message_lines.append('')
 
@@ -1668,6 +1862,8 @@ class AdminNotificationService:
                 message_lines.append(f'📝 {html.escape(desc)}')
             if application_data.get('expected_monthly_referrals'):
                 message_lines.append(f'👥 Ожидаемых рефералов: {application_data["expected_monthly_referrals"]}/мес')
+            if application_data.get('desired_commission_percent'):
+                message_lines.append(f'💰 Желаемая комиссия: {application_data["desired_commission_percent"]}%')
 
             message_lines.extend(
                 [
@@ -1676,7 +1872,7 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.PARTNERS)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о заявке на партнёрку', error=e)
@@ -1704,7 +1900,7 @@ class AdminNotificationService:
 
             username = getattr(user, 'username', None)
             if username:
-                message_lines.append(f'📱 @{username}')
+                message_lines.append(f'📱 @{html.escape(username)}')
 
             message_lines.extend(
                 [
@@ -1727,7 +1923,7 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), category=NotificationCategory.PARTNERS)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о запросе на вывод', error=e)
@@ -1749,7 +1945,7 @@ class AdminNotificationService:
             message_lines = [
                 '🛑 <b>МАССОВАЯ БЛОКИРОВКА ПОЛЬЗОВАТЕЛЕЙ</b>',
                 '',
-                f'👮 <b>Администратор:</b> {admin_name}',
+                f'👮 <b>Администратор:</b> {html.escape(admin_name)}',
                 f'🆔 <b>ID администратора:</b> {admin_user_id}',
                 '',
                 '📊 <b>Результаты:</b>',
@@ -1771,17 +1967,23 @@ class AdminNotificationService:
             )
 
             message = '\n'.join(message_lines)
-            return await self._send_message(message)
+            return await self._send_message(message, category=NotificationCategory.PARTNERS)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о массовой блокировке', error=e)
             return False
 
     async def send_ticket_event_notification(
-        self, text: str, keyboard: types.InlineKeyboardMarkup | None = None
+        self,
+        text: str,
+        keyboard: types.InlineKeyboardMarkup | None = None,
+        *,
+        media_file_id: str | None = None,
+        media_type: str | None = None,
     ) -> bool:
         """Публичный метод для отправки уведомлений по тикетам в админ-топик.
         Учитывает настройки включенности в settings.
+        Если передан media_file_id, отправляет медиа в тот же топик вместе с текстом.
         """
         # Respect runtime toggle for admin ticket notifications
         try:
@@ -1797,7 +1999,58 @@ class AdminNotificationService:
                 runtime_enabled=runtime_enabled,
             )
             return False
-        return await self._send_message(text, reply_markup=keyboard, ticket_event=True)
+
+        # Если есть медиа, отправляем фото с текстом как caption (если влезает) или текст + фото
+        if media_file_id and media_type == 'photo':
+            return await self._send_ticket_photo_notification(text, media_file_id, keyboard)
+
+        return await self._send_message(text, reply_markup=keyboard, category=NotificationCategory.TICKETS)
+
+    async def _send_ticket_photo_notification(
+        self,
+        text: str,
+        photo_file_id: str,
+        keyboard: types.InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        """Отправить фото с текстом в тикет-топик.
+        Если текст помещается в caption (≤1024 символов после парсинга HTML) — фото с caption.
+        Иначе — сначала текст, потом фото в тот же топик.
+        """
+        if not self.chat_id:
+            return False
+
+        thread_id = self._resolve_topic_id(category=NotificationCategory.TICKETS)
+
+        try:
+            if not caption_exceeds_telegram_limit(text):
+                # Фото с caption — всё в одном сообщении
+                photo_kwargs: dict = {
+                    'chat_id': self.chat_id,
+                    'photo': photo_file_id,
+                    'caption': text,
+                    'parse_mode': 'HTML',
+                }
+                if thread_id:
+                    photo_kwargs['message_thread_id'] = thread_id
+                if keyboard:
+                    photo_kwargs['reply_markup'] = keyboard
+                await self.bot.send_photo(**photo_kwargs)
+            else:
+                # Текст отдельно, фото следом в тот же топик
+                await self._send_message(text, reply_markup=keyboard, category=NotificationCategory.TICKETS)
+                photo_kwargs = {
+                    'chat_id': self.chat_id,
+                    'photo': photo_file_id,
+                }
+                if thread_id:
+                    photo_kwargs['message_thread_id'] = thread_id
+                await self.bot.send_photo(**photo_kwargs)
+
+            return True
+        except Exception as e:
+            logger.error('Ошибка отправки фото-уведомления тикета', error=e)
+            # Fallback: отправляем хотя бы текст
+            return await self._send_message(text, reply_markup=keyboard, category=NotificationCategory.TICKETS)
 
     async def send_suspicious_traffic_notification(self, message: str, bot: Bot, topic_id: int | None = None) -> bool:
         """
