@@ -36,7 +36,7 @@ async def generate_unique_short_id(db: AsyncSession, max_attempts: int = 10) -> 
     return secrets.token_hex(4)
 
 
-def restore_reserve_grace_if_active(subscription: Subscription) -> bool:
+def restore_reserve_grace_if_active(subscription: Subscription, *, preserve_end_date: bool = False) -> bool:
     """Снимает grace-доступ на резервном скваде, если он активен.
 
     Возвращает True, если grace был активен — вызывающий код использует это как
@@ -51,6 +51,9 @@ def restore_reserve_grace_if_active(subscription: Subscription) -> bool:
     (она складывала туда исходные значения и подменяла рабочие поля) — такие подписки
     долечиваются здесь при первом же продлении. Для новых grace-выдач эти поля пустые.
 
+    `preserve_end_date=True` оставляет текущий end_date нетронутым — для случая, когда
+    флаг снимают с уже продлённой подписки (см. guard в update_remnawave_user).
+
     Не делает commit — вызывающий код коммитит сам вместе с остальными изменениями.
     """
     if not getattr(subscription, 'reserve_access_granted_at', None):
@@ -60,10 +63,14 @@ def restore_reserve_grace_if_active(subscription: Subscription) -> bool:
         subscription.connected_squads = list(subscription.reserve_original_squads)
     if getattr(subscription, 'reserve_original_traffic_limit_gb', None) is not None:
         subscription.traffic_limit_gb = subscription.reserve_original_traffic_limit_gb
-    if getattr(subscription, 'reserve_original_end_date', None) is not None:
+    if not preserve_end_date and getattr(subscription, 'reserve_original_end_date', None) is not None:
         # Legacy-строка: end_date был подменён на дату окончания grace — возвращаем
         # реальную дату. Вызывать до extend_subscription() уже не обязательно, т.к.
         # у новых выдач это поле пустое и ветка не срабатывает.
+        #
+        # preserve_end_date=True передают те, кто снимает залипший флаг с УЖЕ продлённой
+        # подписки: там текущий end_date авторитетен, и откат на до-grace дату стёр бы
+        # оплаченные дни.
         subscription.end_date = subscription.reserve_original_end_date
 
     subscription.reserve_access_granted_at = None

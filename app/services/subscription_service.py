@@ -412,18 +412,32 @@ class SubscriptionService:
     ) -> RemnaWaveUser | None:
         try:
             # Во время grace панель намеренно держит состояние, которого нет в локальной
-            # строке (резервный сквад, урезанный трафик, срок до конца grace). Рутинный
-            # sync посчитал бы подписку истёкшей и задисейблил бы пользователя, убив
-            # временный доступ. Пропускаем — снятие grace идёт через
-            # restore_reserve_grace_if_active() (продление) либо через
-            # _cleanup_expired_reserve_access() (истечение grace), и оба сначала
-            # снимают флаг, поэтому этот guard их не блокирует.
+            # строке (резервный сквад, урезанный трафик, срок до конца grace), поэтому
+            # рутинный sync пропускаем — иначе он посчитал бы подписку истёкшей и убил
+            # бы временный доступ.
+            #
+            # Но только пока подписка действительно не оплачена. Если она уже активна
+            # по срокам, а флаг всё ещё висит, значит какой-то путь продления забыл его
+            # снять — тогда пропуск sync'а навсегда оставил бы пользователя на резервном
+            # скваде с grace-лимитом трафика. В этом случае сами снимаем флаг и
+            # проталкиваем реальную конфигурацию тарифа.
             if getattr(subscription, 'reserve_access_granted_at', None):
-                logger.debug(
-                    'Пропуск sync панели: активен grace резервного сквада',
+                if subscription.end_date is None or subscription.end_date <= datetime.now(UTC):
+                    logger.debug(
+                        'Пропуск sync панели: активен grace резервного сквада',
+                        subscription_id=subscription.id,
+                    )
+                    return None
+
+                from app.database.crud.subscription import restore_reserve_grace_if_active
+
+                logger.warning(
+                    'Подписка продлена, но флаг grace остался — снимаем и синхронизируем реальный тариф',
                     subscription_id=subscription.id,
+                    end_date=subscription.end_date,
                 )
-                return None
+                restore_reserve_grace_if_active(subscription, preserve_end_date=True)
+                sync_squads = True
 
             user = await get_user_by_id(db, subscription.user_id)
             if not user:

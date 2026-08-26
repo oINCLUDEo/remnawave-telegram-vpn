@@ -452,14 +452,31 @@ class MonitoringService:
             from app.database.crud.subscription import is_recently_updated_by_webhook
 
             # Пока активен grace резервного сквада, панель держит временное состояние,
-            # которого нет в локальной строке — рутинный sync задисейблил бы доступ
+            # которого нет в локальной строке — рутинный sync задисейблил бы доступ.
+            # Если же подписка уже продлена, а флаг остался висеть, снимаем его сами,
+            # иначе пользователь навсегда остался бы на резервном скваде и grace-лимите
             # (см. тот же guard в SubscriptionService.update_remnawave_user).
             if getattr(subscription, 'reserve_access_granted_at', None):
-                logger.debug(
-                    'Пропуск RemnaWave обновления подписки : активен grace резервного сквада',
+                if subscription.end_date is None or subscription.end_date <= datetime.now(UTC):
+                    logger.debug(
+                        'Пропуск RemnaWave обновления подписки : активен grace резервного сквада',
+                        subscription_id=subscription.id,
+                    )
+                    return None
+
+                logger.warning(
+                    'Подписка продлена, но флаг grace остался — снимаем и синхронизируем реальный тариф',
                     subscription_id=subscription.id,
+                    end_date=subscription.end_date,
                 )
-                return None
+                restore_reserve_grace_if_active(subscription, preserve_end_date=True)
+                await db.commit()
+                # Рутинный sync ниже намеренно не пересылает сквады, а пользователь
+                # сейчас сидит на резервном — уходим в полную синхронизацию, которая
+                # вернёт и сквады тарифа, и его лимит трафика.
+                return await self.subscription_service.update_remnawave_user(
+                    db, subscription, sync_squads=True
+                )
 
             if is_recently_updated_by_webhook(subscription):
                 logger.debug(
