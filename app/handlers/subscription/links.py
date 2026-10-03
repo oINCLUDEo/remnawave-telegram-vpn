@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.keyboards.inline import (
     get_device_selection_keyboard,
     get_happ_cryptolink_keyboard,
@@ -64,7 +65,7 @@ async def handle_connect_subscription(
                         )
                     ]
                 )
-            keyboard.append([types.InlineKeyboardButton(text='◀️ Назад', callback_data='back_to_menu')])
+            keyboard.append([back_button('back_to_menu')])
             await callback.message.edit_text(
                 '🔗 <b>Подключиться</b>\n\nВыберите подписку:',
                 reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),

@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.services.bulk_ban_service import bulk_ban_service
 from app.states import AdminStates
 from app.utils.decorators import admin_required, error_handler
@@ -56,7 +57,7 @@ async def process_bulk_ban_list(message: types.Message, db_user: User, state: FS
         await message.answer(
             '❌ Отправьте текстовое сообщение со списком Telegram ID',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🔙 Назад', callback_data='admin_users')]]
+                inline_keyboard=[[back_button('admin_users')]]
             ),
         )
         return
@@ -67,7 +68,7 @@ async def process_bulk_ban_list(message: types.Message, db_user: User, state: FS
         await message.answer(
             '❌ Введите корректный список Telegram ID',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🔙 Назад', callback_data='admin_users')]]
+                inline_keyboard=[[back_button('admin_users')]]
             ),
         )
         return
@@ -80,7 +81,7 @@ async def process_bulk_ban_list(message: types.Message, db_user: User, state: FS
         await message.answer(
             '❌ Ошибка при обработке списка ID. Проверьте формат ввода.',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🔙 Назад', callback_data='admin_users')]]
+                inline_keyboard=[[back_button('admin_users')]]
             ),
         )
         return
@@ -89,7 +90,7 @@ async def process_bulk_ban_list(message: types.Message, db_user: User, state: FS
         await message.answer(
             '❌ Не найдено корректных Telegram ID в списке',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🔙 Назад', callback_data='admin_users')]]
+                inline_keyboard=[[back_button('admin_users')]]
             ),
         )
         return
@@ -98,7 +99,7 @@ async def process_bulk_ban_list(message: types.Message, db_user: User, state: FS
         await message.answer(
             f'❌ Слишком много ID в списке ({len(telegram_ids)}). Максимум: 1000',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🔙 Назад', callback_data='admin_users')]]
+                inline_keyboard=[[back_button('admin_users')]]
             ),
         )
         return
@@ -146,7 +147,7 @@ async def process_bulk_ban_list(message: types.Message, db_user: User, state: FS
         await message.answer(
             '❌ Произошла ошибка при выполнении массовой блокировки',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='🔙 Назад', callback_data='admin_users')]]
+                inline_keyboard=[[back_button('admin_users')]]
             ),
         )
 

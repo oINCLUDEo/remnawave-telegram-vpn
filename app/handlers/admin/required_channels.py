@@ -15,6 +15,7 @@ from app.database.crud.required_channel import (
     validate_channel_id,
 )
 from app.database.database import AsyncSessionLocal
+from app.keyboards.common import back_button
 from app.services.channel_subscription_service import channel_subscription_service
 from app.utils.decorators import admin_required
 
@@ -47,7 +48,7 @@ def _channels_keyboard(channels: list) -> InlineKeyboardMarkup:
             ]
         )
     buttons.append([InlineKeyboardButton(text='➕ Добавить канал', callback_data='reqch:add')])
-    buttons.append([InlineKeyboardButton(text='◀️ Назад', callback_data='admin_submenu_settings')])
+    buttons.append([back_button('admin_submenu_settings')])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

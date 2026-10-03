@@ -24,6 +24,7 @@ from app.database.crud.server_squad import (
     update_server_squad_promo_groups,
 )
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.services.remnawave_service import RemnaWaveService
 from app.states import AdminStates
 from app.utils.cache import cache
@@ -98,7 +99,7 @@ def _build_server_edit_view(server):
         ],
         [
             types.InlineKeyboardButton(text='🗑️ Удалить', callback_data=f'admin_server_delete_{server.id}'),
-            types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers_list'),
+            back_button('admin_servers_list'),
         ],
     ]
 
@@ -121,7 +122,7 @@ def _build_server_promo_groups_keyboard(server_id: int, promo_groups, selected_i
     keyboard.append(
         [types.InlineKeyboardButton(text='💾 Сохранить', callback_data=f'admin_server_promo_save_{server_id}')]
     )
-    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_server_edit_{server_id}')])
+    keyboard.append([back_button(f'admin_server_edit_{server_id}')])
 
     return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -158,7 +159,7 @@ async def show_servers_menu(callback: types.CallbackQuery, db_user: User, db: As
         [
             types.InlineKeyboardButton(text='🌐 Гостевой каталог', callback_data='admin_public_catalog'),
         ],
-        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_panel')],
+        [back_button('admin_panel')],
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -193,7 +194,7 @@ async def show_public_catalog_hosts(callback: types.CallbackQuery, db_user: User
         await callback.message.edit_text(
             '❌ RemnaWave API не настроен.',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')]]
+                inline_keyboard=[[back_button('admin_servers')]]
             ),
         )
         await callback.answer()
@@ -239,7 +240,7 @@ async def show_public_catalog_hosts(callback: types.CallbackQuery, db_user: User
             nav_row.append(types.InlineKeyboardButton(text='➡️', callback_data=f'admin_hh_page_{page + 1}'))
         keyboard.append(nav_row)
 
-    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')])
+    keyboard.append([back_button('admin_servers')])
 
     await callback.message.edit_text(
         text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode='HTML'
@@ -322,7 +323,7 @@ async def show_servers_list(callback: types.CallbackQuery, db_user: User, db: As
 
         keyboard.append(nav_row)
 
-    keyboard.extend([[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')]])
+    keyboard.extend([[back_button('admin_servers')]])
 
     await callback.message.edit_text(
         text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode='HTML'
@@ -345,7 +346,7 @@ async def sync_servers_with_remnawave(callback: types.CallbackQuery, db_user: Us
             await callback.message.edit_text(
                 '❌ Не удалось получить данные о сквадах из Remnawave.\n\nПроверьте настройки API.',
                 reply_markup=types.InlineKeyboardMarkup(
-                    inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')]]
+                    inline_keyboard=[[back_button('admin_servers')]]
                 ),
             )
             return
@@ -372,7 +373,7 @@ async def sync_servers_with_remnawave(callback: types.CallbackQuery, db_user: Us
                 types.InlineKeyboardButton(text='📋 Список серверов', callback_data='admin_servers_list'),
                 types.InlineKeyboardButton(text='🔄 Повторить', callback_data='admin_servers_sync'),
             ],
-            [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')],
+            [back_button('admin_servers')],
         ]
 
         await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -382,7 +383,7 @@ async def sync_servers_with_remnawave(callback: types.CallbackQuery, db_user: Us
         await callback.message.edit_text(
             f'❌ Ошибка синхронизации: {e!s}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')]]
+                inline_keyboard=[[back_button('admin_servers')]]
             ),
         )
 
@@ -842,7 +843,7 @@ async def show_server_detailed_stats(callback: types.CallbackQuery, db_user: Use
             types.InlineKeyboardButton(text='🔄 Обновить', callback_data='admin_servers_stats'),
             types.InlineKeyboardButton(text='📋 Список', callback_data='admin_servers_list'),
         ],
-        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')],
+        [back_button('admin_servers')],
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -1212,7 +1213,7 @@ async def sync_server_user_counts_handler(callback: types.CallbackQuery, db_user
                 types.InlineKeyboardButton(text='📋 Список серверов', callback_data='admin_servers_list'),
                 types.InlineKeyboardButton(text='🔄 Повторить', callback_data='admin_servers_sync_counts'),
             ],
-            [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')],
+            [back_button('admin_servers')],
         ]
 
         await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -1222,7 +1223,7 @@ async def sync_server_user_counts_handler(callback: types.CallbackQuery, db_user
         await callback.message.edit_text(
             f'❌ Ошибка синхронизации: {e!s}',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_servers')]]
+                inline_keyboard=[[back_button('admin_servers')]]
             ),
         )
 

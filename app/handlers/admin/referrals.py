@@ -16,6 +16,7 @@ from app.database.crud.referral import (
 )
 from app.database.crud.user import get_user_by_id, get_user_by_telegram_id
 from app.database.models import ReferralEarning, User, WithdrawalRequest, WithdrawalRequestStatus
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.services.referral_withdrawal_service import referral_withdrawal_service
 from app.states import AdminStates
@@ -97,7 +98,7 @@ async def show_referral_statistics(callback: types.CallbackQuery, db_user: User,
         keyboard_rows.extend(
             [
                 [types.InlineKeyboardButton(text='⚙️ Настройки', callback_data='admin_referrals_settings')],
-                [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_panel')],
+                [back_button('admin_panel')],
             ]
         )
 
@@ -134,7 +135,7 @@ async def show_referral_statistics(callback: types.CallbackQuery, db_user: User,
         keyboard = types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [types.InlineKeyboardButton(text='🔄 Повторить', callback_data='admin_referrals')],
-                [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_panel')],
+                [back_button('admin_panel')],
             ]
         )
 
@@ -303,7 +304,7 @@ async def show_pending_withdrawal_requests(callback: types.CallbackQuery, db_use
             keyboard_rows.append(
                 [types.InlineKeyboardButton(text='🧪 Тестовое начисление', callback_data='admin_test_referral_earning')]
             )
-        keyboard_rows.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_referrals')])
+        keyboard_rows.append([back_button('admin_referrals')])
 
         await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows))
         await callback.answer()
@@ -340,7 +341,7 @@ async def show_pending_withdrawal_requests(callback: types.CallbackQuery, db_use
             [types.InlineKeyboardButton(text='🧪 Тестовое начисление', callback_data='admin_test_referral_earning')]
         )
 
-    keyboard_rows.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_referrals')])
+    keyboard_rows.append([back_button('admin_referrals')])
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows))
     await callback.answer()
@@ -1461,7 +1462,7 @@ async def receive_log_file(message: types.Message, db_user: User, db: AsyncSessi
                 f'❌ Ошибка при анализе файла: {html.escape(str(e))}',
                 reply_markup=types.InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_referral_diagnostics')]
+                        [back_button('admin_referral_diagnostics')]
                     ]
                 ),
             )

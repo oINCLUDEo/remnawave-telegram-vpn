@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.services.backup_service import backup_service
 from app.utils.decorators import admin_required, error_handler
 
@@ -32,7 +33,7 @@ def get_backup_main_keyboard(language: str = 'ru'):
                 InlineKeyboardButton(text='📋 Список бекапов', callback_data='backup_list'),
                 InlineKeyboardButton(text='⚙️ Настройки', callback_data='backup_settings'),
             ],
-            [InlineKeyboardButton(text='◀️ Назад', callback_data='admin_panel')],
+            [back_button('admin_panel')],
         ]
     )
 
@@ -76,7 +77,7 @@ def get_backup_list_keyboard(backups: list, page: int = 1, per_page: int = 5):
 
         keyboard.append(nav_row)
 
-    keyboard.extend([[InlineKeyboardButton(text='◀️ Назад', callback_data='backup_panel')]])
+    keyboard.extend([[back_button('backup_panel')]])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -101,7 +102,7 @@ def get_backup_settings_keyboard(settings_obj):
             [InlineKeyboardButton(text=f'🔄 Автобекапы: {auto_status}', callback_data='backup_toggle_auto')],
             [InlineKeyboardButton(text=f'🗜️ Сжатие: {compression_status}', callback_data='backup_toggle_compression')],
             [InlineKeyboardButton(text=f'📋 Логи в бекапе: {logs_status}', callback_data='backup_toggle_logs')],
-            [InlineKeyboardButton(text='◀️ Назад', callback_data='backup_panel')],
+            [back_button('backup_panel')],
         ]
     )
 
@@ -178,7 +179,7 @@ async def show_backup_list(callback: types.CallbackQuery, db_user: User, db: Asy
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text='🚀 Создать первый бекап', callback_data='backup_create')],
-                [InlineKeyboardButton(text='◀️ Назад', callback_data='backup_panel')],
+                [back_button('backup_panel')],
             ]
         )
     else:

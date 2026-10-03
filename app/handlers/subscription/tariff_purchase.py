@@ -24,6 +24,7 @@ from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import Tariff, Transaction, TransactionType, User
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.subscription_service import SubscriptionService
@@ -2048,7 +2049,7 @@ async def show_tariff_extend(
                             )
                         ]
                     )
-                keyboard.append([InlineKeyboardButton(text='◀️ Назад', callback_data='back_to_menu')])
+                keyboard.append([back_button('back_to_menu')])
                 await callback.message.edit_text(
                     '🔄 <b>Продление подписки</b>\n\nВыберите подписку для продления:',
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),

@@ -31,6 +31,7 @@ from app.keyboards.admin import (
     get_contest_mode_keyboard,
     get_referral_contest_manage_keyboard,
 )
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.states import AdminStates
 from app.utils.decorators import admin_required, error_handler
@@ -854,11 +855,11 @@ async def sync_contest(
         f'   📥 Пополнения баланса: <b>{stats.get("deposit_total", 0) // 100} руб.</b>',
     ]
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardMarkup
 
     back_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text='⬅️ Назад к конкурсу', callback_data=f'admin_contest_view_{contest_id}')]
+            [back_button(f'admin_contest_view_{contest_id}', text='Назад к конкурсу')]
         ]
     )
 
@@ -970,11 +971,11 @@ async def debug_contest_transactions(
     else:
         lines.append('❌ <b>Транзакций вне периода:</b> 0')
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardMarkup
 
     back_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text='⬅️ Назад к конкурсу', callback_data=f'admin_contest_view_{contest_id}')]
+            [back_button(f'admin_contest_view_{contest_id}', text='Назад к конкурсу')]
         ]
     )
 
@@ -1038,10 +1039,7 @@ async def show_virtual_participants(
             )
     rows.append(
         [
-            types.InlineKeyboardButton(
-                text='⬅️ Назад',
-                callback_data=f'admin_contest_view_{contest_id}',
-            ),
+            back_button(f'admin_contest_view_{contest_id}'),
         ]
     )
 
@@ -1180,7 +1178,7 @@ async def delete_virtual_participant_handler(
                     types.InlineKeyboardButton(text='🗑', callback_data=f'admin_contest_vp_del_{v.id}'),
                 ]
             )
-    rows.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data=f'admin_contest_view_{contest_id}')])
+    rows.append([back_button(f'admin_contest_view_{contest_id}')])
 
     await callback.message.edit_text(
         '\n'.join(lines),

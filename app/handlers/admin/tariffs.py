@@ -22,6 +22,7 @@ from app.database.crud.tariff import (
     update_tariff,
 )
 from app.database.models import Tariff, User
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.states import AdminStates
 from app.utils.decorators import admin_required, error_handler
@@ -2172,7 +2173,7 @@ async def confirm_delete_tariff(
             f'либо переведите подписки на другой тариф.',
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text='◀️ Назад к тарифу', callback_data=f'admin_tariff_view:{tariff_id}')],
+                    [back_button(f'admin_tariff_view:{tariff_id}', text='Назад к тарифу')],
                 ]
             ),
             parse_mode='HTML',

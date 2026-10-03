@@ -14,6 +14,7 @@ _EMOJI_CHAR_CLASS = (
     r'ℹ'  # information source (ℹ️)
     r'←-⇿'  # arrows
     r'⌀-⏿'  # misc technical (⏰, ⌛, ⚙️, ⏱️...)
+    r'■-◿'  # geometric shapes (◀️, ▶️, ◻️...) — were slipping through
     r'☀-➿'  # misc symbols & dingbats (☀️-➿)
     r'⬀-⯿'  # misc symbols and arrows (⬛, ⭐...)
     r'️'  # variation selector-16

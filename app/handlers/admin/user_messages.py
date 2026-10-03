@@ -15,6 +15,7 @@ from app.database.crud.user_message import (
     update_user_message,
 )
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.utils.decorators import admin_required, error_handler
 from app.utils.validators import (
@@ -40,7 +41,7 @@ def get_user_messages_keyboard(language: str = 'ru'):
             [InlineKeyboardButton(text='📝 Добавить сообщение', callback_data='add_user_message')],
             [InlineKeyboardButton(text='📋 Список сообщений', callback_data='list_user_messages:0')],
             [InlineKeyboardButton(text='📊 Статистика', callback_data='user_messages_stats')],
-            [InlineKeyboardButton(text='🔙 Назад в админку', callback_data='admin_panel')],
+            [back_button('admin_panel', text='Назад в админку')],
         ]
     )
 
@@ -192,7 +193,7 @@ async def list_user_messages(callback: types.CallbackQuery, db_user: User, db: A
 
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text='⬅️ Назад', callback_data=f'list_user_messages:{page - 1}'))
+        nav_buttons.append(back_button(f'list_user_messages:{page - 1}'))
 
     nav_buttons.append(InlineKeyboardButton(text='➕ Добавить', callback_data='add_user_message'))
 
@@ -202,7 +203,7 @@ async def list_user_messages(callback: types.CallbackQuery, db_user: User, db: A
     if nav_buttons:
         keyboard.append(nav_buttons)
 
-    keyboard.append([InlineKeyboardButton(text='🔙 Назад', callback_data='user_messages_panel')])
+    keyboard.append([back_button('user_messages_panel')])
 
     await callback.message.edit_text(
         text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode='HTML'
@@ -310,10 +311,10 @@ async def show_messages_stats(callback: types.CallbackQuery, db_user: User, db: 
         'в главном меню между информацией о подписке и кнопками действий.'
     )
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardMarkup
 
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text='🔙 Назад', callback_data='user_messages_panel')]]
+        inline_keyboard=[[back_button('user_messages_panel')]]
     )
 
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')

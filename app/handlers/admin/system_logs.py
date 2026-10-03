@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.utils.decorators import admin_required, error_handler
 
 
@@ -75,7 +76,7 @@ def _get_logs_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text='🔄 Обновить', callback_data='admin_system_logs_refresh')],
             [InlineKeyboardButton(text='⬇️ Скачать лог', callback_data='admin_system_logs_download')],
-            [InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_submenu_system')],
+            [back_button('admin_submenu_system')],
         ]
     )
 

@@ -11,6 +11,7 @@ from app.database.crud.subscription import (
     get_subscriptions_statistics,
 )
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.utils.decorators import admin_required, error_handler
 from app.utils.formatters import format_datetime
 
@@ -96,7 +97,7 @@ async def show_subscriptions_menu(callback: types.CallbackQuery, db_user: User, 
             types.InlineKeyboardButton(text='📊 Статистика', callback_data='admin_subs_stats'),
             types.InlineKeyboardButton(text='🌍 География', callback_data='admin_subs_countries'),
         ],
-        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_panel')],
+        [back_button('admin_panel')],
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -147,7 +148,7 @@ async def show_subscriptions_list(callback: types.CallbackQuery, db_user: User, 
     keyboard.extend(
         [
             [types.InlineKeyboardButton(text='🔄 Обновить', callback_data='admin_subs_list')],
-            [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_subscriptions')],
+            [back_button('admin_subscriptions')],
         ]
     )
 
@@ -201,7 +202,7 @@ async def show_expiring_subscriptions(callback: types.CallbackQuery, db_user: Us
     keyboard = [
         [types.InlineKeyboardButton(text='📨 Отправить напоминания', callback_data='admin_send_expiry_reminders')],
         [types.InlineKeyboardButton(text='🔄 Обновить', callback_data='admin_subs_expiring')],
-        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_subscriptions')],
+        [back_button('admin_subscriptions')],
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -250,7 +251,7 @@ async def show_subscriptions_stats(callback: types.CallbackQuery, db_user: User,
         #     types.InlineKeyboardButton(text="📈 Графики", callback_data="admin_subs_charts")
         # ],
         # [types.InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_subs_stats")],
-        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_subscriptions')]
+        [back_button('admin_subscriptions')]
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -337,7 +338,7 @@ async def show_countries_management(callback: types.CallbackQuery, db_user: User
             types.InlineKeyboardButton(text='📊 Статистика нод', callback_data='admin_rw_nodes'),
             types.InlineKeyboardButton(text='🔧 Сквады', callback_data='admin_rw_squads'),
         ],
-        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_subscriptions')],
+        [back_button('admin_subscriptions')],
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -387,7 +388,7 @@ async def send_expiry_reminders(callback: types.CallbackQuery, db_user: User, db
     await callback.message.edit_text(
         f'✅ Напоминания отправлены: {sent_count} из {len(expiring_subs)}',
         reply_markup=types.InlineKeyboardMarkup(
-            inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_subs_expiring')]]
+            inline_keyboard=[[back_button('admin_subs_expiring')]]
         ),
     )
     await callback.answer()

@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +30,7 @@ from app.database.crud.promo_offer_template import (
 from app.database.crud.user import get_user_by_email, get_user_by_telegram_id
 from app.database.models import DiscountOffer, PromoOfferLog, PromoOfferTemplate, User
 from app.handlers.admin.messages import get_custom_users, get_target_users
+from app.keyboards.common import close_button
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 
 from ..dependencies import get_cabinet_db, require_permission
@@ -453,10 +454,7 @@ async def _send_promo_notifications(
                             )
                         ],
                         [
-                            InlineKeyboardButton(
-                                text='❌ Закрыть',
-                                callback_data='promo_offer_close',
-                            )
+                            close_button('promo_offer_close')
                         ],
                     ]
                 )

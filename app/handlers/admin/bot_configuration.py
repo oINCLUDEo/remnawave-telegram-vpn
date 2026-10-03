@@ -20,6 +20,7 @@ from app.database.crud.server_squad import (
 )
 from app.database.models import SystemSetting, User
 from app.external.telegram_stars import TelegramStarsService
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.services.payment_service import PaymentService
 from app.services.remnawave_service import RemnaWaveService
@@ -676,7 +677,7 @@ async def preview_preset(
     keyboard = types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text='✅ Применить', callback_data=f'botcfg_preset_apply:{preset_key}')],
-            [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='botcfg_action:presets')],
+            [back_button('botcfg_action:presets')],
         ]
     )
 
@@ -1119,10 +1120,7 @@ def _build_groups_keyboard() -> types.InlineKeyboardMarkup:
 
     rows.append(
         [
-            types.InlineKeyboardButton(
-                text='⬅️ Назад в админку',
-                callback_data='admin_submenu_settings',
-            )
+            back_button('admin_submenu_settings', text='Назад в админку')
         ]
     )
 
@@ -2814,7 +2812,7 @@ async def show_remna_config_menu(callback: types.CallbackQuery, db_user: User, d
             ]
         )
 
-    keyboard.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_submenu_settings')])
+    keyboard.append([back_button('admin_submenu_settings')])
 
     await callback.message.edit_text(
         text,

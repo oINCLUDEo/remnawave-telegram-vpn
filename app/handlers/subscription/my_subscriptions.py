@@ -19,6 +19,7 @@ from app.database.crud.subscription import (
     get_subscription_by_id_for_user,
 )
 from app.database.models import Subscription, SubscriptionStatus, User
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.services.subscription_service import SubscriptionService
 
@@ -103,7 +104,7 @@ def _build_subscriptions_keyboard(subscriptions: list, language: str) -> types.I
     # Back button
     buttons.append(
         [
-            types.InlineKeyboardButton(text='◀️ Назад', callback_data='back_to_menu'),
+            back_button('back_to_menu'),
         ]
     )
 
@@ -155,7 +156,7 @@ async def show_my_subscriptions(
         keyboard = types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [types.InlineKeyboardButton(text='🛒 Купить подписку', callback_data='menu_buy')],
-                [types.InlineKeyboardButton(text='◀️ Назад', callback_data='back_to_menu')],
+                [back_button('back_to_menu')],
             ]
         )
     else:
@@ -325,7 +326,7 @@ async def handle_subscription_devices(
     keyboard.append(
         [types.InlineKeyboardButton(text='📱 Управление устройствами', callback_data=f'device_management:{sub_id}')]
     )
-    keyboard.append([types.InlineKeyboardButton(text='◀️ Назад', callback_data=f'sm:{sub_id}')])
+    keyboard.append([back_button(f'sm:{sub_id}')])
 
     await callback.message.edit_text(
         text,

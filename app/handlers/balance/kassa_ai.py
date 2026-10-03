@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.keyboards.inline import get_back_keyboard
 from app.localization.texts import get_texts
 from app.services.kassa_ai_service import KASSA_AI_SUB_METHODS
@@ -134,10 +135,7 @@ async def _create_kassa_ai_payment_and_respond(
                 )
             ],
             [
-                InlineKeyboardButton(
-                    text=texts.t('BACK_BUTTON', '◀️ Назад'),
-                    callback_data='menu_balance',
-                )
+                back_button('menu_balance', language=db_user.language)
             ],
         ]
     )
@@ -262,7 +260,7 @@ async def _start_kassa_ai_sub_topup(
     display_name = cfg['display_name']()
 
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=texts.t('BACK_BUTTON', '◀️ Назад'), callback_data='menu_balance')]]
+        inline_keyboard=[[back_button('menu_balance', language=db_user.language)]]
     )
 
     await callback.message.edit_text(

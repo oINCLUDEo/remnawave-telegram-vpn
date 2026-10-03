@@ -12,6 +12,7 @@ from app.database.crud.subscription import (
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.models import TransactionType, User
+from app.keyboards.common import back_button
 from app.keyboards.inline import (
     get_add_traffic_keyboard,
     get_add_traffic_keyboard_from_tariff,
@@ -86,7 +87,7 @@ async def handle_add_traffic(callback: types.CallbackQuery, db_user: User, db: A
                         )
                     ]
                 )
-            keyboard.append([types.InlineKeyboardButton(text='◀️ Назад', callback_data='back_to_menu')])
+            keyboard.append([back_button('back_to_menu')])
             await callback.message.edit_text(
                 '📊 <b>Докупить трафик</b>\n\nВыберите подписку:',
                 reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),

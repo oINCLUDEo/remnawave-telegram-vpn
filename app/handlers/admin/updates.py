@@ -4,6 +4,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.services.version_service import version_service
 from app.utils.decorators import admin_required, error_handler
 
@@ -20,7 +21,7 @@ def get_updates_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
                 text='🔗 Открыть репозиторий', url=f'https://github.com/{version_service.repo}/releases'
             )
         ],
-        [InlineKeyboardButton(text='◀️ Назад', callback_data='admin_panel')],
+        [back_button('admin_panel')],
     ]
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)

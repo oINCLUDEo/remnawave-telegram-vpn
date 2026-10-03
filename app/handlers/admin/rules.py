@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud.rules import clear_all_rules, create_or_update_rules, get_current_rules_content
 from app.database.models import User
+from app.keyboards.common import back_button
 from app.states import AdminStates
 from app.utils.decorators import admin_required, error_handler
 from app.utils.validators import get_html_help_text, validate_html_tags
@@ -39,7 +40,7 @@ async def show_rules_management(callback: types.CallbackQuery, db_user: User, db
         [types.InlineKeyboardButton(text='👀 Просмотр правил', callback_data='admin_view_rules')],
         [types.InlineKeyboardButton(text='🗑️ Очистить правила', callback_data='admin_clear_rules')],
         [types.InlineKeyboardButton(text='ℹ️ Помощь по HTML', callback_data='admin_rules_help')],
-        [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_submenu_settings')],
+        [back_button('admin_submenu_settings')],
     ]
 
     await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -63,7 +64,7 @@ async def view_current_rules(callback: types.CallbackQuery, db_user: User, db: A
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text='✏️ Редактировать', callback_data='admin_edit_rules')],
                     [types.InlineKeyboardButton(text='🗑️ Очистить', callback_data='admin_clear_rules')],
-                    [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_rules')],
+                    [back_button('admin_rules')],
                 ]
             ),
         )
@@ -75,7 +76,7 @@ async def view_current_rules(callback: types.CallbackQuery, db_user: User, db: A
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text='🗑️ Очистить правила', callback_data='admin_clear_rules')],
-                    [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_rules')],
+                    [back_button('admin_rules')],
                 ]
             ),
         )
@@ -320,7 +321,7 @@ async def show_html_help(callback: types.CallbackQuery, db_user: User, db: Async
         reply_markup=types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [types.InlineKeyboardButton(text='📝 Редактировать правила', callback_data='admin_edit_rules')],
-                [types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_rules')],
+                [back_button('admin_rules')],
             ]
         ),
     )

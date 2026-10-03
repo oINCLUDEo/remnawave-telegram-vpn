@@ -36,6 +36,7 @@ from app.keyboards.admin import (
     get_pinned_message_keyboard,
     get_updated_message_buttons_selector_keyboard_with_media,
 )
+from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.services.pinned_message_service import (
     broadcast_pinned_message,
@@ -555,7 +556,7 @@ async def show_tariff_filter(callback: types.CallbackQuery, db_user: User, db: A
         await callback.message.edit_text(
             '❌ <b>Нет доступных тарифов</b>\n\nСоздайте тарифы в разделе управления тарифами.',
             reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_msg_by_sub')]]
+                inline_keyboard=[[back_button('admin_msg_by_sub')]]
             ),
             parse_mode='HTML',
         )
@@ -583,7 +584,7 @@ async def show_tariff_filter(callback: types.CallbackQuery, db_user: User, db: A
             ]
         )
 
-    buttons.append([types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_msg_by_sub')])
+    buttons.append([back_button('admin_msg_by_sub')])
 
     await callback.message.edit_text(
         '📦 <b>Рассылка по тарифу</b>\n\nВыберите тариф для рассылки пользователям с активной подпиской на этот тариф:',
@@ -619,7 +620,7 @@ async def show_messages_history(callback: types.CallbackQuery, db_user: User, db
 ❌ История рассылок пуста.
 Отправьте первую рассылку, чтобы увидеть её здесь.
 """
-        keyboard = [[types.InlineKeyboardButton(text='⬅️ Назад', callback_data='admin_messages')]]
+        keyboard = [[back_button('admin_messages')]]
     else:
         text = f'📋 <b>История рассылок</b> (страница {page}/{total_pages})\n\n'
 
