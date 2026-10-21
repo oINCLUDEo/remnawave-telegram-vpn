@@ -9,7 +9,7 @@ from app.config import PERIOD_PRICES, settings
 from app.database.models import User
 from app.localization.loader import DEFAULT_LANGUAGE
 from app.localization.texts import get_texts
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button, strip_leading_emoji_if_custom_icon
+from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 from app.utils.price_display import PriceInfo, format_price_button
 from app.utils.pricing_utils import (
     apply_percentage_discount,
@@ -38,119 +38,25 @@ async def get_main_menu_keyboard_async(
     *,
     is_moderator: bool = False,
     custom_buttons: list[InlineKeyboardButton] | None = None,
-    user=None,  # Добавляем параметр пользователя для получения данных
+    user=None,
 ) -> InlineKeyboardMarkup:
+    """Main menu keyboard. The layout is fixed in :mod:`app.keyboards.main_menu`.
+
+    ``db``, ``has_active_subscription`` and ``subscription_is_active`` are kept
+    for the existing call sites; the layout derives the state from
+    ``subscription`` itself.
     """
-    Асинхронная версия get_main_menu_keyboard с поддержкой конструктора меню.
-
-    Если MENU_LAYOUT_ENABLED=True, использует конфигурацию из БД.
-    Иначе делегирует в синхронную версию.
-    """
-    if settings.MENU_LAYOUT_ENABLED:
-        from app.services.menu_layout_service import MenuContext, MenuLayoutService
-
-        # Получаем данные для плейсхолдеров
-        subscription_days_left = 0
-        traffic_used_gb = 0.0
-        traffic_left_gb = 0.0
-        referral_count = 0
-        referral_earnings_kopeks = 0
-        registration_days = 0
-        promo_group_id = None
-        has_autopay = False
-        username = ''
-
-        # Заполняем данными из подписки
-        if subscription:
-            # Дни до окончания подписки
-            if hasattr(subscription, 'days_left'):
-                # Используем свойство из модели, которое правильно вычисляет дни в UTC
-                subscription_days_left = subscription.days_left
-            elif hasattr(subscription, 'end_date') and subscription.end_date:
-                # Fallback: вычисляем вручную, используя UTC
-                now_utc = datetime.now(UTC)
-                days_left = (subscription.end_date - now_utc).days
-                subscription_days_left = max(0, days_left)
-
-            # Трафик
-            if hasattr(subscription, 'traffic_used_gb'):
-                traffic_used_gb = subscription.traffic_used_gb or 0.0
-
-            if hasattr(subscription, 'traffic_limit_gb') and subscription.traffic_limit_gb:
-                traffic_left_gb = max(0, subscription.traffic_limit_gb - (subscription.traffic_used_gb or 0))
-
-            # Автоплатеж
-            if hasattr(subscription, 'autopay_enabled'):
-                has_autopay = subscription.autopay_enabled
-
-        # Получаем данные пользователя
-        if user:
-            # Имя пользователя
-            if hasattr(user, 'username') and user.username:
-                username = user.username
-            elif hasattr(user, 'first_name') and user.first_name:
-                username = user.first_name
-
-            # Дни с регистрации
-            if hasattr(user, 'created_at') and user.created_at:
-                now_utc = datetime.now(UTC)
-                registration_days = (now_utc - user.created_at).days
-
-            # ID промо-группы
-            if hasattr(user, 'promo_group_id'):
-                promo_group_id = user.promo_group_id
-
-        # Получаем данные о рефералах из БД (если нужно)
-        try:
-            from app.database.crud.referral import get_user_referral_stats
-
-            if user and hasattr(user, 'id'):
-                referral_data = await get_user_referral_stats(db, user.id)
-                if referral_data:
-                    referral_count = referral_data.get('invited_count', 0)
-                    referral_earnings_kopeks = referral_data.get('total_earned_kopeks', 0)
-        except Exception as e:
-            logger.error('Error getting referral data', error=e)
-
-        context = MenuContext(
-            language=language,
-            is_admin=is_admin,
-            is_moderator=is_moderator,
-            has_active_subscription=has_active_subscription,
-            subscription_is_active=subscription_is_active,
-            has_had_paid_subscription=has_had_paid_subscription,
-            balance_kopeks=balance_kopeks,
-            subscription=subscription,
-            show_resume_checkout=show_resume_checkout,
-            has_saved_cart=has_saved_cart,
-            custom_buttons=custom_buttons or [],
-            # Добавляем данные для плейсхолдеров
-            username=username,
-            subscription_days=subscription_days_left,
-            traffic_used_gb=traffic_used_gb,
-            traffic_left_gb=traffic_left_gb,
-            referral_count=referral_count,
-            referral_earnings_kopeks=referral_earnings_kopeks,
-            registration_days=registration_days,
-            promo_group_id=promo_group_id,
-            has_autopay=has_autopay,
-        )
-
-        return await MenuLayoutService.build_keyboard(db, context)
-
-    # Fallback на синхронную версию
     return get_main_menu_keyboard(
         language=language,
         is_admin=is_admin,
         has_had_paid_subscription=has_had_paid_subscription,
-        has_active_subscription=has_active_subscription,
-        subscription_is_active=subscription_is_active,
         balance_kopeks=balance_kopeks,
         subscription=subscription,
         show_resume_checkout=show_resume_checkout,
         has_saved_cart=has_saved_cart,
         is_moderator=is_moderator,
         custom_buttons=custom_buttons,
+        auth_type=getattr(user, 'auth_type', None),
     )
 
 
@@ -294,6 +200,7 @@ def get_language_selection_keyboard(
     *,
     include_back: bool = False,
     language: str = DEFAULT_LANGUAGE,
+    back_callback: str = 'back_to_menu',
 ) -> InlineKeyboardMarkup:
     available_languages = settings.get_available_languages()
 
@@ -327,341 +234,9 @@ def get_language_selection_keyboard(
 
     if include_back:
         texts = get_texts(language)
-        buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
+        buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data=back_callback)])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def _get_balance_text(cached_styles: dict, language: str, texts, balance_kopeks: int) -> str:
-    """Build balance button text with formatting."""
-    bal_cfg = cached_styles.get('balance', {})
-    safe_balance = balance_kopeks or 0
-
-    # Custom label overrides the whole text including balance amount
-    custom_bal = bal_cfg.get('labels', {}).get(language, '')
-    if custom_bal:
-        return custom_bal
-    if hasattr(texts, 'BALANCE_BUTTON') and safe_balance > 0:
-        return texts.BALANCE_BUTTON.format(balance=texts.format_price(safe_balance))
-    return texts.t('BALANCE_BUTTON_DEFAULT', '💰 Баланс: {balance}').format(
-        balance=texts.format_price(safe_balance),
-    )
-
-
-def _is_support_enabled() -> bool:
-    """Check if support menu is enabled."""
-    try:
-        from app.services.support_settings_service import SupportSettingsService
-
-        return SupportSettingsService.is_support_menu_enabled()
-    except Exception:
-        return settings.SUPPORT_MENU_ENABLED
-
-
-def _styled_button(
-    text: str,
-    section: str,
-    language: str,
-    *,
-    callback_data: str | None = None,
-    url: str | None = None,
-) -> InlineKeyboardButton | None:
-    """Build a classic-menu button with admin-configurable style/custom emoji.
-
-    Reuses the same per-section config (``button_styles_cache``) that already
-    drives Cabinet-mode buttons, so the same admin screen ("Настройки системы"
-    -> "Кнопки") controls both menu modes. Returns ``None`` when the section
-    is explicitly disabled, so the caller can skip the button entirely.
-    """
-    from app.utils.button_styles_cache import get_cached_button_styles
-    from app.utils.miniapp_buttons import _resolve_style
-
-    section_cfg = get_cached_button_styles().get(section, {})
-    if not section_cfg.get('enabled', True):
-        return None
-
-    label = section_cfg.get('labels', {}).get(language, '') or text
-    style = _resolve_style(section_cfg.get('style'))
-    icon_custom_emoji_id = section_cfg.get('icon_custom_emoji_id') or None
-    label = strip_leading_emoji_if_custom_icon(label, icon_custom_emoji_id)
-
-    kwargs: dict = {}
-    if url:
-        kwargs['url'] = url
-    else:
-        kwargs['callback_data'] = callback_data
-
-    return InlineKeyboardButton(
-        text=label,
-        style=style,
-        icon_custom_emoji_id=icon_custom_emoji_id,
-        **kwargs,
-    )
-
-
-SUBSCRIPTION_EXTEND_WARNING_DAYS = 3
-
-
-def _build_cabinet_main_menu_keyboard(
-    language: str,
-    texts,
-    *,
-    is_admin: bool,
-    is_moderator: bool,
-    balance_kopeks: int = 0,
-    subscription=None,
-    has_had_paid_subscription: bool = False,
-) -> InlineKeyboardMarkup:
-    """Build the main-menu keyboard for Cabinet mode.
-
-    Row layout and button arrangement are driven by the cached menu layout
-    (``get_cached_menu_layout``).  Each row specifies which buttons it contains
-    and how many fit per keyboard row (``max_per_row``).
-    """
-    from app.utils.button_styles_cache import CALLBACK_TO_SECTION, get_cached_button_styles
-    from app.utils.menu_layout_cache import get_cached_menu_layout
-    from app.utils.miniapp_buttons import (
-        CALLBACK_TO_CABINET_STYLE,
-        _resolve_style,
-        build_cabinet_url,
-    )
-
-    global_style = _resolve_style((settings.CABINET_BUTTON_STYLE or '').strip())
-    cached_styles = get_cached_button_styles()
-    layout = get_cached_menu_layout()
-    custom_buttons_cfg: dict[str, dict] = layout.get('custom_buttons', {})
-
-    def _cabinet_button(
-        text: str,
-        path: str,
-        callback_fallback: str,
-        *,
-        style: str | None = None,
-        icon_custom_emoji_id: str | None = None,
-    ) -> InlineKeyboardButton:
-        url = build_cabinet_url(path)
-
-        section = CALLBACK_TO_SECTION.get(callback_fallback)
-        section_cfg = cached_styles.get(section or '', {}) if section else {}
-
-        # 'default' in per-section config means "no color" — do not fall through.
-        if style:
-            resolved = _resolve_style(style)
-        elif section_cfg.get('style'):
-            resolved = _resolve_style(section_cfg['style'])
-        else:
-            resolved = global_style or _resolve_style(CALLBACK_TO_CABINET_STYLE.get(callback_fallback))
-        resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
-        stripped_text = strip_leading_emoji_if_custom_icon(text, resolved_emoji)
-
-        if url:
-            return InlineKeyboardButton(
-                text=stripped_text,
-                web_app=types.WebAppInfo(url=url),
-                style=resolved,
-                icon_custom_emoji_id=resolved_emoji or None,
-            )
-        return InlineKeyboardButton(
-            text=stripped_text,
-            callback_data=callback_fallback,
-            style=resolved,
-            icon_custom_emoji_id=resolved_emoji or None,
-        )
-
-    # -- Collect row definitions sorted by row_N key --
-    row_keys = sorted(
-        (k for k in layout if k.startswith('row_')),
-        key=lambda k: int(k.split('_', 1)[1]) if k.split('_', 1)[1].isdigit() else 0,
-    )
-
-    keyboard_rows: list[list[InlineKeyboardButton]] = []
-
-    for row_key in row_keys:
-        row_def = layout[row_key]
-        btn_ids: list[str] = row_def.get('buttons', [])
-        max_per_row: int = row_def.get('max_per_row', 1)
-        row_buttons: list[InlineKeyboardButton] = []
-
-        for btn_id in btn_ids:
-            # --- Custom URL buttons ---
-            if btn_id.startswith('custom_'):
-                custom_cfg = custom_buttons_cfg.get(btn_id)
-                if not custom_cfg or not custom_cfg.get('url') or not custom_cfg.get('enabled', True):
-                    continue
-                custom_text = (
-                    custom_cfg.get('labels', {}).get(language, '')
-                    or custom_cfg.get('labels', {}).get('ru', '')
-                    or 'Link'
-                )
-                resolved_style = _resolve_style(custom_cfg.get('style'))
-                resolved_emoji = custom_cfg.get('icon_custom_emoji_id') or None
-                open_in = custom_cfg.get('open_in', 'external')
-                link_kwarg = (
-                    {'web_app': types.WebAppInfo(url=custom_cfg['url'])}
-                    if open_in == 'webapp'
-                    else {'url': custom_cfg['url']}
-                )
-                row_buttons.append(
-                    InlineKeyboardButton(
-                        text=strip_leading_emoji_if_custom_icon(custom_text, resolved_emoji),
-                        **link_kwarg,
-                        style=resolved_style,
-                        icon_custom_emoji_id=resolved_emoji,
-                    ),
-                )
-                continue
-
-            # --- Built-in buttons ---
-            section_cfg = cached_styles.get(btn_id, {})
-
-            match btn_id:
-                case 'home':
-                    if not section_cfg.get('enabled', True):
-                        continue
-                    home_text = section_cfg.get('labels', {}).get(language, '') or texts.t(
-                        'MENU_PROFILE', '👤 Личный кабинет'
-                    )
-                    home_cabinet_url = settings.get_cabinet_home_url()
-                    if home_cabinet_url:
-                        home_icon = section_cfg.get('icon_custom_emoji_id') or None
-                        row_buttons.append(
-                            InlineKeyboardButton(
-                                text=strip_leading_emoji_if_custom_icon(home_text, home_icon),
-                                url=home_cabinet_url,
-                                style=_resolve_style(section_cfg.get('style')) or global_style,
-                                icon_custom_emoji_id=home_icon,
-                            )
-                        )
-                    else:
-                        row_buttons.append(_cabinet_button(home_text, '/', 'back_to_menu'))
-
-                case 'subscription':
-                    if not section_cfg.get('enabled', True):
-                        continue
-
-                    if subscription is None:
-                        # Совсем новый пользователь — ни активной, ни истёкшей подписки нет
-                        buy_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_BUY_SUBSCRIPTION
-                        row_buttons.append(_cabinet_button(buy_text, '/subscription', 'menu_buy'))
-
-                        if not has_had_paid_subscription:
-                            row_buttons.append(
-                                _cabinet_button(
-                                    'Бесплатная подписка',
-                                    '/subscription',
-                                    'menu_trial',
-                                    style='success',
-                                    icon_custom_emoji_id='5203996991054432397',
-                                )
-                            )
-                    else:
-                        default_sub_text = (
-                            texts.t('MY_SUBSCRIPTIONS_BUTTON', '📱 Мои подписки')
-                            if settings.is_multi_tariff_enabled()
-                            else texts.MENU_SUBSCRIPTION
-                        )
-                        sub_text = section_cfg.get('labels', {}).get(language, '') or default_sub_text
-                        row_buttons.append(_cabinet_button(sub_text, '/subscription', 'menu_subscription'))
-
-                        if not getattr(subscription, 'is_trial', False):
-                            is_active = getattr(subscription, 'is_active', True)
-                            days_left = getattr(subscription, 'days_left', None)
-                            expiring_soon = (
-                                days_left is not None and days_left <= SUBSCRIPTION_EXTEND_WARNING_DAYS
-                            )
-                            if not is_active or expiring_soon:
-                                row_buttons.append(
-                                    _cabinet_button(
-                                        texts.MENU_EXTEND_SUBSCRIPTION,
-                                        '/subscription/extend',
-                                        'subscription_extend',
-                                        style='danger',
-                                        icon_custom_emoji_id='5258419835922030550',
-                                    )
-                                )
-
-                case 'balance':
-                    if not section_cfg.get('enabled', True):
-                        continue
-                    balance_text = _get_balance_text(cached_styles, language, texts, balance_kopeks)
-                    row_buttons.append(_cabinet_button(balance_text, '/balance', 'menu_balance'))
-
-                case 'referral':
-                    if not settings.is_referral_program_enabled():
-                        continue
-                    if not section_cfg.get('enabled', True):
-                        continue
-                    ref_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_REFERRALS
-                    row_buttons.append(_cabinet_button(ref_text, '/referral', 'menu_referrals'))
-
-                case 'support':
-                    if not _is_support_enabled():
-                        continue
-                    if not section_cfg.get('enabled', True):
-                        continue
-                    sup_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_SUPPORT
-                    row_buttons.append(_cabinet_button(sup_text, '/support', 'menu_support'))
-
-                case 'info':
-                    if not section_cfg.get('enabled', True):
-                        continue
-                    info_text = section_cfg.get('labels', {}).get(language, '') or texts.t('MENU_INFO', 'ℹ️ Инфо')
-                    row_buttons.append(_cabinet_button(info_text, '/info', 'menu_info'))
-
-                case 'language':
-                    if not section_cfg.get('enabled', True):
-                        continue
-                    if not settings.is_language_selection_enabled():
-                        continue
-                    lang_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_LANGUAGE
-                    resolved_lang_emoji = section_cfg.get('icon_custom_emoji_id') or None
-                    row_buttons.append(
-                        InlineKeyboardButton(
-                            text=strip_leading_emoji_if_custom_icon(lang_text, resolved_lang_emoji),
-                            callback_data='menu_language',
-                            icon_custom_emoji_id=resolved_lang_emoji,
-                        )
-                    )
-
-                case 'admin':
-                    if not is_admin:
-                        continue
-                    admin_row = [InlineKeyboardButton(text=texts.MENU_ADMIN, callback_data='admin_panel')]
-                    if section_cfg.get('enabled', True):
-                        admin_web_text = section_cfg.get('labels', {}).get(language, '') or '🖥 Веб-Админка'
-                        admin_row.append(_cabinet_button(admin_web_text, '/admin', 'admin_panel'))
-                    keyboard_rows.append(admin_row)
-                    continue  # bypass max_per_row chunking
-
-                case 'cabinet':
-                    if not section_cfg.get('enabled', True):
-                        continue
-                    cabinet_url = settings.get_cabinet_home_url()
-                    if not cabinet_url:
-                        continue
-                    cabinet_text = section_cfg.get('labels', {}).get(language, '') or texts.t(
-                        'MENU_CABINET', '🌐 Онлайн-кабинет'
-                    )
-                    cabinet_icon = section_cfg.get('icon_custom_emoji_id') or None
-                    row_buttons.append(
-                        InlineKeyboardButton(
-                            text=strip_leading_emoji_if_custom_icon(cabinet_text, cabinet_icon),
-                            url=cabinet_url,
-                            style=_resolve_style(section_cfg.get('style')) or global_style,
-                            icon_custom_emoji_id=cabinet_icon,
-                        )
-                    )
-
-        # Split collected buttons into keyboard rows respecting max_per_row
-        if row_buttons:
-            for i in range(0, len(row_buttons), max_per_row):
-                keyboard_rows.append(row_buttons[i : i + max_per_row])
-
-    # -- Moderator panel (only when not admin — admin row handled above) --
-    if is_moderator and not is_admin:
-        keyboard_rows.append([InlineKeyboardButton(text='🧑‍⚖️ Модерация', callback_data='moderator_panel')])
-
-    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
 def get_main_menu_keyboard(
@@ -673,254 +248,26 @@ def get_main_menu_keyboard(
     balance_kopeks: int = 0,
     subscription=None,
     show_resume_checkout: bool = False,
-    has_saved_cart: bool = False,  # Новый параметр для отображения уведомления о сохраненной корзине
+    has_saved_cart: bool = False,
     *,
     is_moderator: bool = False,
     custom_buttons: list[InlineKeyboardButton] | None = None,
+    auth_type: str | None = None,
 ) -> InlineKeyboardMarkup:
-    texts = get_texts(language)
+    from app.keyboards.main_menu import build_main_menu_keyboard
 
-    if settings.is_cabinet_mode():
-        return _build_cabinet_main_menu_keyboard(
-            language,
-            texts,
-            is_admin=is_admin,
-            is_moderator=is_moderator,
-            balance_kopeks=balance_kopeks,
-            subscription=subscription,
-            has_had_paid_subscription=has_had_paid_subscription,
-        )
-
-    if settings.DEBUG:
-        logger.debug(
-            'DEBUG KEYBOARD',
-            language=language,
-            is_admin=is_admin,
-            has_had_paid=has_had_paid_subscription,
-            has_active=has_active_subscription,
-            sub_active=subscription_is_active,
-            balance=balance_kopeks,
-        )
-
-    safe_balance = balance_kopeks or 0
-    if hasattr(texts, 'BALANCE_BUTTON') and safe_balance > 0:
-        balance_button_text = texts.BALANCE_BUTTON.format(balance=texts.format_price(safe_balance))
-    else:
-        balance_button_text = texts.t(
-            'BALANCE_BUTTON_DEFAULT',
-            '💰 Баланс: {balance}',
-        ).format(balance=texts.format_price(safe_balance))
-
-    keyboard: list[list[InlineKeyboardButton]] = []
-    paired_buttons: list[InlineKeyboardButton] = []
-
-    if has_active_subscription and subscription_is_active:
-        connect_mode = settings.CONNECT_BUTTON_MODE
-        subscription_link = get_display_subscription_link(subscription)
-
-        def _fallback_connect_button() -> InlineKeyboardButton:
-            return InlineKeyboardButton(
-                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                callback_data='subscription_connect',
-            )
-
-        if connect_mode == 'miniapp_subscription':
-            if subscription_link:
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                            web_app=types.WebAppInfo(url=subscription_link),
-                        )
-                    ]
-                )
-            else:
-                keyboard.append([_fallback_connect_button()])
-        elif connect_mode == 'miniapp_custom':
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                        web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
-                    )
-                ]
-            )
-        elif connect_mode == 'link':
-            if subscription_link:
-                keyboard.append(
-                    [InlineKeyboardButton(text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'), url=subscription_link)]
-                )
-            else:
-                keyboard.append([_fallback_connect_button()])
-        elif connect_mode == 'happ_cryptolink':
-            if subscription_link:
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                            callback_data=(
-                                'subscription_connect'
-                                if settings.is_multi_tariff_enabled()
-                                else 'open_subscription_link'
-                            ),
-                        )
-                    ]
-                )
-            else:
-                keyboard.append([_fallback_connect_button()])
-        else:
-            keyboard.append([_fallback_connect_button()])
-
-        happ_row = get_happ_download_button_row(texts)
-        if happ_row:
-            keyboard.append(happ_row)
-        sub_btn_text = (
-            texts.t('MY_SUBSCRIPTIONS_BUTTON', '📱 Мои подписки')
-            if settings.is_multi_tariff_enabled()
-            else texts.MENU_SUBSCRIPTION
-        )
-        sub_button = _styled_button(sub_btn_text, 'subscription', language, callback_data='menu_subscription')
-        if sub_button:
-            paired_buttons.append(sub_button)
-
-        # Добавляем кнопку докупки трафика для лимитированных подписок
-        # В режиме тарифов проверяем tariff_id (детальная проверка в хендлере)
-        # В классическом режиме проверяем глобальные настройки
-        show_traffic_topup = False
-        if subscription and not subscription.is_trial and (subscription.traffic_limit_gb or 0) > 0:
-            if settings.is_tariffs_mode() and getattr(subscription, 'tariff_id', None):
-                # Режим тарифов - показываем кнопку, проверка настроек тарифа в хендлере
-                show_traffic_topup = settings.BUY_TRAFFIC_BUTTON_VISIBLE
-            elif settings.is_traffic_topup_enabled() and not settings.is_traffic_topup_blocked():
-                # Классический режим - проверяем глобальные настройки
-                show_traffic_topup = settings.BUY_TRAFFIC_BUTTON_VISIBLE
-
-        if show_traffic_topup:
-            paired_buttons.append(
-                InlineKeyboardButton(
-                    text=texts.t('BUY_TRAFFIC_BUTTON', '📈 Докупить трафик'), callback_data='buy_traffic'
-                )
-            )
-
-    balance_button = _styled_button(balance_button_text, 'balance', language, callback_data='menu_balance')
-    if balance_button:
-        keyboard.append([balance_button])
-
-    cabinet_url = settings.get_cabinet_home_url()
-    if cabinet_url:
-        cabinet_button = _styled_button(
-            texts.t('MENU_CABINET', '🌐 Онлайн-кабинет'), 'cabinet', language, url=cabinet_url
-        )
-        if cabinet_button:
-            keyboard.append([cabinet_button])
-
-    show_trial = not has_had_paid_subscription and not has_active_subscription
-
-    show_buy = not has_active_subscription or not subscription_is_active
-    current_subscription = subscription
-    bool(
-        current_subscription
-        and not getattr(current_subscription, 'is_trial', False)
-        and getattr(current_subscription, 'is_active', False)
+    return build_main_menu_keyboard(
+        language,
+        subscription=subscription,
+        balance_kopeks=balance_kopeks,
+        has_had_paid_subscription=has_had_paid_subscription,
+        auth_type=auth_type,
+        is_admin=is_admin,
+        is_moderator=is_moderator,
+        show_resume_checkout=show_resume_checkout,
+        has_saved_cart=has_saved_cart,
+        custom_buttons=custom_buttons,
     )
-    simple_purchase_button = None
-    if settings.SIMPLE_SUBSCRIPTION_ENABLED:
-        simple_purchase_button = InlineKeyboardButton(
-            text=texts.MENU_SIMPLE_SUBSCRIPTION,
-            callback_data='simple_subscription_purchase',
-        )
-
-    subscription_buttons: list[InlineKeyboardButton] = []
-
-    if show_trial:
-        subscription_buttons.append(InlineKeyboardButton(text=texts.MENU_TRIAL, callback_data='menu_trial'))
-
-    if show_buy:
-        subscription_buttons.append(InlineKeyboardButton(text=texts.MENU_BUY_SUBSCRIPTION, callback_data='menu_buy'))
-
-    if subscription_buttons:
-        paired_buttons.extend(subscription_buttons)
-    if simple_purchase_button:
-        paired_buttons.append(simple_purchase_button)
-
-    if show_resume_checkout or has_saved_cart:
-        resume_callback = 'return_to_saved_cart' if has_saved_cart else 'subscription_resume_checkout'
-        paired_buttons.append(
-            InlineKeyboardButton(
-                text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT,
-                callback_data=resume_callback,
-            )
-        )
-
-    if custom_buttons:
-        for button in custom_buttons:
-            if isinstance(button, InlineKeyboardButton):
-                paired_buttons.append(button)
-
-    # Добавляем кнопки промокода и рефералов, учитывая настройки
-    paired_buttons.append(InlineKeyboardButton(text=texts.MENU_PROMOCODE, callback_data='menu_promocode'))
-
-    # Добавляем кнопку рефералов, только если программа включена
-    if settings.is_referral_program_enabled():
-        referral_button = _styled_button(
-            texts.MENU_REFERRALS, 'referral', language, callback_data='menu_referrals'
-        )
-        if referral_button:
-            paired_buttons.append(referral_button)
-
-    # Добавляем кнопку конкурсов
-    if settings.CONTESTS_ENABLED and settings.CONTESTS_BUTTON_VISIBLE:
-        paired_buttons.append(
-            InlineKeyboardButton(text=texts.t('CONTESTS_BUTTON', '🎲 Конкурсы'), callback_data='contests_menu')
-        )
-
-    try:
-        from app.services.support_settings_service import SupportSettingsService
-
-        support_enabled = SupportSettingsService.is_support_menu_enabled()
-    except Exception:
-        support_enabled = settings.SUPPORT_MENU_ENABLED
-
-    if support_enabled:
-        support_button = _styled_button(texts.MENU_SUPPORT, 'support', language, callback_data='menu_support')
-        if support_button:
-            paired_buttons.append(support_button)
-
-    # Добавляем кнопку активации
-    if settings.ACTIVATE_BUTTON_VISIBLE:
-        paired_buttons.append(InlineKeyboardButton(text=settings.ACTIVATE_BUTTON_TEXT, callback_data='activate_button'))
-
-    info_button = _styled_button(
-        texts.t('MENU_INFO', 'ℹ️ Инфо'), 'info', language, callback_data='menu_info'
-    )
-    if info_button:
-        paired_buttons.append(info_button)
-
-    if settings.is_language_selection_enabled():
-        lang_button = _styled_button(texts.MENU_LANGUAGE, 'language', language, callback_data='menu_language')
-        if lang_button:
-            paired_buttons.append(lang_button)
-
-    for i in range(0, len(paired_buttons), 2):
-        row = paired_buttons[i : i + 2]
-        keyboard.append(row)
-
-    if settings.DEBUG:
-        logger.debug('DEBUG KEYBOARD: админ кнопка', is_admin=is_admin)
-
-    if is_admin:
-        if settings.DEBUG:
-            logger.debug('DEBUG KEYBOARD: Админ кнопка ДОБАВЛЕНА')
-        admin_button = _styled_button(texts.MENU_ADMIN, 'admin', language, callback_data='admin_panel')
-        if admin_button:
-            keyboard.append([admin_button])
-    elif settings.DEBUG:
-        logger.debug('DEBUG KEYBOARD: Админ кнопка НЕ добавлена')
-    # Moderator access (limited support panel)
-    if (not is_admin) and is_moderator:
-        keyboard.append([InlineKeyboardButton(text='🧑‍⚖️ Модерация', callback_data='moderator_panel')])
-
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_info_menu_keyboard(
@@ -930,9 +277,31 @@ def get_info_menu_keyboard(
     show_faq: bool = False,
     show_promo_groups: bool = False,
 ) -> InlineKeyboardMarkup:
+    from app.keyboards.icons import icon_button
+
     texts = get_texts(language)
 
     buttons: list[list[InlineKeyboardButton]] = []
+
+    # Moved here from the main menu, which now keeps only the everyday actions.
+    personal_row = [
+        icon_button('promocode', texts.t('INFO_MENU_BTN_PROMOCODE', 'Промокод'), callback_data='menu_promocode')
+    ]
+    if settings.is_language_selection_enabled():
+        personal_row.append(
+            icon_button('language', texts.t('INFO_MENU_BTN_LANGUAGE', 'Язык'), callback_data='menu_language')
+        )
+    buttons.append(personal_row)
+
+    extra_row: list[InlineKeyboardButton] = []
+    if settings.CONTESTS_ENABLED and settings.CONTESTS_BUTTON_VISIBLE:
+        extra_row.append(
+            icon_button('contests', texts.t('INFO_MENU_BTN_CONTESTS', 'Конкурсы'), callback_data='contests_menu')
+        )
+    if settings.ACTIVATE_BUTTON_VISIBLE:
+        extra_row.append(InlineKeyboardButton(text=settings.ACTIVATE_BUTTON_TEXT, callback_data='activate_button'))
+    if extra_row:
+        buttons.append(extra_row)
 
     if show_faq:
         buttons.append(

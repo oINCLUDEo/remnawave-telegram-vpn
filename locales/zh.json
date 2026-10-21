@@ -1604,5 +1604,21 @@
   "WEBHOOK_DEVICE_DELETED": "📱 <b>设备已移除</b>\n\n设备已从您的订阅中移除：<code>{device}</code>",
   "WEBHOOK_CLOSE_BUTTON": "✖️ 关闭",
   "BACK_BUTTON": "返回",
-  "CLOSE_BUTTON": "关闭"
+  "CLOSE_BUTTON": "关闭",
+  "MAIN_MENU_BTN_TRIAL": "免费试用",
+  "MAIN_MENU_BTN_BUY": "购买订阅",
+  "MAIN_MENU_BTN_CONNECT": "连接",
+  "MAIN_MENU_BTN_RENEW": "续订",
+  "MAIN_MENU_BTN_SUBSCRIPTION": "我的订阅",
+  "MAIN_MENU_BTN_BALANCE": "余额：{balance}",
+  "MAIN_MENU_BTN_REFERRAL": "邀请好友",
+  "MAIN_MENU_BTN_SUPPORT": "支持",
+  "MAIN_MENU_BTN_CABINET": "个人中心",
+  "MAIN_MENU_BTN_INFO": "信息",
+  "MAIN_MENU_BTN_ADMIN": "管理面板",
+  "MAIN_MENU_BTN_CHECKOUT": "继续结算",
+  "MAIN_MENU_BTN_MODERATION": "审核",
+  "INFO_MENU_BTN_PROMOCODE": "优惠码",
+  "INFO_MENU_BTN_LANGUAGE": "语言",
+  "INFO_MENU_BTN_CONTESTS": "竞赛"
 }

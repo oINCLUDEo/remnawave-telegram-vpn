@@ -1736,5 +1736,21 @@
   "WEBHOOK_DEVICE_ADDED": "📱 <b>Новое устройство</b>\n\nК вашей подписке подключено новое устройство: <code>{device}</code>",
   "WEBHOOK_DEVICE_DELETED": "📱 <b>Устройство удалено</b>\n\nУстройство отключено от подписки: <code>{device}</code>",
   "WEBHOOK_CLOSE_BUTTON": "✖️ Закрыть",
-  "CLOSE_BUTTON": "Закрыть"
+  "CLOSE_BUTTON": "Закрыть",
+  "MAIN_MENU_BTN_TRIAL": "Попробовать бесплатно",
+  "MAIN_MENU_BTN_BUY": "Купить подписку",
+  "MAIN_MENU_BTN_CONNECT": "Подключиться",
+  "MAIN_MENU_BTN_RENEW": "Продлить подписку",
+  "MAIN_MENU_BTN_SUBSCRIPTION": "Моя подписка",
+  "MAIN_MENU_BTN_BALANCE": "Баланс: {balance}",
+  "MAIN_MENU_BTN_REFERRAL": "Пригласить друга",
+  "MAIN_MENU_BTN_SUPPORT": "Поддержка",
+  "MAIN_MENU_BTN_CABINET": "Личный кабинет",
+  "MAIN_MENU_BTN_INFO": "Инфо",
+  "MAIN_MENU_BTN_ADMIN": "Админ-панель",
+  "MAIN_MENU_BTN_CHECKOUT": "Продолжить оформление",
+  "MAIN_MENU_BTN_MODERATION": "Модерация",
+  "INFO_MENU_BTN_PROMOCODE": "Промокод",
+  "INFO_MENU_BTN_LANGUAGE": "Язык",
+  "INFO_MENU_BTN_CONTESTS": "Конкурсы"
 }
