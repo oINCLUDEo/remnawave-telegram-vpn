@@ -28,12 +28,7 @@ from app.services.faq_service import FaqService
 from app.services.main_menu_button_service import MainMenuButtonService
 from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
-from app.services.subscription_checkout_service import (
-    has_subscription_checkout_draft,
-    should_offer_checkout_resume,
-)
 from app.services.support_settings_service import SupportSettingsService
-from app.services.user_cart_service import user_cart_service
 from app.utils.photo_message import edit_or_answer_photo
 from app.utils.pricing_utils import format_period_description
 from app.utils.promo_offer import (
@@ -155,15 +150,6 @@ async def build_main_menu(db: AsyncSession, db_user: User) -> tuple[str, types.I
 
     menu_text = await get_main_menu_text(db_user, texts, db)
 
-    draft_exists = await has_subscription_checkout_draft(db_user.id)
-    show_resume_checkout = should_offer_checkout_resume(db_user, draft_exists)
-
-    try:
-        has_saved_cart = await user_cart_service.has_user_cart(db_user.id)
-    except Exception as e:
-        logger.error('Ошибка проверки сохраненной корзины для пользователя', db_user_id=db_user.id, error=e)
-        has_saved_cart = False
-
     is_admin = settings.is_admin(db_user.telegram_id)
     is_moderator = (not is_admin) and SupportSettingsService.is_moderator(db_user.telegram_id)
 
@@ -184,8 +170,6 @@ async def build_main_menu(db: AsyncSession, db_user: User) -> tuple[str, types.I
         has_had_paid_subscription=db_user.has_had_paid_subscription,
         balance_kopeks=db_user.balance_kopeks,
         subscription=subscription,
-        show_resume_checkout=show_resume_checkout,
-        has_saved_cart=has_saved_cart,
         custom_buttons=custom_buttons,
         auth_type=getattr(db_user, 'auth_type', None),
     )

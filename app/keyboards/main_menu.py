@@ -8,28 +8,30 @@ cabinet instead of the bot's own screens. The menu is now fixed here and does
 not read any of that configuration; the cabinet is reachable through the
 "Личный кабинет" button in the "Инфо" section.
 
-The menu has three rows. The first one holds the action that matters most
-for the user's current state, so the state decides the rows:
+Most buttons take a full row, so the labels stay readable; only "Поддержка"
+and "Инфо" share the last row. The first button is the action that matters
+most for the user's current state, so the state decides the rows:
 
-========  ==========================  ==========================  ==========================
-Row       NEW (no subscription)       TRIAL / ACTIVE              RENEW (expiring or ended)
-========  ==========================  ==========================  ==========================
-1         Попробовать (or Купить)     Подключиться                Продлить · Подключиться (2)
-2         Купить · Баланс (3)         Моя подписка (1) · Баланс   Моя подписка · Баланс
-3         Пригласить · Поддержка · Инфо, in every state
-========  ==========================  ==========================  ==========================
+====  ========================  ========================  ========================
+Row   NEW (no subscription)     TRIAL / ACTIVE            RENEW (expiring or ended)
+====  ========================  ========================  ========================
+1     Попробовать (1)           Подключиться              Продлить
+2     Купить подписку           Моя подписка (2)          Подключиться (3)
+3     Баланс                    Баланс                    Моя подписка
+4     Пригласить друга          Пригласить друга          Баланс
+5     Поддержка · Инфо          Поддержка · Инфо          Пригласить друга
+6     —                         —                         Поддержка · Инфо
+====  ========================  ========================  ========================
 
-(1) "Купить подписку" while on a trial. (2) Only while access still works.
-(3) Only "Баланс" when the trial is not available and "Купить" is row 1.
+(1) Left out when the trial is not available; "Купить" is then first.
+(2) "Купить подписку" while on a trial. (3) Only while access still works.
 
-A started checkout ("Продолжить оформление") takes the place of "Купить" (or
-of "Продлить", or sits next to "Подключиться" for an active subscription)
-instead of adding a row. Only the first coloured button keeps its colour; see
-the colour rules in :mod:`app.keyboards.icons`.
+Only the first coloured button keeps its colour; see the colour rules in
+:mod:`app.keyboards.icons`.
 
 The cabinet link, language, promo code, rules, FAQ and contests live in the
 "Инфо" section. Buttons that are switched off (referrals, support) simply drop
-out of their row; the rows themselves stay put so that banners made for each
+out; the order of the sections stays the same so that banners made for each
 section keep matching.
 """
 
@@ -166,8 +168,6 @@ def build_main_menu_keyboard(
     auth_type: str | None = None,
     is_admin: bool = False,
     is_moderator: bool = False,
-    show_resume_checkout: bool = False,
-    has_saved_cart: bool = False,
     custom_buttons: list[InlineKeyboardButton] | None = None,
 ) -> InlineKeyboardMarkup:
     texts = get_texts(language)
@@ -187,27 +187,15 @@ def build_main_menu_keyboard(
         callback_data='menu_subscription',
     )
     referral = (
-        icon_button('referral', t('MAIN_MENU_BTN_REFERRAL', 'Пригласить'), callback_data='menu_referrals')
+        icon_button('referral', t('MAIN_MENU_BTN_REFERRAL', 'Пригласить друга'), callback_data='menu_referrals')
         if settings.is_referral_program_enabled()
         else None
     )
     support = _support_button(texts) if _is_support_enabled() else None
     info = icon_button('info', t('MAIN_MENU_BTN_INFO', 'Инфо'), callback_data='menu_info')
 
-    checkout = None
-    if show_resume_checkout or has_saved_cart:
-        # A purchase the user already started stands in for "Купить"/"Продлить".
-        checkout = icon_button(
-            'checkout',
-            t('MAIN_MENU_BTN_CHECKOUT', 'Продолжить оформление'),
-            callback_data='return_to_saved_cart' if has_saved_cart else 'subscription_resume_checkout',
-            style=STYLE_PAY,
-        )
-
     def buy(style: str | None = None) -> InlineKeyboardButton:
-        return checkout or icon_button(
-            'buy', t('MAIN_MENU_BTN_BUY', 'Купить подписку'), callback_data='menu_buy', style=style
-        )
+        return icon_button('buy', t('MAIN_MENU_BTN_BUY', 'Купить подписку'), callback_data='menu_buy', style=style)
 
     rows: list[list[InlineKeyboardButton | None]] = []
 
@@ -223,31 +211,32 @@ def build_main_menu_keyboard(
                     )
                 ]
             )
-            rows.append([buy(), balance])
+            rows.append([buy()])
         else:
             rows.append([buy(STYLE_PAY)])
-            rows.append([balance])
 
-    elif state == MenuState.TRIAL:
+    elif state in (MenuState.TRIAL, MenuState.ACTIVE):
         rows.append([connect_button(texts, subscription)])
-        rows.append([buy(), balance])
-
-    elif state == MenuState.ACTIVE:
-        rows.append([connect_button(texts, subscription), checkout])
-        rows.append([my_subscription, balance])
+        rows.append([buy() if state == MenuState.TRIAL else my_subscription])
 
     else:  # MenuState.RENEW
-        renew = checkout or icon_button(
-            'renew',
-            t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
-            callback_data='subscription_extend',
-            style=STYLE_PAY,
+        rows.append(
+            [
+                icon_button(
+                    'renew',
+                    t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
+                    callback_data='subscription_extend',
+                    style=STYLE_PAY,
+                )
+            ]
         )
-        still_works = getattr(subscription, 'is_active', False)
-        rows.append([renew, connect_button(texts, subscription) if still_works else None])
-        rows.append([my_subscription, balance])
+        if getattr(subscription, 'is_active', False):
+            rows.append([connect_button(texts, subscription)])
+        rows.append([my_subscription])
 
-    rows.append([referral, support, info])
+    rows.append([balance])
+    rows.append([referral])
+    rows.append([support, info])
 
     # Extra links an admin added through the bot's own admin panel.
     for button in custom_buttons or []:
