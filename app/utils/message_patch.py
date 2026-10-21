@@ -8,6 +8,7 @@ from aiogram.types import FSInputFile, InaccessibleMessage, InputMediaPhoto, Mes
 
 from app.config import settings
 from app.localization.texts import get_texts
+from app.utils.banners import banner_path, current_banner_key
 
 
 LOGO_PATH = Path(settings.LOGO_FILE)
@@ -30,21 +31,40 @@ _PRIVACY_RESTRICTED_CODE = 'BUTTON_USER_PRIVACY_RESTRICTED'
 # Кеш file_id логотипа: после первой загрузки Telegram возвращает file_id,
 # который можно переиспользовать без повторной загрузки файла (экономит 3-4 сек)
 _logo_file_id: str | None = None
+# То же для баннеров разделов (app/utils/banners.py), по ключу баннера.
+_banner_file_ids: dict[str, str] = {}
+
+
+def _current_banner():
+    """Ключ и файл баннера текущего раздела, если дизайнер его уже добавил."""
+    key = current_banner_key()
+    path = banner_path(key)
+    return (key, path) if path else (None, None)
 
 
 def get_logo_media():
-    """Возвращает кешированный file_id или FSInputFile для логотипа."""
+    """Возвращает картинку для экрана: баннер текущего раздела или логотип.
+
+    Сначала кешированный file_id, иначе файл с диска.
+    """
+    key, path = _current_banner()
+    if key:
+        return _banner_file_ids.get(key) or FSInputFile(path)
     if _logo_file_id:
         return _logo_file_id
     return FSInputFile(LOGO_PATH)
 
 
 def _cache_logo_file_id(result: Message | None) -> None:
-    """Извлекает и кеширует file_id логотипа из ответа Telegram."""
+    """Извлекает и кеширует file_id отправленной картинки (баннера или логотипа)."""
     global _logo_file_id
-    if _logo_file_id or result is None:
+    if result is None or not (hasattr(result, 'photo') and result.photo):
         return
-    if hasattr(result, 'photo') and result.photo:
+    key, _ = _current_banner()
+    if key:
+        _banner_file_ids.setdefault(key, result.photo[-1].file_id)
+        return
+    if not _logo_file_id:
         _logo_file_id = result.photo[-1].file_id
 
 

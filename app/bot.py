@@ -59,9 +59,6 @@ from app.handlers.admin import (
     users as admin_users,
     welcome_text as admin_welcome_text,
 )
-from bot.handlers import sync_handler as sheets_sync_handler
-from bot.handlers import expense_handler as sheets_expense_handler
-from bot.handlers import server_handler as infra_server_handler
 from app.handlers.channel_member import register_handlers as register_channel_member_handlers
 from app.handlers.gift_activation import register_handlers as register_gift_activation_handlers
 from app.handlers.stars_payments import register_stars_handlers
@@ -77,8 +74,14 @@ from app.middlewares.maintenance import MaintenanceMiddleware
 from app.middlewares.subscription_checker import SubscriptionStatusMiddleware
 from app.middlewares.throttling import ThrottlingMiddleware
 from app.services.maintenance_service import maintenance_service
+from app.utils.banners import BannerMiddleware
 from app.utils.cache import cache
 from app.utils.message_patch import patch_message_methods
+from bot.handlers import (
+    expense_handler as sheets_expense_handler,
+    server_handler as infra_server_handler,
+    sync_handler as sheets_sync_handler,
+)
 
 
 patch_message_methods()
@@ -134,6 +137,9 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     dp.message.middleware(ContextVarsMiddleware())
     dp.callback_query.middleware(ContextVarsMiddleware())
     dp.pre_checkout_query.middleware(ContextVarsMiddleware())
+    # Which section's banner the screens of this update show (app/utils/banners.py).
+    dp.message.middleware(BannerMiddleware())
+    dp.callback_query.middleware(BannerMiddleware())
     chat_type_filter = ChatTypeFilterMiddleware()
     dp.message.middleware(chat_type_filter)
     dp.callback_query.middleware(chat_type_filter)
