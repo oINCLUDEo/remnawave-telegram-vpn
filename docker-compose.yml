@@ -76,6 +76,8 @@ services:
       - ./uploads:/app/uploads:rw
       # Логотип для сообщений
       - ./vpn_logo.png:/app/vpn_logo.png:ro
+      # Баннеры разделов: файл main.png, balance.png и т.д. (см. app/utils/banners.py)
+      - ./assets/banners:/app/assets/banners:ro
       # Google Sheets — сервисный аккаунт (путь берётся из GOOGLE_CREDENTIALS_JSON_PATH)
       - /etc/ulya/google_credentials.json:/etc/ulya/google_credentials.json:ro
     ports:
