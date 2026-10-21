@@ -161,6 +161,13 @@ class Settings(BaseSettings):
     TRIAL_WARNING_HOURS: int = 2
     ENABLE_NOTIFICATIONS: bool = True
     NOTIFICATION_RETRY_ATTEMPTS: int = 3
+    # Тихие часы (по TIMEZONE): напоминания о продлении и скидки ждут утра.
+    # Срочные сообщения (оплата, автоплатёж, конец пробного) уходят всегда.
+    NOTIFICATIONS_QUIET_HOURS_ENABLED: bool = True
+    NOTIFICATIONS_QUIET_HOURS_START: int = Field(default=22, ge=0, le=23)
+    NOTIFICATIONS_QUIET_HOURS_END: int = Field(default=10, ge=0, le=23)
+    # Новое напоминание о продлении удаляет предыдущее (или снимает с него кнопки)
+    NOTIFICATIONS_REPLACE_PREVIOUS_REMINDER: bool = True
 
     MONITORING_LOGS_RETENTION_DAYS: int = 30
     NOTIFICATION_CACHE_HOURS: int = 24

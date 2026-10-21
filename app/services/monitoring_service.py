@@ -67,7 +67,7 @@ from app.utils.promo_offer import get_user_active_promo_discount_percent
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
-from app.utils.timezone import format_local_datetime
+from app.utils.timezone import format_local_datetime, is_quiet_hours, quiet_hours_end
 
 
 # Кулдаун между повторными уведомлениями об автоплатеже с недостаточным балансом (6 часов)
@@ -75,6 +75,11 @@ AUTOPAY_INSUFFICIENT_BALANCE_COOLDOWN_SECONDS: int = 21600
 
 # Размер батча для проверки подписок на каналы (keyset pagination)
 _CHANNEL_CHECK_BATCH_SIZE: int = 100
+
+# Последнее напоминание о продлении по подписке: {'chat_id', 'message_id'}.
+# Хранится дольше всей цепочки напоминаний (за 3 дня до конца и до третьей волны скидок).
+_RENEWAL_REMINDER_KEY = 'renewal_reminder:{user_id}:{subscription_id}'
+_RENEWAL_REMINDER_TTL_SECONDS: int = 86400 * 30
 
 
 logger = structlog.get_logger(__name__)
@@ -146,6 +151,44 @@ class MonitoringService:
             reply_markup=reply_markup,
             parse_mode=parse_mode,
         )
+
+    async def _replace_renewal_reminder(self, user: User, subscription: Subscription, sent_message) -> None:
+        """Remember the reminder just sent and retire the previous one for this subscription.
+
+        Telegram lets a bot delete its message only within 48 hours, so an older
+        reminder loses its buttons instead: a stale "renew with discount" must not
+        stay clickable next to the new one.
+        """
+        if not settings.NOTIFICATIONS_REPLACE_PREVIOUS_REMINDER or not sent_message or not self.bot:
+            return
+
+        key = _RENEWAL_REMINDER_KEY.format(user_id=user.id, subscription_id=subscription.id)
+        previous = await cache.get(key)
+        await cache.set(
+            key,
+            {'chat_id': sent_message.chat.id, 'message_id': sent_message.message_id},
+            expire=_RENEWAL_REMINDER_TTL_SECONDS,
+        )
+
+        if not isinstance(previous, dict) or previous.get('message_id') == sent_message.message_id:
+            return
+        chat_id, message_id = previous.get('chat_id'), previous.get('message_id')
+        if not chat_id or not message_id:
+            return
+
+        try:
+            await self.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            return
+        except TelegramBadRequest:
+            pass
+        except Exception as error:
+            logger.debug('Не удалось удалить прошлое напоминание', user_id=user.id, error=error)
+            return
+
+        try:
+            await self.bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+        except Exception as error:
+            logger.debug('Не удалось снять кнопки с прошлого напоминания', user_id=user.id, error=error)
 
     @staticmethod
     def _is_unreachable_error(error: TelegramBadRequest) -> bool:
@@ -590,6 +633,8 @@ class MonitoringService:
         try:
             warning_days = settings.get_autopay_warning_days()
             all_processed_users = set()
+            # Ночью напоминание откладываем до утра, если подписка доживёт до конца тихих часов
+            quiet_until = quiet_hours_end() if is_quiet_hours() else None
 
             for days in warning_days:
                 expiring_subscriptions = await self._get_expiring_paid_subscriptions(db, days)
@@ -641,6 +686,9 @@ class MonitoringService:
                                 break
 
                     if not should_send:
+                        continue
+
+                    if quiet_until and subscription.end_date and subscription.end_date > quiet_until:
                         continue
 
                     # Handle email-only users via notification delivery service
@@ -1024,6 +1072,10 @@ class MonitoringService:
         if not NotificationSettingsService.are_notifications_globally_enabled():
             return
         if not self.bot:
+            return
+        # Напоминания и скидки после окончания подписки — маркетинг, ночью не шлём.
+        # Окна у них сутки и больше, утром следующий цикл их отправит.
+        if is_quiet_hours():
             return
 
         try:
@@ -1504,12 +1556,13 @@ class MonitoringService:
                 ]
             )
 
-            await self._send_message_with_logo(
+            sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
                 reply_markup=keyboard,
             )
+            await self._replace_renewal_reminder(user, subscription, sent)
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
@@ -1617,12 +1670,13 @@ class MonitoringService:
                 ]
             )
 
-            await self._send_message_with_logo(
+            sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
                 reply_markup=keyboard,
             )
+            await self._replace_renewal_reminder(user, subscription, sent)
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
@@ -1825,12 +1879,13 @@ class MonitoringService:
                 ]
             )
 
-            await self._send_message_with_logo(
+            sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
                 reply_markup=keyboard,
             )
+            await self._replace_renewal_reminder(user, subscription, sent)
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
@@ -1931,12 +1986,13 @@ class MonitoringService:
                 ]
             )
 
-            await self._send_message_with_logo(
+            sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
                 reply_markup=keyboard,
             )
+            await self._replace_renewal_reminder(user, subscription, sent)
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:

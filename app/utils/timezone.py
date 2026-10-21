@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -64,3 +64,34 @@ def format_local_datetime(
     if localized is None:
         return na_placeholder
     return localized.strftime(fmt)
+
+
+def is_quiet_hours(now: datetime | None = None) -> bool:
+    """Return True while local time is inside the notification quiet window.
+
+    The window is [START, END) in the configured TIMEZONE and may wrap past
+    midnight (22 → 10). START == END means there is no quiet window.
+    """
+
+    if not settings.NOTIFICATIONS_QUIET_HOURS_ENABLED:
+        return False
+
+    start = settings.NOTIFICATIONS_QUIET_HOURS_START
+    end = settings.NOTIFICATIONS_QUIET_HOURS_END
+    if start == end:
+        return False
+
+    hour = to_local_datetime(now or datetime.now(UTC)).hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def quiet_hours_end(now: datetime | None = None) -> datetime:
+    """Return the next moment (aware, local tz) when the quiet window ends."""
+
+    local_now = to_local_datetime(now or datetime.now(UTC))
+    candidate = local_now.replace(hour=settings.NOTIFICATIONS_QUIET_HOURS_END, minute=0, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate
