@@ -109,7 +109,7 @@ def test_support_opens_the_chat_when_it_is_the_only_channel(monkeypatch, tickets
 
     rows = _targets(build_main_menu_keyboard('ru', subscription=None))
 
-    assert rows[2][1] == expected
+    assert rows[4][0] == expected
 
 
 def test_notification_buttons_open_the_bot_even_in_cabinet_mode(monkeypatch):

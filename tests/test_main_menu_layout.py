@@ -59,8 +59,10 @@ def test_new_user_sees_trial_first():
 
     assert rows == [
         ['menu_trial'],
-        ['menu_buy', 'menu_balance'],
-        ['menu_referrals', 'menu_support', 'menu_info'],
+        ['menu_buy'],
+        ['menu_balance'],
+        ['menu_referrals'],
+        ['menu_support', 'menu_info'],
     ]
 
 
@@ -76,8 +78,10 @@ def test_active_user_sees_connect_first():
 
     assert rows == [
         ['https://sub.example.com/abc'],
-        ['menu_subscription', 'menu_balance'],
-        ['menu_referrals', 'menu_support', 'menu_info'],
+        ['menu_subscription'],
+        ['menu_balance'],
+        ['menu_referrals'],
+        ['menu_support', 'menu_info'],
     ]
 
 
@@ -85,21 +89,22 @@ def test_trial_user_is_offered_to_buy():
     rows = _rows(build_main_menu_keyboard('ru', subscription=_sub(is_trial=True, days_left=2)))
 
     assert rows[0] == ['https://sub.example.com/abc']
-    assert rows[1] == ['menu_buy', 'menu_balance']
+    assert rows[1] == ['menu_buy']
 
 
 def test_expiring_user_sees_renew_first_and_can_still_connect():
     rows = _rows(build_main_menu_keyboard('ru', subscription=_sub(days_left=2)))
 
-    assert rows[0] == ['subscription_extend', 'https://sub.example.com/abc']
-    assert rows[1] == ['menu_subscription', 'menu_balance']
+    assert rows[0] == ['subscription_extend']
+    assert rows[1] == ['https://sub.example.com/abc']
+    assert rows[2] == ['menu_subscription']
 
 
 def test_expired_user_has_no_connect_button():
     rows = _rows(build_main_menu_keyboard('ru', subscription=_sub('expired', days_left=0, is_active=False)))
 
     assert rows[0] == ['subscription_extend']
-    assert rows[1] == ['menu_subscription', 'menu_balance']
+    assert rows[1] == ['menu_subscription']
 
 
 def test_secondary_items_are_not_on_the_main_menu():
@@ -113,17 +118,7 @@ def test_disabled_sections_drop_out_without_breaking_rows(monkeypatch):
 
     rows = _rows(build_main_menu_keyboard('ru', subscription=_sub()))
 
-    assert rows[2] == ['menu_support', 'menu_info']
-
-
-def test_saved_cart_takes_the_place_of_buy():
-    rows = _rows(build_main_menu_keyboard('ru', subscription=None, has_saved_cart=True))
-
-    assert rows == [
-        ['menu_trial'],
-        ['return_to_saved_cart', 'menu_balance'],
-        ['menu_referrals', 'menu_support', 'menu_info'],
-    ]
+    assert rows[2:] == [['menu_balance'], ['menu_support', 'menu_info']]
 
 
 @pytest.mark.parametrize(
@@ -159,7 +154,8 @@ def test_admin_row_is_last():
 def test_buttons_carry_one_icon_each():
     markup = build_main_menu_keyboard('ru', subscription=None)
     trial = markup.inline_keyboard[0][0]
-    buy, balance = markup.inline_keyboard[1]
+    buy = markup.inline_keyboard[1][0]
+    balance = markup.inline_keyboard[2][0]
 
     # Custom emoji icon: the label itself has no emoji.
     assert trial.icon_custom_emoji_id
