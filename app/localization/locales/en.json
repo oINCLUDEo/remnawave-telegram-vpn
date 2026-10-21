@@ -1757,5 +1757,21 @@
   "WEBHOOK_DEVICE_DELETED": "📱 <b>Device removed</b>\n\nA device has been removed from your subscription{tariff_label}: <code>{device}</code>",
   "WEBHOOK_TORRENT_DETECTED": "🚫 <b>Torrent detected</b>\n\nTorrent traffic was detected on your connection{tariff_label}. Using torrents may result in subscription restrictions.",
   "WEBHOOK_CLOSE_BUTTON": "✖️ Close",
-  "CLOSE_BUTTON": "Close"
+  "CLOSE_BUTTON": "Close",
+  "MAIN_MENU_BTN_TRIAL": "Try for free",
+  "MAIN_MENU_BTN_BUY": "Buy subscription",
+  "MAIN_MENU_BTN_CONNECT": "Connect",
+  "MAIN_MENU_BTN_RENEW": "Renew subscription",
+  "MAIN_MENU_BTN_SUBSCRIPTION": "My subscription",
+  "MAIN_MENU_BTN_BALANCE": "Balance: {balance}",
+  "MAIN_MENU_BTN_REFERRAL": "Invite a friend",
+  "MAIN_MENU_BTN_SUPPORT": "Support",
+  "MAIN_MENU_BTN_CABINET": "Personal account",
+  "MAIN_MENU_BTN_INFO": "Info",
+  "MAIN_MENU_BTN_ADMIN": "Admin panel",
+  "MAIN_MENU_BTN_CHECKOUT": "Continue checkout",
+  "MAIN_MENU_BTN_MODERATION": "Moderation",
+  "INFO_MENU_BTN_PROMOCODE": "Promo code",
+  "INFO_MENU_BTN_LANGUAGE": "Language",
+  "INFO_MENU_BTN_CONTESTS": "Contests"
 }
