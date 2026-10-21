@@ -24,6 +24,8 @@
 !LICENSE
 !CONTRIBUTING.md
 !SECURITY.md
+!CLAUDE.md
+!AGENTS.md
 
 # Скрипты
 !install_bot.sh
@@ -44,6 +46,8 @@
 !migrations/**
 !docs/
 !docs/**
+!LLM_WIKI/
+!LLM_WIKI/**
 !assets/
 !assets/**
 !locales/
