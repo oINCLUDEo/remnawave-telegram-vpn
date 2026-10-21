@@ -1773,5 +1773,6 @@
   "MAIN_MENU_BTN_MODERATION": "Moderation",
   "INFO_MENU_BTN_PROMOCODE": "Promo code",
   "INFO_MENU_BTN_LANGUAGE": "Language",
-  "INFO_MENU_BTN_CONTESTS": "Contests"
+  "INFO_MENU_BTN_CONTESTS": "Contests",
+  "REGISTRATION_CONSENT_LINE": "ℹ️ By using the bot you accept the service rules and the privacy policy. You can always find them under «Info»."
 }

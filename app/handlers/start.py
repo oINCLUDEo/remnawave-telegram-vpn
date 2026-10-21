@@ -1652,6 +1652,8 @@ async def complete_registration_from_callback(callback: types.CallbackQuery, sta
     from app.database.crud.welcome_text import get_welcome_text_for_user
 
     offer_text = await get_welcome_text_for_user(db, callback.from_user)
+    if offer_text:
+        offer_text = _with_consent_line(offer_text, user.language)
     pinned_message = await get_active_pinned_message(db)
 
     if offer_text:
@@ -1689,6 +1691,7 @@ async def complete_registration_from_callback(callback: types.CallbackQuery, sta
         )
 
         menu_text, keyboard = await build_main_menu(db, user)
+        menu_text = _with_consent_line(menu_text, user.language)
 
         try:
             if pinned_message and pinned_message.send_before_menu:
@@ -1938,6 +1941,8 @@ async def complete_registration(message: types.Message, state: FSMContext, db: A
     from app.database.crud.welcome_text import get_welcome_text_for_user
 
     offer_text = await get_welcome_text_for_user(db, message.from_user)
+    if offer_text:
+        offer_text = _with_consent_line(offer_text, user.language)
     pinned_message = await get_active_pinned_message(db)
 
     if offer_text:
@@ -1983,6 +1988,7 @@ async def complete_registration(message: types.Message, state: FSMContext, db: A
         )
 
         menu_text, keyboard = await build_main_menu(db, user)
+        menu_text = _with_consent_line(menu_text, user.language)
 
         try:
             if pinned_message and pinned_message.send_before_menu:
@@ -2001,6 +2007,24 @@ async def complete_registration(message: types.Message, state: FSMContext, db: A
             )
 
     logger.info('✅ Регистрация завершена для пользователя', telegram_id=user.telegram_id)
+
+
+def _with_consent_line(text: str, language: str) -> str:
+    """Add the rules/privacy notice that replaces the separate accept screens.
+
+    With ``SKIP_RULES_ACCEPT`` the user no longer taps "Принимаю" on the rules
+    and the privacy policy, so the first message after registration says that
+    using the bot means accepting them and where to read them. Plain text on
+    purpose: the welcome message is re-sent without parse mode on HTML errors.
+    """
+    if not settings.SKIP_RULES_ACCEPT:
+        return text
+    notice = get_texts(language).t(
+        'REGISTRATION_CONSENT_LINE',
+        'ℹ️ Пользуясь ботом, вы принимаете правила сервиса и политику конфиденциальности. '
+        'Они всегда доступны в разделе «Инфо».',
+    )
+    return f'{text}\n\n{notice}'
 
 
 def get_referral_code_keyboard(language: str):

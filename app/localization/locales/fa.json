@@ -1794,5 +1794,6 @@
   "MAIN_MENU_BTN_MODERATION": "نظارت",
   "INFO_MENU_BTN_PROMOCODE": "کد تخفیف",
   "INFO_MENU_BTN_LANGUAGE": "زبان",
-  "INFO_MENU_BTN_CONTESTS": "مسابقات"
+  "INFO_MENU_BTN_CONTESTS": "مسابقات",
+  "REGISTRATION_CONSENT_LINE": "ℹ️ با استفاده از ربات، قوانین سرویس و سیاست حریم خصوصی را می‌پذیرید. همیشه می‌توانید آن‌ها را در بخش «اطلاعات» ببینید."
 }

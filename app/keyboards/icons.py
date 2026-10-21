@@ -26,8 +26,8 @@ class Icon:
 
 ICONS: dict[str, Icon] = {
     'connect': Icon('🚀'),
-    'subscription': Icon('💎'),
-    'buy': Icon('💎'),
+    'subscription': Icon('💎', '5427168083074628963'),
+    'buy': Icon('💎', '5427168083074628963'),
     'trial': Icon('🎁', '5203996991054432397'),
     'renew': Icon('🔄', '5258419835922030550'),
     'checkout': Icon('🛒'),
@@ -44,10 +44,24 @@ ICONS: dict[str, Icon] = {
     'moderation': Icon('🧑‍⚖️'),
 }
 
-# Telegram Bot API 9.4 button colours.
-STYLE_PRIMARY = 'primary'  # синяя
-STYLE_SUCCESS = 'success'  # зелёная
-STYLE_DANGER = 'danger'  # красная
+# Button colours (Telegram Bot API 9.4 ``style``). Colour says what kind of
+# action a button is, never which section it belongs to:
+#
+#   STYLE_PAY     зелёная  — получить или оплатить доступ: попробовать, купить,
+#                            продлить, оплатить, продолжить оформление;
+#   STYLE_USE     синяя    — пользоваться тем, что уже есть: подключиться,
+#                            открыть инструкцию;
+#   STYLE_DANGER  красная  — необратимое: удалить подписку, сбросить устройства,
+#                            отвязать карту; только на кнопке подтверждения;
+#   без цвета              — навигация и всё остальное, включая «Назад».
+#
+# At most one coloured button per screen, the one the user most likely needs
+# next (``main_menu.keep_single_accent`` enforces it on the main menu). An
+# expiring subscription is signalled in the text (⚠️), not with a red "renew":
+# renewing is a purchase, so it is green like every other purchase.
+STYLE_PAY = 'success'
+STYLE_USE = 'primary'
+STYLE_DANGER = 'danger'
 
 
 def icon_label(icon_key: str, text: str) -> str:

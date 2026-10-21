@@ -121,10 +121,37 @@ def test_disabled_sections_drop_out_without_breaking_rows(monkeypatch):
     assert rows[3] == ['menu_info']
 
 
-def test_saved_cart_goes_right_under_the_main_action():
-    rows = _rows(build_main_menu_keyboard('ru', subscription=None, has_saved_cart=True))
+def test_saved_cart_goes_on_top_and_takes_the_accent():
+    markup = build_main_menu_keyboard('ru', subscription=None, has_saved_cart=True)
 
-    assert rows[1] == ['return_to_saved_cart']
+    assert _rows(markup)[0] == ['return_to_saved_cart']
+    assert markup.inline_keyboard[0][0].style == 'success'
+    # The trial button below loses its colour: one accent per screen.
+    assert markup.inline_keyboard[1][0].style is None
+
+
+@pytest.mark.parametrize(
+    ('subscription', 'accent_callback', 'colour'),
+    [
+        (None, 'menu_trial', 'success'),
+        (_sub(), None, 'primary'),  # Подключиться opens the subscription page
+        (_sub(days_left=2), 'subscription_extend', 'success'),
+    ],
+)
+def test_exactly_one_coloured_button(subscription, accent_callback, colour):
+    markup = build_main_menu_keyboard('ru', subscription=subscription)
+    coloured = [b for row in markup.inline_keyboard for b in row if b.style]
+
+    assert len(coloured) == 1
+    assert coloured[0].style == colour
+    if accent_callback:
+        assert coloured[0].callback_data == accent_callback
+
+
+def test_renew_is_never_red():
+    for subscription in (_sub(days_left=1), _sub('expired', days_left=0, is_active=False)):
+        markup = build_main_menu_keyboard('ru', subscription=subscription)
+        assert all(b.style != 'danger' for row in markup.inline_keyboard for b in row)
 
 
 def test_admin_row_is_last():
@@ -136,11 +163,26 @@ def test_admin_row_is_last():
 def test_buttons_carry_one_icon_each():
     markup = build_main_menu_keyboard('ru', subscription=None)
     trial = markup.inline_keyboard[0][0]
-    balance = markup.inline_keyboard[1][1]
+    buy, balance = markup.inline_keyboard[1]
 
     # Custom emoji icon: the label itself has no emoji.
     assert trial.icon_custom_emoji_id
     assert trial.text == 'Попробовать бесплатно'
+    assert buy.icon_custom_emoji_id == '5427168083074628963'
+    assert buy.text == 'Купить подписку'
     # No custom emoji: the Unicode emoji is prefixed.
     assert balance.icon_custom_emoji_id is None
     assert balance.text.startswith('💰 Баланс: ')
+
+
+def test_consent_line_replaces_the_accept_screens(monkeypatch):
+    from app.handlers.start import _with_consent_line
+
+    monkeypatch.setattr(settings, 'SKIP_RULES_ACCEPT', False)
+    assert _with_consent_line('Привет', 'ru') == 'Привет'
+
+    monkeypatch.setattr(settings, 'SKIP_RULES_ACCEPT', True)
+    text = _with_consent_line('Привет', 'ru')
+    assert text.startswith('Привет\n\n')
+    assert 'правила' in text
+    assert '<' not in text  # sent without parse mode on HTML errors

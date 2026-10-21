@@ -1664,5 +1664,6 @@
   "MAIN_MENU_BTN_MODERATION": "审核",
   "INFO_MENU_BTN_PROMOCODE": "优惠码",
   "INFO_MENU_BTN_LANGUAGE": "语言",
-  "INFO_MENU_BTN_CONTESTS": "竞赛"
+  "INFO_MENU_BTN_CONTESTS": "竞赛",
+  "REGISTRATION_CONSENT_LINE": "ℹ️ 使用本机器人即表示您接受服务规则和隐私政策。您可以随时在“信息”部分查看。"
 }
