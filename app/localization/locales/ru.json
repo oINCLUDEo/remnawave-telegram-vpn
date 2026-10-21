@@ -1814,5 +1814,13 @@
   "BALANCE_BTN_CARDS": "💳 Карты",
   "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 Выберите способ оплаты, сумма {amount} уже подставлена.",
   "TARIFF_TOPUP_BALANCE_BUTTON": "💳 Пополнить баланс",
-  "PURCHASE_SUCCESS_CONNECT_HINT": "Нажмите «Подключиться», чтобы настроить VPN."
+  "PURCHASE_SUCCESS_CONNECT_HINT": "Нажмите «Подключиться», чтобы настроить VPN.",
+  "TOPUP_QUICK_AMOUNT_PROMPT": "{icon} <b>Пополнение</b>\n\nВыберите сумму:",
+  "TOPUP_QUICK_AMOUNT_METHODS": "{icon} <b>Пополнение на {amount}</b>\n\nВыберите способ оплаты:",
+  "TOPUP_OTHER_AMOUNT_BUTTON": "✏️ Другая сумма",
+  "REFERRAL_BTN_SHARE": "📤 Поделиться ссылкой",
+  "REFERRAL_BTN_QR": "📱 QR",
+  "REFERRAL_BTN_LIST": "👥 Друзья",
+  "REFERRAL_BTN_STATS": "📊 Доход",
+  "REFERRAL_SHARE_TEXT": "🚀 Попробуй VPN, которым пользуюсь сам: быстрое подключение и серверы по всему миру."
 }

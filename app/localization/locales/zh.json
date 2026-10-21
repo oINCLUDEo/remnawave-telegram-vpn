@@ -1684,5 +1684,13 @@
   "BALANCE_BTN_CARDS": "💳 银行卡",
   "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 请选择支付方式，金额 {amount} 已自动填写。",
   "TARIFF_TOPUP_BALANCE_BUTTON": "💳 充值余额",
-  "PURCHASE_SUCCESS_CONNECT_HINT": "点击“连接”即可设置 VPN。"
+  "PURCHASE_SUCCESS_CONNECT_HINT": "点击“连接”即可设置 VPN。",
+  "TOPUP_QUICK_AMOUNT_PROMPT": "{icon} <b>充值</b>\n\n请选择金额：",
+  "TOPUP_QUICK_AMOUNT_METHODS": "{icon} <b>充值 {amount}</b>\n\n请选择支付方式：",
+  "TOPUP_OTHER_AMOUNT_BUTTON": "✏️ 其他金额",
+  "REFERRAL_BTN_SHARE": "📤 分享链接",
+  "REFERRAL_BTN_QR": "📱 二维码",
+  "REFERRAL_BTN_LIST": "👥 好友",
+  "REFERRAL_BTN_STATS": "📊 收益",
+  "REFERRAL_SHARE_TEXT": "🚀 试试我在用的 VPN：连接快速，服务器遍布全球。"
 }

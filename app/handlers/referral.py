@@ -2,6 +2,7 @@ import hashlib
 import json
 from html import escape as html_escape
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 import qrcode
 import structlog
@@ -28,6 +29,17 @@ from app.utils.user_utils import (
 
 
 logger = structlog.get_logger(__name__)
+
+
+def build_referral_share_url(texts, referral_link: str | None) -> str | None:
+    """A t.me/share link that opens Telegram's chat picker with the invite ready to send."""
+    if not referral_link:
+        return None
+    share_text = texts.t(
+        'REFERRAL_SHARE_TEXT',
+        '🚀 Попробуй VPN, которым пользуюсь сам: быстрое подключение и серверы по всему миру.',
+    )
+    return 'https://t.me/share/url?' + urlencode({'url': referral_link, 'text': share_text}, quote_via=quote)
 
 
 async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
@@ -241,7 +253,7 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
     await edit_or_answer_photo(
         callback,
         referral_text,
-        get_referral_keyboard(db_user.language),
+        get_referral_keyboard(db_user.language, share_url=build_referral_share_url(texts, bot_referral_link)),
     )
     await callback.answer()
 
