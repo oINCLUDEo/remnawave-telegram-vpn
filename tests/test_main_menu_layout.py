@@ -170,9 +170,17 @@ def test_buttons_carry_one_icon_each():
     assert trial.text == 'Попробовать бесплатно'
     assert buy.icon_custom_emoji_id == '5427168083074628963'
     assert buy.text == 'Купить подписку'
-    # No custom emoji: the Unicode emoji is prefixed.
-    assert balance.icon_custom_emoji_id is None
-    assert balance.text.startswith('💰 Баланс: ')
+    assert balance.icon_custom_emoji_id == '5258204546391351475'
+    assert balance.text.startswith('Баланс: ')
+
+
+def test_icon_without_custom_emoji_prefixes_unicode():
+    from app.keyboards.icons import icon_button
+
+    button = icon_button('promocode', 'Промокод', callback_data='menu_promocode')
+
+    assert button.icon_custom_emoji_id is None
+    assert button.text == '🎫 Промокод'
 
 
 def test_consent_line_replaces_the_accept_screens(monkeypatch):

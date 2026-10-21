@@ -24,19 +24,23 @@ class Icon:
     custom_emoji_id: str | None = None
 
 
+# Custom emoji ids were checked by the owner with an emoji-id bot. Most come
+# from one pack (ids starting 5258...), so the menu icons share one style; keep
+# to that pack when adding icons. The Unicode emoji is the custom emoji's own
+# glyph, used where Telegram cannot draw it.
 ICONS: dict[str, Icon] = {
-    'connect': Icon('🚀'),
+    'connect': Icon('🪐', '5220067453006022598'),
     'subscription': Icon('💎', '5427168083074628963'),
     'buy': Icon('💎', '5427168083074628963'),
     'trial': Icon('🎁', '5203996991054432397'),
-    'renew': Icon('🔄', '5258419835922030550'),
+    'renew': Icon('🕔', '5258419835922030550'),
     'checkout': Icon('🛒'),
-    'balance': Icon('💰'),
-    'payment': Icon('💳'),
-    'referral': Icon('🤝'),
-    'support': Icon('💬'),
-    'cabinet': Icon('🌐'),
-    'info': Icon('ℹ️'),
+    'balance': Icon('💰', '5258204546391351475'),
+    'payment': Icon('💳', '5220048868682532055'),
+    'referral': Icon('👥', '5258513401784573443'),
+    'support': Icon('🤙', '5258337316715373336'),
+    'cabinet': Icon('👤', '5258011929993026890'),
+    'info': Icon('ℹ️', '5258503720928288433'),
     'language': Icon('🌍'),
     'promocode': Icon('🎫'),
     'contests': Icon('🎲'),
