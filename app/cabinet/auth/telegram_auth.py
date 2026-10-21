@@ -176,7 +176,8 @@ def _build_public_keys(jwks_data: dict[str, Any]) -> dict[str, Any]:
     public_keys: dict[str, Any] = {}
     for key_data in jwks_data.get('keys', []):
         kid = key_data.get('kid')
-        if kid:
+        # Telegram's JWKS also publishes EC/OKP keys; from_jwk raises on them, and we only verify RS256
+        if kid and key_data.get('kty') == 'RSA':
             public_keys[kid] = pyjwt.algorithms.RSAAlgorithm.from_jwk(key_data)
     return public_keys
 
