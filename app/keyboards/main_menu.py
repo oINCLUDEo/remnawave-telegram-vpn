@@ -5,30 +5,30 @@ The layout used to come from three competing sources: the cabinet's
 ``MENU_LAYOUT_ENABLED`` constructor, and a classic builder that put up to
 fourteen buttons in pairs. In cabinet mode most buttons also opened the web
 cabinet instead of the bot's own screens. The menu is now fixed here and does
-not read any of that configuration; the cabinet is reachable through its own
-"Личный кабинет" button.
+not read any of that configuration; the cabinet is reachable through the
+"Личный кабинет" button in the "Инфо" section.
 
-The menu has four rows. The first button is always the one action that matters
-most for the user's current state, so the state decides the rows:
+The menu has three rows. The first one holds the action that matters most
+for the user's current state, so the state decides the rows:
 
 ========  ==========================  ==========================  ==========================
 Row       NEW (no subscription)       TRIAL / ACTIVE              RENEW (expiring or ended)
 ========  ==========================  ==========================  ==========================
-1         Попробовать / Купить        Подключиться                Продлить
-2         Купить · Баланс             Моя подписка (1) · Баланс   Подключиться (2) · Баланс
-3         Пригласить · Поддержка      Пригласить · Поддержка      Моя подписка · Поддержка
-4         Кабинет · Инфо              Кабинет · Инфо              Пригласить · Инфо
-5         —                           —                           Кабинет
+1         Попробовать (or Купить)     Подключиться                Продлить · Подключиться (2)
+2         Купить · Баланс (3)         Моя подписка (1) · Баланс   Моя подписка · Баланс
+3         Пригласить · Поддержка · Инфо, in every state
 ========  ==========================  ==========================  ==========================
 
 (1) "Купить подписку" while on a trial. (2) Only while access still works.
+(3) Only "Баланс" when the trial is not available and "Купить" is row 1.
 
-A started checkout ("Продолжить оформление") goes above row 1. Only the first
-coloured button keeps its colour; see the colour rules in
-:mod:`app.keyboards.icons`.
+A started checkout ("Продолжить оформление") takes the place of "Купить" (or
+of "Продлить", or sits next to "Подключиться" for an active subscription)
+instead of adding a row. Only the first coloured button keeps its colour; see
+the colour rules in :mod:`app.keyboards.icons`.
 
-Language, promo code, rules, FAQ and contests live in the "Инфо" section.
-Buttons that are switched off (referrals, support, cabinet URL) simply drop
+The cabinet link, language, promo code, rules, FAQ and contests live in the
+"Инфо" section. Buttons that are switched off (referrals, support) simply drop
 out of their row; the rows themselves stay put so that banners made for each
 section keep matching.
 """
@@ -176,7 +176,6 @@ def build_main_menu_keyboard(
     def t(key: str, default: str) -> str:
         return texts.t(key, default)
 
-    buy = icon_button('buy', t('MAIN_MENU_BTN_BUY', 'Купить подписку'), callback_data='menu_buy')
     balance = icon_button(
         'balance',
         t('MAIN_MENU_BTN_BALANCE', 'Баланс: {balance}').format(balance=texts.format_price(balance_kopeks or 0)),
@@ -188,16 +187,27 @@ def build_main_menu_keyboard(
         callback_data='menu_subscription',
     )
     referral = (
-        icon_button('referral', t('MAIN_MENU_BTN_REFERRAL', 'Пригласить друга'), callback_data='menu_referrals')
+        icon_button('referral', t('MAIN_MENU_BTN_REFERRAL', 'Пригласить'), callback_data='menu_referrals')
         if settings.is_referral_program_enabled()
         else None
     )
     support = _support_button(texts) if _is_support_enabled() else None
-    cabinet_url = settings.get_cabinet_home_url()
-    cabinet = (
-        icon_button('cabinet', t('MAIN_MENU_BTN_CABINET', 'Личный кабинет'), url=cabinet_url) if cabinet_url else None
-    )
     info = icon_button('info', t('MAIN_MENU_BTN_INFO', 'Инфо'), callback_data='menu_info')
+
+    checkout = None
+    if show_resume_checkout or has_saved_cart:
+        # A purchase the user already started stands in for "Купить"/"Продлить".
+        checkout = icon_button(
+            'checkout',
+            t('MAIN_MENU_BTN_CHECKOUT', 'Продолжить оформление'),
+            callback_data='return_to_saved_cart' if has_saved_cart else 'subscription_resume_checkout',
+            style=STYLE_PAY,
+        )
+
+    def buy(style: str | None = None) -> InlineKeyboardButton:
+        return checkout or icon_button(
+            'buy', t('MAIN_MENU_BTN_BUY', 'Купить подписку'), callback_data='menu_buy', style=style
+        )
 
     rows: list[list[InlineKeyboardButton | None]] = []
 
@@ -213,57 +223,31 @@ def build_main_menu_keyboard(
                     )
                 ]
             )
-            rows.append([buy, balance])
+            rows.append([buy(), balance])
         else:
-            rows.append(
-                [
-                    icon_button(
-                        'buy', t('MAIN_MENU_BTN_BUY', 'Купить подписку'), callback_data='menu_buy', style=STYLE_PAY
-                    )
-                ]
-            )
+            rows.append([buy(STYLE_PAY)])
             rows.append([balance])
-        rows.append([referral, support])
-        rows.append([cabinet, info])
 
-    elif state in (MenuState.TRIAL, MenuState.ACTIVE):
+    elif state == MenuState.TRIAL:
         rows.append([connect_button(texts, subscription)])
-        rows.append([buy if state == MenuState.TRIAL else my_subscription, balance])
-        rows.append([referral, support])
-        rows.append([cabinet, info])
+        rows.append([buy(), balance])
+
+    elif state == MenuState.ACTIVE:
+        rows.append([connect_button(texts, subscription), checkout])
+        rows.append([my_subscription, balance])
 
     else:  # MenuState.RENEW
-        rows.append(
-            [
-                icon_button(
-                    'renew',
-                    t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
-                    callback_data='subscription_extend',
-                    style=STYLE_PAY,
-                )
-            ]
+        renew = checkout or icon_button(
+            'renew',
+            t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
+            callback_data='subscription_extend',
+            style=STYLE_PAY,
         )
         still_works = getattr(subscription, 'is_active', False)
-        rows.append([connect_button(texts, subscription) if still_works else None, balance])
-        rows.append([my_subscription, support])
-        rows.append([referral, info])
-        rows.append([cabinet])
+        rows.append([renew, connect_button(texts, subscription) if still_works else None])
+        rows.append([my_subscription, balance])
 
-    if show_resume_checkout or has_saved_cart:
-        # A purchase the user already started is the most likely next step,
-        # so it goes on top and takes the screen's accent colour.
-        resume_callback = 'return_to_saved_cart' if has_saved_cart else 'subscription_resume_checkout'
-        rows.insert(
-            0,
-            [
-                icon_button(
-                    'checkout',
-                    t('MAIN_MENU_BTN_CHECKOUT', 'Продолжить оформление'),
-                    callback_data=resume_callback,
-                    style=STYLE_PAY,
-                )
-            ],
-        )
+    rows.append([referral, support, info])
 
     # Extra links an admin added through the bot's own admin panel.
     for button in custom_buttons or []:

@@ -60,8 +60,7 @@ def test_new_user_sees_trial_first():
     assert rows == [
         ['menu_trial'],
         ['menu_buy', 'menu_balance'],
-        ['menu_referrals', 'menu_support'],
-        ['https://cabinet.example.com', 'menu_info'],
+        ['menu_referrals', 'menu_support', 'menu_info'],
     ]
 
 
@@ -78,8 +77,7 @@ def test_active_user_sees_connect_first():
     assert rows == [
         ['https://sub.example.com/abc'],
         ['menu_subscription', 'menu_balance'],
-        ['menu_referrals', 'menu_support'],
-        ['https://cabinet.example.com', 'menu_info'],
+        ['menu_referrals', 'menu_support', 'menu_info'],
     ]
 
 
@@ -93,16 +91,15 @@ def test_trial_user_is_offered_to_buy():
 def test_expiring_user_sees_renew_first_and_can_still_connect():
     rows = _rows(build_main_menu_keyboard('ru', subscription=_sub(days_left=2)))
 
-    assert rows[0] == ['subscription_extend']
-    assert rows[1] == ['https://sub.example.com/abc', 'menu_balance']
-    assert rows[2] == ['menu_subscription', 'menu_support']
+    assert rows[0] == ['subscription_extend', 'https://sub.example.com/abc']
+    assert rows[1] == ['menu_subscription', 'menu_balance']
 
 
 def test_expired_user_has_no_connect_button():
     rows = _rows(build_main_menu_keyboard('ru', subscription=_sub('expired', days_left=0, is_active=False)))
 
     assert rows[0] == ['subscription_extend']
-    assert rows[1] == ['menu_balance']
+    assert rows[1] == ['menu_subscription', 'menu_balance']
 
 
 def test_secondary_items_are_not_on_the_main_menu():
@@ -113,21 +110,20 @@ def test_secondary_items_are_not_on_the_main_menu():
 
 def test_disabled_sections_drop_out_without_breaking_rows(monkeypatch):
     monkeypatch.setattr(type(settings), 'is_referral_program_enabled', lambda self: False)
-    monkeypatch.setattr(settings, 'CABINET_URL', '')
 
     rows = _rows(build_main_menu_keyboard('ru', subscription=_sub()))
 
-    assert rows[2] == ['menu_support']
-    assert rows[3] == ['menu_info']
+    assert rows[2] == ['menu_support', 'menu_info']
 
 
-def test_saved_cart_goes_on_top_and_takes_the_accent():
-    markup = build_main_menu_keyboard('ru', subscription=None, has_saved_cart=True)
+def test_saved_cart_takes_the_place_of_buy():
+    rows = _rows(build_main_menu_keyboard('ru', subscription=None, has_saved_cart=True))
 
-    assert _rows(markup)[0] == ['return_to_saved_cart']
-    assert markup.inline_keyboard[0][0].style == 'success'
-    # The trial button below loses its colour: one accent per screen.
-    assert markup.inline_keyboard[1][0].style is None
+    assert rows == [
+        ['menu_trial'],
+        ['return_to_saved_cart', 'menu_balance'],
+        ['menu_referrals', 'menu_support', 'menu_info'],
+    ]
 
 
 @pytest.mark.parametrize(
