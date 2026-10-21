@@ -16,7 +16,6 @@ from app.utils.pricing_utils import (
     format_period_description,
 )
 from app.utils.subscription_utils import (
-    get_display_subscription_link,
     get_happ_cryptolink_redirect_link,
 )
 
@@ -575,10 +574,33 @@ def get_insufficient_balance_keyboard(
 def get_subscription_keyboard(
     language: str = DEFAULT_LANGUAGE, has_subscription: bool = False, is_trial: bool = False, subscription=None
 ) -> InlineKeyboardMarkup:
-    from app.config import settings
+    """The "Моя подписка" screen: at most four rows.
+
+    ========  =====================================================
+    Row       Buttons
+    ========  =====================================================
+    1         Подключиться (+ "Скачать Happ" row when enabled)
+    2         Продлить · Сменить тариф  (daily: Пауза/Возобновить ·
+              Сменить тариф; trial: Купить подписку)
+    3         Устройства · Настройки    (paid only; autopay and
+              buying traffic live in Настройки)
+    4         Назад
+    ========  =====================================================
+
+    The accent colour goes to "Продлить" when the subscription is about to
+    end and to "Подключиться" otherwise; see :mod:`app.keyboards.icons`.
+    """
+    from app.keyboards.icons import STYLE_PAY, icon_button
+    from app.keyboards.main_menu import (
+        MenuState,
+        _loaded_tariff,
+        connect_button,
+        keep_single_accent,
+        resolve_menu_state,
+    )
 
     texts = get_texts(language)
-    keyboard = []
+    keyboard: list[list[InlineKeyboardButton]] = []
 
     # Sub ID suffix for multi-tariff callback routing
     _sub_suffix = (
@@ -588,78 +610,10 @@ def get_subscription_keyboard(
     )
 
     if has_subscription:
-        subscription_link = get_display_subscription_link(subscription) if subscription else None
-        if subscription_link:
-            connect_mode = settings.CONNECT_BUTTON_MODE
-
-            if connect_mode == 'miniapp_subscription':
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                            web_app=types.WebAppInfo(url=subscription_link),
-                        )
-                    ]
-                )
-            elif connect_mode == 'miniapp_custom':
-                if settings.MINIAPP_CUSTOM_URL:
-                    keyboard.append(
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                                web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
-                            )
-                        ]
-                    )
-                else:
-                    keyboard.append(
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                                callback_data=f'subscription_connect{_sub_suffix}',
-                            )
-                        ]
-                    )
-            elif connect_mode == 'link':
-                keyboard.append(
-                    [InlineKeyboardButton(text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'), url=subscription_link)]
-                )
-            elif connect_mode == 'happ_cryptolink':
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                            callback_data=f'open_subscription_link{_sub_suffix}',
-                        )
-                    ]
-                )
-            else:
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                            callback_data=f'subscription_connect{_sub_suffix}',
-                        )
-                    ]
-                )
-        elif settings.CONNECT_BUTTON_MODE == 'miniapp_custom':
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                        web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
-                    )
-                ]
-            )
-        else:
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                        callback_data=f'subscription_connect{_sub_suffix}',
-                    )
-                ]
-            )
+        needs_renewal = subscription is not None and resolve_menu_state(subscription) == MenuState.RENEW
+        keyboard.append(
+            [connect_button(texts, subscription, sub_suffix=_sub_suffix, style=None if needs_renewal else 'primary')]
+        )
 
         happ_row = get_happ_download_button_row(texts)
         if happ_row:
@@ -667,15 +621,20 @@ def get_subscription_keyboard(
 
         if is_trial:
             keyboard.append(
-                [InlineKeyboardButton(text=texts.MENU_BUY_SUBSCRIPTION, callback_data='subscription_upgrade')]
+                [
+                    icon_button(
+                        'buy',
+                        texts.t('MAIN_MENU_BTN_BUY', 'Купить подписку'),
+                        callback_data='subscription_upgrade',
+                        style=STYLE_PAY,
+                    )
+                ]
             )
         else:
-            # Проверяем, является ли тариф суточным
-            tariff = getattr(subscription, 'tariff', None) if subscription else None
+            tariff = _loaded_tariff(subscription) if subscription else None
             is_daily_tariff = tariff and getattr(tariff, 'is_daily', False)
 
             if is_daily_tariff:
-                # Для суточного тарифа: проверяем статус подписки
                 from app.database.models import SubscriptionStatus
 
                 sub_status = getattr(subscription, 'status', None)
@@ -685,64 +644,90 @@ def get_subscription_keyboard(
                     SubscriptionStatus.EXPIRED.value,
                     SubscriptionStatus.LIMITED.value,
                 )
-
                 if is_inactive or is_paused:
-                    # Подписка остановлена (системой или пользователем) — показываем «Возобновить»
-                    pause_text = texts.t('RESUME_DAILY_BUTTON', '▶️ Возобновить подписку')
+                    # Stopped by the system or by the user: offer to resume.
+                    first = icon_button(
+                        'resume',
+                        texts.t('SUBSCRIPTION_BTN_RESUME', 'Возобновить'),
+                        callback_data='toggle_daily_subscription_pause',
+                        style=STYLE_PAY,
+                    )
                 else:
-                    pause_text = texts.t('PAUSE_DAILY_BUTTON', '⏸️ Приостановить подписку')
-                keyboard.append(
-                    [InlineKeyboardButton(text=pause_text, callback_data='toggle_daily_subscription_pause')]
-                )
+                    first = icon_button(
+                        'pause',
+                        texts.t('SUBSCRIPTION_BTN_PAUSE', 'Пауза'),
+                        callback_data='toggle_daily_subscription_pause',
+                    )
             else:
-                # Для обычного тарифа: [Продлить] [Автоплатеж]
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(text=texts.MENU_EXTEND_SUBSCRIPTION, callback_data='subscription_extend'),
-                        InlineKeyboardButton(
-                            text=texts.t('AUTOPAY_BUTTON', '💳 Автоплатеж'),
-                            callback_data='subscription_autopay',
-                        ),
-                    ]
+                first = icon_button(
+                    'renew',
+                    texts.t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
+                    callback_data='subscription_extend',
+                    style=STYLE_PAY if needs_renewal else None,
                 )
 
-            # Ряд: [Настройки] [Тариф] (если режим тарифов)
-            settings_row = [
-                InlineKeyboardButton(
-                    text=texts.t('SUBSCRIPTION_SETTINGS_BUTTON', '⚙️ Настройки'),
-                    callback_data='subscription_settings',
-                )
-            ]
+            row = [first]
             if settings.is_tariffs_mode() and subscription:
-                # Для суточных тарифов переходим на список тарифов, для обычных - мгновенное переключение
-                tariff_callback = 'tariff_switch' if is_daily_tariff else 'instant_switch'
-                settings_row.append(
-                    InlineKeyboardButton(
-                        text=texts.t('CHANGE_TARIFF_BUTTON', '📦 Тариф'), callback_data=tariff_callback
+                # Daily tariffs go through the tariff list, periodic ones switch instantly.
+                row.append(
+                    icon_button(
+                        'tariff',
+                        texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф'),
+                        callback_data='tariff_switch' if is_daily_tariff else 'instant_switch',
                     )
                 )
-            keyboard.append(settings_row)
+            keyboard.append(row)
 
-            # Кнопка докупки трафика для платных подписок
-            # В режиме тарифов проверяем can_topup_traffic() у тарифа, в классическом - глобальные настройки
-            show_traffic_topup = False
-            if subscription and (subscription.traffic_limit_gb or 0) > 0:
-                if settings.is_tariffs_mode() and tariff:
-                    show_traffic_topup = tariff.can_topup_traffic()
-                elif settings.is_traffic_topup_enabled() and not settings.is_traffic_topup_blocked():
-                    show_traffic_topup = True
-
-            if show_traffic_topup:
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('BUY_TRAFFIC_BUTTON', '📈 Докупить трафик'), callback_data='buy_traffic'
-                        )
-                    ]
-                )
+            keyboard.append(
+                [
+                    icon_button(
+                        'devices',
+                        texts.t('SUBSCRIPTION_BTN_DEVICES', 'Устройства'),
+                        callback_data='subscription_manage_devices',
+                    ),
+                    icon_button(
+                        'settings',
+                        texts.t('SUBSCRIPTION_BTN_SETTINGS', 'Настройки'),
+                        callback_data='subscription_settings',
+                    ),
+                ]
+            )
 
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
 
+    return InlineKeyboardMarkup(inline_keyboard=keep_single_accent(keyboard))
+
+
+def get_no_subscription_keyboard(
+    language: str = DEFAULT_LANGUAGE, *, trial_available: bool = False
+) -> InlineKeyboardMarkup:
+    """ "Моя подписка" without a subscription: the way to get one, not a dead end."""
+    from app.keyboards.icons import STYLE_PAY, icon_button
+
+    texts = get_texts(language)
+    keyboard: list[list[InlineKeyboardButton]] = []
+    if trial_available:
+        keyboard.append(
+            [
+                icon_button(
+                    'trial',
+                    texts.t('MAIN_MENU_BTN_TRIAL', 'Попробовать бесплатно'),
+                    callback_data='menu_trial',
+                    style=STYLE_PAY,
+                )
+            ]
+        )
+    keyboard.append(
+        [
+            icon_button(
+                'buy',
+                texts.t('MAIN_MENU_BTN_BUY', 'Купить подписку'),
+                callback_data='menu_buy',
+                style=None if trial_available else STYLE_PAY,
+            )
+        ]
+    )
+    keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -1031,24 +1016,37 @@ def get_subscription_confirm_keyboard(language: str = DEFAULT_LANGUAGE) -> Inlin
 
 
 def get_balance_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
+    """ "Баланс": topping up is the main action, history and saved cards share a row."""
+    from app.keyboards.icons import STYLE_PAY, icon_button
+
     texts = get_texts(language)
+
+    secondary = [
+        InlineKeyboardButton(
+            text=texts.t('BALANCE_BTN_HISTORY', '📊 История'),
+            callback_data='balance_history',
+        )
+    ]
+    if settings.YOOKASSA_RECURRENT_ENABLED:
+        secondary.append(
+            InlineKeyboardButton(
+                text=texts.t('BALANCE_BTN_CARDS', '💳 Карты'),
+                callback_data='saved_cards_list',
+            )
+        )
 
     keyboard = [
         [
-            InlineKeyboardButton(text=texts.BALANCE_HISTORY, callback_data='balance_history'),
-            InlineKeyboardButton(text=texts.BALANCE_TOP_UP, callback_data='balance_topup'),
+            icon_button(
+                'payment',
+                texts.t('BALANCE_BTN_TOPUP', 'Пополнить'),
+                callback_data='balance_topup',
+                style=STYLE_PAY,
+            )
         ],
+        secondary,
+        [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
     ]
-    if settings.YOOKASSA_RECURRENT_ENABLED:
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.t('SAVED_CARDS_BUTTON', '💳 Привязанные карты'),
-                    callback_data='saved_cards_list',
-                )
-            ]
-        )
-    keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -2375,8 +2373,37 @@ def get_updated_subscription_settings_keyboard(
 
     # Если подписка на тарифе - отключаем страны, модем, трафик
     has_tariff = tariff is not None
+    is_daily_tariff = has_tariff and getattr(tariff, 'is_daily', False)
 
     # Для суточных тарифов кнопка паузы теперь в главном меню подписки
+
+    # Autopay and buying traffic moved here from the subscription screen to
+    # keep that screen to four rows.
+    if not is_daily_tariff:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('AUTOPAY_BUTTON', '💳 Автоплатеж'),
+                    callback_data='subscription_autopay',
+                )
+            ]
+        )
+
+    # In tariff mode the tariff decides whether traffic can be bought, otherwise the global settings do.
+    show_traffic_topup = False
+    if subscription and (subscription.traffic_limit_gb or 0) > 0:
+        if settings.is_tariffs_mode() and has_tariff:
+            show_traffic_topup = tariff.can_topup_traffic()
+        elif settings.is_traffic_topup_enabled() and not settings.is_traffic_topup_blocked():
+            show_traffic_topup = True
+    if show_traffic_topup:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('BUY_TRAFFIC_BUTTON', '📈 Докупить трафик'), callback_data='buy_traffic'
+                )
+            ]
+        )
 
     if show_countries_management and not has_tariff:
         keyboard.append(
@@ -2428,14 +2455,7 @@ def get_updated_subscription_settings_keyboard(
             ]
         )
 
-    keyboard.append(
-        [
-            InlineKeyboardButton(
-                text=texts.t('MANAGE_DEVICES_BUTTON', '🔧 Управление устройствами'),
-                callback_data='subscription_manage_devices',
-            )
-        ]
-    )
+    # "Устройства" (subscription_manage_devices) is on the subscription screen itself.
 
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')])
 

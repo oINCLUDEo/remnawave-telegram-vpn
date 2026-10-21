@@ -41,6 +41,16 @@ ICONS: dict[str, Icon] = {
     'support': Icon('🤙', '5258337316715373336'),
     'cabinet': Icon('👤', '5258011929993026890'),
     'info': Icon('ℹ️', '5258503720928288433'),
+    'tariff': Icon('📦', '5854908544712707500'),
+    'devices': Icon('📱'),
+    'settings': Icon('⚙️'),
+    'autopay': Icon('💳', '5220048868682532055'),
+    'traffic': Icon('📈'),
+    'pause': Icon('⏸️'),
+    'resume': Icon('▶️'),
+    # Statuses and values in message text.
+    'expired': Icon('🚫', '5240241223632954241'),
+    'date': Icon('🗓', '5274055917766202507'),
     'language': Icon('🌍'),
     'promocode': Icon('🎫'),
     'contests': Icon('🎲'),
@@ -66,6 +76,23 @@ ICONS: dict[str, Icon] = {
 STYLE_PAY = 'success'
 STYLE_USE = 'primary'
 STYLE_DANGER = 'danger'
+
+
+def tg_emoji(icon_key: str) -> str:
+    """The icon for message text (HTML): the custom emoji when there is one."""
+    icon = ICONS[icon_key]
+    if icon.custom_emoji_id:
+        return f'<tg-emoji emoji-id="{icon.custom_emoji_id}">{icon.emoji}</tg-emoji>'
+    return icon.emoji
+
+
+def screen_title(icon_key: str, title: str) -> str:
+    """The first line of a screen: the section's icon and its name in bold.
+
+    A screen opened from a button starts with that button's icon, so the user
+    sees where they landed.
+    """
+    return f'{tg_emoji(icon_key)} <b>{title}</b>'
 
 
 def icon_label(icon_key: str, text: str) -> str:

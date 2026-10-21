@@ -18,6 +18,7 @@ from app.database.crud.subscription import (
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.models import PaymentMethod, Subscription, SubscriptionStatus, TransactionType, User
+from app.keyboards.icons import screen_title, tg_emoji
 from app.keyboards.inline import (
     get_back_keyboard,
     get_countries_keyboard,
@@ -203,7 +204,20 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     subscription = db_user.subscription
 
     if not subscription:
-        await callback.message.edit_text(texts.SUBSCRIPTION_NONE, reply_markup=get_back_keyboard(db_user.language))
+        from app.keyboards.inline import get_no_subscription_keyboard
+        from app.keyboards.main_menu import is_trial_available
+
+        trial_available = is_trial_available(
+            None,
+            has_had_paid_subscription=bool(db_user.has_had_paid_subscription),
+            auth_type=getattr(db_user, 'auth_type', None),
+        )
+        await callback.message.edit_text(
+            screen_title('subscription', texts.t('MAIN_MENU_BTN_SUBSCRIPTION', 'Моя подписка'))
+            + '\n\n'
+            + texts.SUBSCRIPTION_NONE,
+            reply_markup=get_no_subscription_keyboard(db_user.language, trial_available=trial_available),
+        )
         await callback.answer()
         return
 
@@ -237,16 +251,16 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     elif subscription.status == 'expired' or subscription.end_date <= current_time:
         actual_status = 'expired'
         status_display = texts.t('SUBSCRIPTION_STATUS_EXPIRED', 'Истекла')
-        status_emoji = '🔴'
+        status_emoji = tg_emoji('expired')
     elif subscription.status == 'active' and subscription.end_date > current_time:
         if subscription.is_trial:
             actual_status = 'trial_active'
             status_display = texts.t('SUBSCRIPTION_STATUS_TRIAL', 'Тестовая')
-            status_emoji = '🎯'
+            status_emoji = tg_emoji('trial')
         else:
             actual_status = 'paid_active'
             status_display = texts.t('SUBSCRIPTION_STATUS_ACTIVE', 'Активна')
-            status_emoji = '💎'
+            status_emoji = tg_emoji('subscription')
     else:
         actual_status = 'unknown'
         status_display = texts.t('SUBSCRIPTION_STATUS_UNKNOWN', 'Неизвестно')
@@ -355,14 +369,14 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
                 subscription.tariff = tariff
 
                 # Формируем блок информации о тарифе
+                # Traffic and devices are already in the details block below,
+                # so the tariff adds only its name and, for daily tariffs, the charge.
                 is_daily = getattr(tariff, 'is_daily', False)
-                tariff_type_str = '🔄 Суточный' if is_daily else '📅 Периодный'
 
                 tariff_info_lines = [
-                    f'<b>📦 {html.escape(tariff.name)}</b>',
-                    f'Тип: {tariff_type_str}',
-                    f'Трафик: {tariff.traffic_limit_gb} ГБ' if tariff.traffic_limit_gb > 0 else 'Трафик: ∞ Безлимит',
-                    f'Устройства: {tariff.device_limit}',
+                    texts.t('SUBSCRIPTION_OVERVIEW_TARIFF_LINE', '{icon} Тариф: <b>{name}</b>').format(
+                        icon=tg_emoji('tariff'), name=html.escape(tariff.name)
+                    ),
                 ]
 
                 if is_daily:
@@ -383,15 +397,20 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
                     else:
                         daily_kopeks = raw_daily_kopeks
                     daily_price = daily_kopeks / 100
-                    tariff_info_lines.append(f'Цена: {daily_price:.2f} ₽/день')
+                    tariff_info_lines.append(
+                        texts.t('SUBSCRIPTION_OVERVIEW_DAILY_PRICE', '💰 Цена: <b>{price} ₽/день</b>').format(
+                            price=f'{daily_price:.2f}'
+                        )
+                    )
 
                     # Прогресс-бар до следующего списания
                     last_charge = getattr(subscription, 'last_daily_charge_at', None)
                     is_paused = getattr(subscription, 'is_daily_paused', False)
 
                     if is_paused:
-                        tariff_info_lines.append('')
-                        tariff_info_lines.append('⏸️ <b>Подписка приостановлена</b>')
+                        tariff_info_lines.append(
+                            texts.t('SUBSCRIPTION_OVERVIEW_DAILY_PAUSED', '⏸️ <b>Приостановлена</b>')
+                        )
                         # Показываем оставшееся время даже при паузе
                         if last_charge:
                             next_charge = last_charge + timedelta(hours=24)
@@ -400,8 +419,15 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
                                 time_until = next_charge - now
                                 hours_left = time_until.seconds // 3600
                                 minutes_left = (time_until.seconds % 3600) // 60
-                                tariff_info_lines.append(f'⏳ Осталось: {hours_left}ч {minutes_left}мин')
-                                tariff_info_lines.append('💤 Списание приостановлено')
+                                tariff_info_lines.append(
+                                    texts.t(
+                                        'SUBSCRIPTION_OVERVIEW_DAILY_LEFT',
+                                        '⏳ Осталось: <b>{hours} ч {minutes} мин</b>',
+                                    ).format(hours=hours_left, minutes=minutes_left)
+                                )
+                                tariff_info_lines.append(
+                                    texts.t('SUBSCRIPTION_OVERVIEW_DAILY_NO_CHARGE', '<i>Списание приостановлено</i>')
+                                )
                     elif last_charge:
                         next_charge = last_charge + timedelta(hours=24)
                         now = datetime.now(UTC)
@@ -422,14 +448,19 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
                             empty = bar_length - filled
                             progress_bar = '▓' * filled + '░' * empty
 
-                            tariff_info_lines.append('')
-                            tariff_info_lines.append(f'⏳ До списания: {hours_left}ч {minutes_left}мин')
+                            tariff_info_lines.append(
+                                texts.t(
+                                    'SUBSCRIPTION_OVERVIEW_DAILY_NEXT_CHARGE',
+                                    '⏳ До списания: <b>{hours} ч {minutes} мин</b>',
+                                ).format(hours=hours_left, minutes=minutes_left)
+                            )
                             tariff_info_lines.append(f'[{progress_bar}] {percent:.0f}%')
                     else:
-                        tariff_info_lines.append('')
-                        tariff_info_lines.append('⏳ Первое списание скоро')
+                        tariff_info_lines.append(
+                            texts.t('SUBSCRIPTION_OVERVIEW_DAILY_FIRST_CHARGE', '<i>Первое списание скоро</i>')
+                        )
 
-                tariff_info_block = '\n<blockquote expandable>' + '\n'.join(tariff_info_lines) + '</blockquote>'
+                tariff_info_block = '\n' + '\n'.join(tariff_info_lines)
 
         except Exception as e:
             logger.warning('Ошибка получения тарифа', error=e, exc_info=True)
@@ -437,45 +468,46 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     # Определяем, суточный ли тариф для выбора шаблона
     is_daily_tariff = tariff and getattr(tariff, 'is_daily', False)
 
+    # Layout (see the text rules in app/keyboards/icons.py):
+    #   💎 Моя подписка            <- the section's icon and name
+    #   <status> · <until when>    <- key values in bold
+    #   📦 Тариф                   <- tariff mode only
+    #   <blockquote> details </blockquote>
+    # The user's name and balance are left out: the balance is on the main menu button.
     if is_daily_tariff:
-        # Для суточных тарифов другой шаблон без "Действует до" и "Осталось"
         message_template = texts.t(
             'SUBSCRIPTION_DAILY_OVERVIEW_TEMPLATE',
-            """👤 {full_name}
-💰 Баланс: {balance}
-📱 Подписка: {status_emoji} {status_display}{warning}{tariff_info_block}
-
-📱 Информация о подписке
-🎭 Тип: {subscription_type}
-📈 Трафик: {traffic}
-🌍 Серверы: {servers}
-📱 Устройства: {devices_used} / {device_limit}""",
+            '{title}\n\n{status_emoji} <b>{status_display}</b>{warning}{tariff_info_block}\n\n'
+            '<blockquote>📈 Трафик: <b>{traffic}</b>\n🌍 Серверы: <b>{servers}</b>{devices_line}</blockquote>',
         )
     else:
         message_template = texts.t(
             'SUBSCRIPTION_OVERVIEW_TEMPLATE',
-            """👤 {full_name}
-💰 Баланс: {balance}
-📱 Подписка: {status_emoji} {status_display}{warning}{tariff_info_block}
-
-📱 Информация о подписке
-🎭 Тип: {subscription_type}
-📅 Действует до: {end_date}
-⏰ Осталось: {time_left}
-📈 Трафик: {traffic}
-🌍 Серверы: {servers}
-📱 Устройства: {devices_used} / {device_limit}""",
+            '{title}\n\n{status_emoji} <b>{status_display}</b>{warning}\n'
+            '{date_icon} До <b>{end_date}</b>, осталось <b>{time_left}</b>{tariff_info_block}\n\n'
+            '<blockquote>📈 Трафик: <b>{traffic}</b>\n🌍 Серверы: <b>{servers}</b>{devices_line}</blockquote>',
         )
 
     if not show_devices:
+        # Templates customised before {devices_line} existed carry the line inline.
         message_template = message_template.replace(
             '\n📱 Устройства: {devices_used} / {device_limit}',
             '',
         )
+    devices_line = (
+        texts.t('SUBSCRIPTION_OVERVIEW_DEVICES_LINE', '\n📱 Устройства: <b>{used} / {limit}</b>').format(
+            used=devices_used_str, limit=subscription.device_limit
+        )
+        if show_devices
+        else ''
+    )
 
     device_limit_display = str(subscription.device_limit)
 
     message = message_template.format(
+        title=screen_title('subscription', texts.t('MAIN_MENU_BTN_SUBSCRIPTION', 'Моя подписка')),
+        date_icon=tg_emoji('date'),
+        devices_line=devices_line,
         full_name=html.escape(db_user.full_name or ''),
         balance=settings.format_price(db_user.balance_kopeks),
         status_emoji=status_emoji,

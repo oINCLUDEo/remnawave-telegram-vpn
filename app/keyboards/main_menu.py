@@ -110,24 +110,30 @@ def _is_support_enabled() -> bool:
         return settings.SUPPORT_MENU_ENABLED
 
 
-def _connect_button(texts, subscription) -> InlineKeyboardButton:
-    """ "Подключиться", honouring ``CONNECT_BUTTON_MODE`` like the subscription screen does."""
+def connect_button(texts, subscription, *, sub_suffix: str = '', style: str | None = STYLE_USE) -> InlineKeyboardButton:
+    """ "Подключиться", honouring ``CONNECT_BUTTON_MODE``.
+
+    The main menu and the subscription screen both use it, so the button
+    opens the same thing from either place. *sub_suffix* is ``':<id>'`` in
+    multi-tariff mode, where the callbacks name the subscription.
+    """
     label = texts.t('MAIN_MENU_BTN_CONNECT', 'Подключиться')
-    fallback = icon_button('connect', label, callback_data='subscription_connect', style=STYLE_USE)
 
     mode = settings.CONNECT_BUTTON_MODE
-    link = get_display_subscription_link(subscription)
+    link = get_display_subscription_link(subscription) if subscription else None
 
     if mode == 'miniapp_subscription' and link:
-        return icon_button('connect', label, web_app_url=link, style=STYLE_USE)
+        return icon_button('connect', label, web_app_url=link, style=style)
     if mode == 'miniapp_custom' and settings.MINIAPP_CUSTOM_URL:
-        return icon_button('connect', label, web_app_url=settings.MINIAPP_CUSTOM_URL, style=STYLE_USE)
+        return icon_button('connect', label, web_app_url=settings.MINIAPP_CUSTOM_URL, style=style)
     if mode == 'link' and link:
-        return icon_button('connect', label, url=link, style=STYLE_USE)
+        return icon_button('connect', label, url=link, style=style)
     if mode == 'happ_cryptolink' and link:
-        callback = 'subscription_connect' if settings.is_multi_tariff_enabled() else 'open_subscription_link'
-        return icon_button('connect', label, callback_data=callback, style=STYLE_USE)
-    return fallback
+        if settings.is_multi_tariff_enabled() and not sub_suffix:
+            # Without a subscription id the bot first asks which one to open.
+            return icon_button('connect', label, callback_data='subscription_connect', style=style)
+        return icon_button('connect', label, callback_data=f'open_subscription_link{sub_suffix}', style=style)
+    return icon_button('connect', label, callback_data=f'subscription_connect{sub_suffix}', style=style)
 
 
 def build_main_menu_keyboard(
@@ -204,7 +210,7 @@ def build_main_menu_keyboard(
         rows.append([cabinet, info])
 
     elif state in (MenuState.TRIAL, MenuState.ACTIVE):
-        rows.append([_connect_button(texts, subscription)])
+        rows.append([connect_button(texts, subscription)])
         rows.append([buy if state == MenuState.TRIAL else my_subscription, balance])
         rows.append([referral, support])
         rows.append([cabinet, info])
@@ -221,7 +227,7 @@ def build_main_menu_keyboard(
             ]
         )
         still_works = getattr(subscription, 'is_active', False)
-        rows.append([_connect_button(texts, subscription) if still_works else None, balance])
+        rows.append([connect_button(texts, subscription) if still_works else None, balance])
         rows.append([my_subscription, support])
         rows.append([referral, info])
         rows.append([cabinet])
@@ -283,6 +289,7 @@ __all__ = [
     'RENEW_WARNING_DAYS',
     'MenuState',
     'build_main_menu_keyboard',
+    'connect_button',
     'is_trial_available',
     'keep_single_accent',
     'resolve_menu_state',
