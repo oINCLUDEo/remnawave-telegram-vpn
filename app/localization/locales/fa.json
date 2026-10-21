@@ -951,7 +951,7 @@
   "AUTO_PURCHASE_SUBSCRIPTION_SUCCESS": "✅ اشتراک {period} پس از شارژ خودکار فعال شد.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ اشتراک خودکار {period} تمدید شد.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ انقضای جدید: {date}.",
-  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "به بخش «اشتراک من» بروید برای لینک و راهنما.",
+  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "برای راه‌اندازی VPN روی «اتصال» بزنید.",
   "BALANCE_TOP_UP": "💳 شارژ",
   "BLOCK_BY_TIME": "⏳ مسدود موقت",
   "BLOCK_FOREVER": "🚫 مسدود کردن",
@@ -1811,5 +1811,8 @@
   "SUBSCRIPTION_BTN_RESUME": "ادامه",
   "BALANCE_BTN_TOPUP": "شارژ",
   "BALANCE_BTN_HISTORY": "📊 تاریخچه",
-  "BALANCE_BTN_CARDS": "💳 کارت‌ها"
+  "BALANCE_BTN_CARDS": "💳 کارت‌ها",
+  "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 روش پرداخت را انتخاب کنید، مبلغ {amount} از قبل وارد شده است.",
+  "TARIFF_TOPUP_BALANCE_BUTTON": "💳 شارژ موجودی",
+  "PURCHASE_SUCCESS_CONNECT_HINT": "برای راه‌اندازی VPN روی «اتصال» بزنید."
 }

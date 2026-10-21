@@ -25,6 +25,7 @@ from app.database.crud.user import subtract_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import Tariff, Transaction, TransactionType, User
 from app.keyboards.common import back_button
+from app.keyboards.icons import tg_emoji
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.subscription_service import SubscriptionService
@@ -285,19 +286,88 @@ def get_tariff_confirm_keyboard(
     )
 
 
+def get_purchase_success_keyboard(texts, subscription) -> InlineKeyboardMarkup:
+    """After a purchase, renewal or switch: connecting is the next step, so it comes first.
+
+    The success screens used to say "go to Подписка to connect" and offer
+    only "Моя подписка", one more screen before the user could connect.
+    """
+    from app.keyboards.icons import icon_button
+    from app.keyboards.main_menu import connect_button
+
+    multi = settings.is_multi_tariff_enabled() and subscription is not None
+    sub_suffix = f':{subscription.id}' if multi else ''
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [connect_button(texts, subscription, sub_suffix=sub_suffix)],
+            [
+                icon_button(
+                    'subscription',
+                    texts.t('MAIN_MENU_BTN_SUBSCRIPTION', 'Моя подписка'),
+                    callback_data=f'sm:{subscription.id}' if multi else 'menu_subscription',
+                ),
+                InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu'),
+            ],
+        ]
+    )
+
+
+def get_shortfall_keyboard(db_user: User | None, missing_kopeks: int, back_callback: str) -> InlineKeyboardMarkup:
+    """The "Недостаточно средств" screen's buttons: payment methods for the shortfall.
+
+    The screen used to have a single "Пополнить баланс" button that opened the
+    payment methods on a screen of its own. The methods are now on the
+    shortfall screen itself, each with the missing amount filled in
+    (``topup_amount|<method>|<kopeks>``), so paying takes one tap less. The
+    saved cart still completes the purchase after the payment.
+    """
+    language = getattr(db_user, 'language', None) or settings.DEFAULT_LANGUAGE
+    texts = get_texts(language)
+    back = InlineKeyboardButton(text=texts.BACK, callback_data=back_callback)
+
+    if db_user is None or missing_kopeks <= 0 or getattr(db_user, 'restriction_topup', False):
+        # "Пополнить баланс" explains a top-up restriction on its own screen.
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=texts.t('TARIFF_TOPUP_BALANCE_BUTTON', '💳 Пополнить баланс'),
+                        callback_data='balance_topup',
+                    )
+                ],
+                [back],
+            ]
+        )
+
+    from app.keyboards.inline import get_payment_methods_keyboard
+
+    methods = get_payment_methods_keyboard(missing_kopeks, language).inline_keyboard
+    # The methods keyboard ends with "Назад" to the balance; here it goes back to the purchase.
+    return InlineKeyboardMarkup(inline_keyboard=[*methods[:-1], [back]])
+
+
+def shortfall_hint(language: str, missing_kopeks: int) -> str:
+    """A line under "Не хватает: …" that says the buttons below pay exactly that."""
+    return (
+        get_texts(language)
+        .t(
+            'TARIFF_SHORTFALL_PAY_HINT',
+            '\n\n👇 Выберите способ оплаты, сумма {amount} уже подставлена.',
+        )
+        .format(amount=format_price_kopeks(missing_kopeks))
+    )
+
+
 def get_tariff_insufficient_balance_keyboard(
     tariff_id: int,
     period: int,
     language: str,
+    *,
+    db_user: User | None = None,
+    missing_kopeks: int = 0,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру при недостаточном балансе."""
-    texts = get_texts(language)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
-            [InlineKeyboardButton(text=texts.BACK, callback_data=f'tariff_select:{tariff_id}')],
-        ]
-    )
+    return get_shortfall_keyboard(db_user, missing_kopeks, f'tariff_select:{tariff_id}')
 
 
 def format_tariff_info_for_user(
@@ -310,7 +380,7 @@ def format_tariff_info_for_user(
 
     traffic = format_traffic(tariff.traffic_limit_gb)
 
-    text = f"""📦 <b>{html.escape(tariff.name)}</b>
+    text = f"""{tg_emoji('tariff')} <b>{html.escape(tariff.name)}</b>
 
 <b>Параметры:</b>
 • Трафик: {traffic}
@@ -348,15 +418,12 @@ def get_daily_tariff_confirm_keyboard(
 def get_daily_tariff_insufficient_balance_keyboard(
     tariff_id: int,
     language: str,
+    *,
+    db_user: User | None = None,
+    missing_kopeks: int = 0,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру при недостаточном балансе для суточного тарифа."""
-    texts = get_texts(language)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
-            [InlineKeyboardButton(text=texts.BACK, callback_data='tariff_list')],
-        ]
-    )
+    return get_shortfall_keyboard(db_user, missing_kopeks, 'tariff_list')
 
 
 # ==================== Кастомные дни/трафик ====================
@@ -510,7 +577,7 @@ async def format_custom_tariff_preview(
 
     traffic_display = f'{traffic_gb} ГБ' if traffic_gb > 0 else format_traffic(tariff.traffic_limit_gb)
 
-    text = f"""📦 <b>{html.escape(tariff.name)}</b>
+    text = f"""{tg_emoji('tariff')} <b>{html.escape(tariff.name)}</b>
 
 <b>Настройте параметры:</b>
 """
@@ -591,6 +658,18 @@ async def show_tariffs_list(
         if period_discounts and isinstance(period_discounts, dict) and len(period_discounts) > 0:
             has_period_discounts = True
 
+    if len(tariffs) == 1 and tariffs[0].id not in purchased_tariff_ids:
+        # A list of one is a tap with no choice in it: open the tariff itself.
+        # Its "Назад" buttons send tariff_list, and going back from the only
+        # tariff means leaving the purchase, so that goes to the main menu.
+        if callback.data == 'tariff_list':
+            from app.handlers.menu import handle_back_to_menu
+
+            await handle_back_to_menu(callback, state, db_user, db)
+            return
+        await open_tariff(callback, db_user, db, state, tariffs[0].id)
+        return
+
     # Формируем текст со списком тарифов и их характеристиками
     tariffs_text = format_tariffs_list_text(tariffs, db_user, has_period_discounts, purchased_tariff_ids)
 
@@ -611,6 +690,17 @@ async def select_tariff(
 ):
     """Обрабатывает выбор тарифа."""
     tariff_id = int(callback.data.split(':')[1])
+    await open_tariff(callback, db_user, db, state, tariff_id)
+
+
+async def open_tariff(
+    callback: types.CallbackQuery,
+    db_user: User,
+    db: AsyncSession,
+    state: FSMContext,
+    tariff_id: int,
+):
+    """The tariff's own screen: its periods, the custom days/traffic picker, or the daily confirmation."""
     tariff = await get_tariff_by_id(db, tariff_id)
 
     if not tariff or not tariff.is_active:
@@ -698,8 +788,11 @@ async def select_tariff(
                 f'{discount_text}\n\n'
                 f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
                 f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>\n\n'
-                f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>',
-                reply_markup=get_daily_tariff_insufficient_balance_keyboard(tariff_id, db_user.language),
+                f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>'
+                + shortfall_hint(db_user.language, missing),
+                reply_markup=get_daily_tariff_insufficient_balance_keyboard(
+                    tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
+                ),
                 parse_mode='HTML',
             )
     else:
@@ -1121,20 +1214,8 @@ async def handle_custom_confirm(
             f'📱 Устройств: {tariff.device_limit}\n'
             f'📅 Период: {format_period(custom_days)}\n'
             f'💰 Списано: {format_price_kopeks(total_price)}\n\n'
-            f'Перейдите в раздел «Подписка» для подключения.',
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text='📱 Моя подписка',
-                            callback_data=f'sm:{subscription.id}'
-                            if settings.is_multi_tariff_enabled() and subscription
-                            else 'menu_subscription',
-                        )
-                    ],
-                    [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-                ]
-            ),
+            + texts.t('PURCHASE_SUCCESS_CONNECT_HINT', 'Нажмите «Подключиться», чтобы настроить VPN.'),
+            reply_markup=get_purchase_success_keyboard(texts, subscription),
             parse_mode='HTML',
         )
         await callback.answer('Подписка оформлена!', show_alert=True)
@@ -1296,8 +1377,11 @@ async def select_tariff_period(
             f'💰 Стоимость: {format_price_kopeks(final_price)}\n\n'
             f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
             f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>\n\n'
-            f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>',
-            reply_markup=get_tariff_insufficient_balance_keyboard(tariff_id, period, db_user.language),
+            f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>'
+            + shortfall_hint(db_user.language, missing),
+            reply_markup=get_tariff_insufficient_balance_keyboard(
+                tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
+            ),
             parse_mode='HTML',
         )
 
@@ -1642,20 +1726,8 @@ async def confirm_tariff_purchase(
         f'📱 Устройств: {tariff.device_limit}\n'
         f'📅 Период: {format_period(period)}\n'
         f'💰 Списано: {format_price_kopeks(final_price)}\n\n'
-        f'Перейдите в раздел «Подписка» для подключения.',
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text='📱 Моя подписка',
-                        callback_data=f'sm:{subscription.id}'
-                        if settings.is_multi_tariff_enabled() and subscription
-                        else 'menu_subscription',
-                    )
-                ],
-                [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-            ]
-        ),
+        + texts.t('PURCHASE_SUCCESS_CONNECT_HINT', 'Нажмите «Подключиться», чтобы настроить VPN.'),
+        reply_markup=get_purchase_success_keyboard(texts, subscription),
         parse_mode='HTML',
     )
     await callback.answer('Подписка оформлена!', show_alert=True)
@@ -1906,20 +1978,8 @@ async def confirm_daily_tariff_purchase(
         f'🔄 Тип: Суточный\n'
         f'💰 Списано: {format_price_kopeks(final_daily_price)}\n\n'
         f'ℹ️ Следующее списание через 24 часа.\n'
-        f'Перейдите в раздел «Подписка» для подключения.',
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text='📱 Моя подписка',
-                        callback_data=f'sm:{subscription.id}'
-                        if settings.is_multi_tariff_enabled() and subscription
-                        else 'menu_subscription',
-                    )
-                ],
-                [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-            ]
-        ),
+        + texts.t('PURCHASE_SUCCESS_CONNECT_HINT', 'Нажмите «Подключиться», чтобы настроить VPN.'),
+        reply_markup=get_purchase_success_keyboard(texts, subscription),
         parse_mode='HTML',
     )
     await callback.answer('Подписка оформлена!', show_alert=True)
@@ -2112,7 +2172,6 @@ async def select_tariff_extend_period(
     state: FSMContext,
 ):
     """Обрабатывает выбор периода для продления."""
-    texts = get_texts(db_user.language)
     parts = callback.data.split(':')
     tariff_id = int(parts[1])
 
@@ -2199,13 +2258,9 @@ async def select_tariff_extend_period(
             f'💰 К оплате: {format_price_kopeks(final_price)}\n\n'
             f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
             f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>\n\n'
-            f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет продлена автоматически.</i>',
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
-                    [InlineKeyboardButton(text=texts.BACK, callback_data='subscription_extend')],
-                ]
-            ),
+            f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет продлена автоматически.</i>'
+            + shortfall_hint(db_user.language, missing),
+            reply_markup=get_shortfall_keyboard(db_user, missing, 'subscription_extend'),
             parse_mode='HTML',
         )
 
@@ -2363,19 +2418,7 @@ async def confirm_tariff_extend(
             f'📱 Устройств: {actual_device_limit}\n'
             f'📅 Добавлено: {format_period(period)}\n'
             f'💰 Списано: {format_price_kopeks(final_price)}',
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text='📱 Моя подписка',
-                            callback_data=f'sm:{subscription.id}'
-                            if settings.is_multi_tariff_enabled() and subscription
-                            else 'menu_subscription',
-                        )
-                    ],
-                    [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-                ]
-            ),
+            reply_markup=get_purchase_success_keyboard(texts, subscription),
             parse_mode='HTML',
         )
         await callback.answer('Подписка продлена!', show_alert=True)
@@ -2528,15 +2571,12 @@ def get_tariff_switch_insufficient_balance_keyboard(
     tariff_id: int,
     period: int,
     language: str,
+    *,
+    db_user: User | None = None,
+    missing_kopeks: int = 0,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру при недостаточном балансе для переключения."""
-    texts = get_texts(language)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
-            [InlineKeyboardButton(text=texts.BACK, callback_data=f'tariff_sw_select:{tariff_id}')],
-        ]
-    )
+    return get_shortfall_keyboard(db_user, missing_kopeks, f'tariff_sw_select:{tariff_id}')
 
 
 @error_handler
@@ -2689,13 +2729,8 @@ async def select_tariff_switch(
                 f'{discount_text}\n\n'
                 f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
                 f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>'
-                f'{days_warning}',
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
-                        [InlineKeyboardButton(text=get_texts(db_user.language).BACK, callback_data='tariff_switch')],
-                    ]
-                ),
+                f'{days_warning}' + shortfall_hint(db_user.language, missing),
+                reply_markup=get_shortfall_keyboard(db_user, missing, 'tariff_switch'),
                 parse_mode='HTML',
             )
     else:
@@ -2806,8 +2841,10 @@ async def select_tariff_switch_period(
             f'📅 Период: {format_period(period)}\n'
             f'💰 К оплате: {format_price_kopeks(final_price)}\n\n'
             f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-            f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>',
-            reply_markup=get_tariff_switch_insufficient_balance_keyboard(tariff_id, period, db_user.language),
+            f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
+            reply_markup=get_tariff_switch_insufficient_balance_keyboard(
+                tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
+            ),
             parse_mode='HTML',
         )
 
@@ -3008,19 +3045,7 @@ async def confirm_tariff_switch(
             f'💰 Списано: {format_price_kopeks(final_price)}\n'
             f'{time_info}\n\n'
             f'Перейдите в раздел «Подписка» для просмотра деталей.',
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text='📱 Моя подписка',
-                            callback_data=f'sm:{subscription.id}'
-                            if settings.is_multi_tariff_enabled() and subscription
-                            else 'menu_subscription',
-                        )
-                    ],
-                    [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-                ]
-            ),
+            reply_markup=get_purchase_success_keyboard(texts, subscription),
             parse_mode='HTML',
         )
         await callback.answer('Тариф изменён!', show_alert=True)
@@ -3227,19 +3252,7 @@ async def confirm_daily_tariff_switch(
             f'🔄 Тип: Суточный\n'
             f'💰 Списано: {format_price_kopeks(final_daily_price)}\n\n'
             f'ℹ️ Следующее списание через 24 часа.',
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text='📱 Моя подписка',
-                            callback_data=f'sm:{subscription.id}'
-                            if settings.is_multi_tariff_enabled() and subscription
-                            else 'menu_subscription',
-                        )
-                    ],
-                    [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-                ]
-            ),
+            reply_markup=get_purchase_success_keyboard(texts, subscription),
             parse_mode='HTML',
         )
         await callback.answer('Тариф изменён!', show_alert=True)
@@ -3394,15 +3407,12 @@ def get_instant_switch_confirm_keyboard(
 def get_instant_switch_insufficient_balance_keyboard(
     tariff_id: int,
     language: str,
+    *,
+    db_user: User | None = None,
+    missing_kopeks: int = 0,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру при недостаточном балансе для мгновенного переключения."""
-    texts = get_texts(language)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text='💳 Пополнить баланс', callback_data='balance_topup')],
-            [InlineKeyboardButton(text=texts.BACK, callback_data='instant_switch')],
-        ]
-    )
+    return get_shortfall_keyboard(db_user, missing_kopeks, 'instant_switch')
 
 
 @error_handler
@@ -3591,8 +3601,10 @@ async def preview_instant_switch(
                 f'{discount_text}\n\n'
                 f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
                 f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>'
-                f'{daily_warning}',
-                reply_markup=get_instant_switch_insufficient_balance_keyboard(tariff_id, db_user.language),
+                f'{daily_warning}' + shortfall_hint(db_user.language, missing),
+                reply_markup=get_instant_switch_insufficient_balance_keyboard(
+                    tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
+                ),
                 parse_mode='HTML',
             )
 
@@ -3631,8 +3643,10 @@ async def preview_instant_switch(
                 f'📦 Новый тариф: <b>{html.escape(new_tariff.name)}</b>\n'
                 f'💰 Требуется доплата: {format_price_kopeks(upgrade_cost)}\n\n'
                 f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>',
-                reply_markup=get_instant_switch_insufficient_balance_keyboard(tariff_id, db_user.language),
+                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
+                reply_markup=get_instant_switch_insufficient_balance_keyboard(
+                    tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
+                ),
                 parse_mode='HTML',
             )
     else:
@@ -3911,19 +3925,7 @@ async def confirm_instant_switch(
                 f'🔄 Тип: Суточный\n'
                 f'💰 Списано: {format_price_kopeks(daily_price)}\n\n'
                 f'ℹ️ Следующее списание через 24 часа.',
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text='📱 Моя подписка',
-                                callback_data=f'sm:{subscription.id}'
-                                if settings.is_multi_tariff_enabled() and subscription
-                                else 'menu_subscription',
-                            )
-                        ],
-                        [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-                    ]
-                ),
+                reply_markup=get_purchase_success_keyboard(texts, subscription),
                 parse_mode='HTML',
             )
         else:
@@ -3939,19 +3941,7 @@ async def confirm_instant_switch(
                 f'📱 Устройств: {new_tariff.device_limit}\n'
                 f'⏰ Осталось дней: {remaining_days}\n'
                 f'{cost_text}',
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text='📱 Моя подписка',
-                                callback_data=f'sm:{subscription.id}'
-                                if settings.is_multi_tariff_enabled() and subscription
-                                else 'menu_subscription',
-                            )
-                        ],
-                        [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-                    ]
-                ),
+                reply_markup=get_purchase_success_keyboard(texts, subscription),
                 parse_mode='HTML',
             )
         await callback.answer('Тариф изменён!', show_alert=True)
@@ -4003,8 +3993,10 @@ async def return_to_saved_tariff_cart(
                 f'🔄 Тип: Суточный\n'
                 f'💰 Стоимость: {format_price_kopeks(total_price)}\n\n'
                 f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>',
-                reply_markup=get_daily_tariff_insufficient_balance_keyboard(tariff_id, db_user.language),
+                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
+                reply_markup=get_daily_tariff_insufficient_balance_keyboard(
+                    tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
+                ),
                 parse_mode='HTML',
             )
         elif cart_mode == 'extend':
@@ -4015,8 +4007,10 @@ async def return_to_saved_tariff_cart(
                 f'📅 Период: {format_period(period)}\n'
                 f'💰 Стоимость: {format_price_kopeks(total_price)}\n\n'
                 f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>',
-                reply_markup=get_tariff_insufficient_balance_keyboard(tariff_id, period, db_user.language),
+                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
+                reply_markup=get_tariff_insufficient_balance_keyboard(
+                    tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
+                ),
                 parse_mode='HTML',
             )
         else:  # tariff_purchase
@@ -4027,8 +4021,10 @@ async def return_to_saved_tariff_cart(
                 f'📅 Период: {format_period(period)}\n'
                 f'💰 Стоимость: {format_price_kopeks(total_price)}\n\n'
                 f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>',
-                reply_markup=get_tariff_insufficient_balance_keyboard(tariff_id, period, db_user.language),
+                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
+                reply_markup=get_tariff_insufficient_balance_keyboard(
+                    tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
+                ),
                 parse_mode='HTML',
             )
         await callback.answer()
