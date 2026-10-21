@@ -110,6 +110,27 @@ def _is_support_enabled() -> bool:
         return settings.SUPPORT_MENU_ENABLED
 
 
+def _direct_support_url() -> str | None:
+    """The support chat's link when it is the only support channel (no tickets)."""
+    try:
+        from app.services.support_settings_service import SupportSettingsService
+
+        if SupportSettingsService.is_tickets_enabled() or not SupportSettingsService.is_contact_enabled():
+            return None
+    except Exception:
+        return None
+    return settings.get_support_contact_url() or None
+
+
+def _support_button(texts) -> InlineKeyboardButton:
+    """ "Поддержка": straight into the support chat when there is nothing else on the support screen."""
+    label = texts.t('MAIN_MENU_BTN_SUPPORT', 'Поддержка')
+    direct_url = _direct_support_url()
+    if direct_url:
+        return icon_button('support', label, url=direct_url)
+    return icon_button('support', label, callback_data='menu_support')
+
+
 def connect_button(texts, subscription, *, sub_suffix: str = '', style: str | None = STYLE_USE) -> InlineKeyboardButton:
     """ "Подключиться", honouring ``CONNECT_BUTTON_MODE``.
 
@@ -171,11 +192,7 @@ def build_main_menu_keyboard(
         if settings.is_referral_program_enabled()
         else None
     )
-    support = (
-        icon_button('support', t('MAIN_MENU_BTN_SUPPORT', 'Поддержка'), callback_data='menu_support')
-        if _is_support_enabled()
-        else None
-    )
+    support = _support_button(texts) if _is_support_enabled() else None
     cabinet_url = settings.get_cabinet_home_url()
     cabinet = (
         icon_button('cabinet', t('MAIN_MENU_BTN_CABINET', 'Личный кабинет'), url=cabinet_url) if cabinet_url else None

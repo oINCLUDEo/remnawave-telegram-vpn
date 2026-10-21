@@ -11,6 +11,7 @@ from app.config import settings
 from app.database.crud.transaction import get_user_transactions
 from app.database.models import TransactionType, User
 from app.handlers.subscription.autopay import handle_confirm_unlink, handle_saved_cards_list, handle_unlink_card
+from app.keyboards.icons import tg_emoji
 from app.keyboards.inline import (
     get_back_keyboard,
     get_balance_keyboard,
@@ -259,6 +260,40 @@ async def handle_balance_history_pagination(callback: types.CallbackQuery, db_us
     await show_balance_history(callback, db_user, db, page)
 
 
+# Quick top-up amounts in roubles (owner's choice, 2026-10-21).
+QUICK_TOPUP_AMOUNTS_RUB = (100, 200, 300, 500, 1000)
+
+
+def _has_automatic_payment_methods() -> bool:
+    from app.utils.payment_utils import get_available_payment_methods
+
+    return any(method.get('id') != 'support' for method in get_available_payment_methods())
+
+
+def get_quick_topup_amounts_keyboard(language: str) -> types.InlineKeyboardMarkup:
+    texts = get_texts(language)
+    amount_buttons = [
+        types.InlineKeyboardButton(
+            text=texts.format_price(rub * 100),
+            callback_data=f'balance_topup_amount:{rub}',
+        )
+        for rub in QUICK_TOPUP_AMOUNTS_RUB
+    ]
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            amount_buttons[:3],
+            amount_buttons[3:],
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('TOPUP_OTHER_AMOUNT_BUTTON', '✏️ Другая сумма'),
+                    callback_data='balance_topup_other',
+                )
+            ],
+            [types.InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')],
+        ]
+    )
+
+
 @error_handler
 async def show_payment_methods(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
     from app.config import settings
@@ -300,7 +335,24 @@ async def show_payment_methods(callback: types.CallbackQuery, db_user: User, db:
 
     full_text = payment_text
 
-    keyboard = get_payment_methods_keyboard(amount_kopeks, db_user.language)
+    if callback.data == 'balance_topup' and not amount_kopeks and _has_automatic_payment_methods():
+        # Amount first, as buttons: the methods then get it filled in, so
+        # nobody has to type a number. "Другая сумма" is the old flow.
+        full_text = texts.t('TOPUP_QUICK_AMOUNT_PROMPT', '{icon} <b>Пополнение</b>\n\nВыберите сумму:').format(
+            icon=tg_emoji('payment')
+        )
+        keyboard = get_quick_topup_amounts_keyboard(db_user.language)
+    else:
+        if callback.data.startswith('balance_topup_amount:'):
+            amount_kopeks = int(callback.data.split(':', 1)[1]) * 100
+            full_text = texts.t(
+                'TOPUP_QUICK_AMOUNT_METHODS',
+                '{icon} <b>Пополнение на {amount}</b>\n\nВыберите способ оплаты:',
+            ).format(icon=tg_emoji('payment'), amount=texts.format_price(amount_kopeks))
+        keyboard = get_payment_methods_keyboard(amount_kopeks, db_user.language)
+        if callback.data != 'balance_topup':
+            # Back from the methods goes to the amounts, not past them to the balance.
+            keyboard.inline_keyboard[-1] = [types.InlineKeyboardButton(text=texts.BACK, callback_data='balance_topup')]
 
     # Если сообщение недоступно, отправляем новое
     if isinstance(callback.message, InaccessibleMessage):
@@ -613,6 +665,8 @@ def register_balance_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_balance_history_pagination, F.data.startswith('balance_history_page_'))
 
     dp.callback_query.register(show_payment_methods, F.data == 'balance_topup')
+    dp.callback_query.register(show_payment_methods, F.data == 'balance_topup_other')
+    dp.callback_query.register(show_payment_methods, F.data.regexp(r'^balance_topup_amount:\d+$'))
 
     from .stars import start_stars_payment
 

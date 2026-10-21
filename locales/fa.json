@@ -1772,5 +1772,13 @@
   "BALANCE_BTN_CARDS": "💳 کارت‌ها",
   "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 روش پرداخت را انتخاب کنید، مبلغ {amount} از قبل وارد شده است.",
   "TARIFF_TOPUP_BALANCE_BUTTON": "💳 شارژ موجودی",
-  "PURCHASE_SUCCESS_CONNECT_HINT": "برای راه‌اندازی VPN روی «اتصال» بزنید."
+  "PURCHASE_SUCCESS_CONNECT_HINT": "برای راه‌اندازی VPN روی «اتصال» بزنید.",
+  "TOPUP_QUICK_AMOUNT_PROMPT": "{icon} <b>شارژ</b>\n\nمبلغ را انتخاب کنید:",
+  "TOPUP_QUICK_AMOUNT_METHODS": "{icon} <b>شارژ {amount}</b>\n\nروش پرداخت را انتخاب کنید:",
+  "TOPUP_OTHER_AMOUNT_BUTTON": "✏️ مبلغ دیگر",
+  "REFERRAL_BTN_SHARE": "📤 اشتراک‌گذاری لینک",
+  "REFERRAL_BTN_QR": "📱 QR",
+  "REFERRAL_BTN_LIST": "👥 دوستان",
+  "REFERRAL_BTN_STATS": "📊 درآمد",
+  "REFERRAL_SHARE_TEXT": "🚀 VPN‌ای را که خودم استفاده می‌کنم امتحان کن: اتصال سریع و سرورها در سراسر جهان."
 }

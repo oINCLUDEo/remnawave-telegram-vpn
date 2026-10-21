@@ -101,6 +101,7 @@ _CALLBACK_PREFIX_BANNERS: tuple[tuple[str, str], ...] = (
     ('sm:', 'subscription'),
     ('balance_history_page_', 'balance'),
     ('topup_', 'payment'),
+    ('balance_topup_', 'payment'),
     ('referral_', 'referral'),
     ('menu_faq_page:', 'info'),
     ('menu_privacy_policy:', 'info'),

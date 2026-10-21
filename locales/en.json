@@ -1751,5 +1751,13 @@
   "BALANCE_BTN_CARDS": "💳 Cards",
   "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 Choose a payment method, {amount} is already filled in.",
   "TARIFF_TOPUP_BALANCE_BUTTON": "💳 Top up balance",
-  "PURCHASE_SUCCESS_CONNECT_HINT": "Tap “Connect” to set up the VPN."
+  "PURCHASE_SUCCESS_CONNECT_HINT": "Tap “Connect” to set up the VPN.",
+  "TOPUP_QUICK_AMOUNT_PROMPT": "{icon} <b>Top up</b>\n\nChoose an amount:",
+  "TOPUP_QUICK_AMOUNT_METHODS": "{icon} <b>Top up {amount}</b>\n\nChoose a payment method:",
+  "TOPUP_OTHER_AMOUNT_BUTTON": "✏️ Other amount",
+  "REFERRAL_BTN_SHARE": "📤 Share link",
+  "REFERRAL_BTN_QR": "📱 QR",
+  "REFERRAL_BTN_LIST": "👥 Friends",
+  "REFERRAL_BTN_STATS": "📊 Earnings",
+  "REFERRAL_SHARE_TEXT": "🚀 Try the VPN I use: quick setup and servers around the world."
 }

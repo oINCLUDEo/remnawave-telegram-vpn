@@ -1387,25 +1387,28 @@ def get_autopay_notification_keyboard(subscription_id: int, language: str = DEFA
     )
 
 
-def get_referral_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
+def get_referral_keyboard(language: str = DEFAULT_LANGUAGE, share_url: str | None = None) -> InlineKeyboardMarkup:
+    """ "Пригласить друга": sharing first, the rest in one row.
+
+    *share_url* is a ``t.me/share/url`` link with the user's referral link and
+    a ready text; Telegram opens the chat picker with it in one tap. Without
+    it the old "Создать приглашение" screen with text to copy is offered.
+    """
     texts = get_texts(language)
 
+    if share_url:
+        first = InlineKeyboardButton(text=texts.t('REFERRAL_BTN_SHARE', '📤 Поделиться ссылкой'), url=share_url)
+    else:
+        first = InlineKeyboardButton(
+            text=texts.t('CREATE_INVITE_BUTTON', '📝 Создать приглашение'), callback_data='referral_create_invite'
+        )
+
     keyboard = [
+        [first],
         [
-            InlineKeyboardButton(
-                text=texts.t('CREATE_INVITE_BUTTON', '📝 Создать приглашение'), callback_data='referral_create_invite'
-            )
-        ],
-        [InlineKeyboardButton(text=texts.t('SHOW_QR_BUTTON', '📱 Показать QR код'), callback_data='referral_show_qr')],
-        [
-            InlineKeyboardButton(
-                text=texts.t('REFERRAL_LIST_BUTTON', '👥 Список рефералов'), callback_data='referral_list'
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text=texts.t('REFERRAL_ANALYTICS_BUTTON', '📊 Аналитика'), callback_data='referral_analytics'
-            )
+            InlineKeyboardButton(text=texts.t('REFERRAL_BTN_QR', '📱 QR'), callback_data='referral_show_qr'),
+            InlineKeyboardButton(text=texts.t('REFERRAL_BTN_LIST', '👥 Друзья'), callback_data='referral_list'),
+            InlineKeyboardButton(text=texts.t('REFERRAL_BTN_STATS', '📊 Доход'), callback_data='referral_analytics'),
         ],
     ]
 
