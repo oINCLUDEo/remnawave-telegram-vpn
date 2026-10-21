@@ -23,6 +23,10 @@ Row       NEW (no subscription)       TRIAL / ACTIVE              RENEW (expirin
 
 (1) "Купить подписку" while on a trial. (2) Only while access still works.
 
+A started checkout ("Продолжить оформление") goes above row 1. Only the first
+coloured button keeps its colour; see the colour rules in
+:mod:`app.keyboards.icons`.
+
 Language, promo code, rules, FAQ and contests live in the "Инфо" section.
 Buttons that are switched off (referrals, support, cabinet URL) simply drop
 out of their row; the rows themselves stay put so that banners made for each
@@ -36,7 +40,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import NoInspectionAvailable
 
 from app.config import settings
-from app.keyboards.icons import STYLE_DANGER, STYLE_PRIMARY, STYLE_SUCCESS, icon_button
+from app.keyboards.icons import STYLE_PAY, STYLE_USE, icon_button
 from app.localization.loader import DEFAULT_LANGUAGE
 from app.localization.texts import get_texts
 from app.utils.subscription_utils import get_display_subscription_link
@@ -109,20 +113,20 @@ def _is_support_enabled() -> bool:
 def _connect_button(texts, subscription) -> InlineKeyboardButton:
     """ "Подключиться", honouring ``CONNECT_BUTTON_MODE`` like the subscription screen does."""
     label = texts.t('MAIN_MENU_BTN_CONNECT', 'Подключиться')
-    fallback = icon_button('connect', label, callback_data='subscription_connect', style=STYLE_PRIMARY)
+    fallback = icon_button('connect', label, callback_data='subscription_connect', style=STYLE_USE)
 
     mode = settings.CONNECT_BUTTON_MODE
     link = get_display_subscription_link(subscription)
 
     if mode == 'miniapp_subscription' and link:
-        return icon_button('connect', label, web_app_url=link, style=STYLE_PRIMARY)
+        return icon_button('connect', label, web_app_url=link, style=STYLE_USE)
     if mode == 'miniapp_custom' and settings.MINIAPP_CUSTOM_URL:
-        return icon_button('connect', label, web_app_url=settings.MINIAPP_CUSTOM_URL, style=STYLE_PRIMARY)
+        return icon_button('connect', label, web_app_url=settings.MINIAPP_CUSTOM_URL, style=STYLE_USE)
     if mode == 'link' and link:
-        return icon_button('connect', label, url=link, style=STYLE_PRIMARY)
+        return icon_button('connect', label, url=link, style=STYLE_USE)
     if mode == 'happ_cryptolink' and link:
         callback = 'subscription_connect' if settings.is_multi_tariff_enabled() else 'open_subscription_link'
-        return icon_button('connect', label, callback_data=callback, style=STYLE_PRIMARY)
+        return icon_button('connect', label, callback_data=callback, style=STYLE_USE)
     return fallback
 
 
@@ -182,7 +186,7 @@ def build_main_menu_keyboard(
                         'trial',
                         t('MAIN_MENU_BTN_TRIAL', 'Попробовать бесплатно'),
                         callback_data='menu_trial',
-                        style=STYLE_SUCCESS,
+                        style=STYLE_PAY,
                     )
                 ]
             )
@@ -191,7 +195,7 @@ def build_main_menu_keyboard(
             rows.append(
                 [
                     icon_button(
-                        'buy', t('MAIN_MENU_BTN_BUY', 'Купить подписку'), callback_data='menu_buy', style=STYLE_SUCCESS
+                        'buy', t('MAIN_MENU_BTN_BUY', 'Купить подписку'), callback_data='menu_buy', style=STYLE_PAY
                     )
                 ]
             )
@@ -212,7 +216,7 @@ def build_main_menu_keyboard(
                     'renew',
                     t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
                     callback_data='subscription_extend',
-                    style=STYLE_DANGER,
+                    style=STYLE_PAY,
                 )
             ]
         )
@@ -223,15 +227,17 @@ def build_main_menu_keyboard(
         rows.append([cabinet])
 
     if show_resume_checkout or has_saved_cart:
+        # A purchase the user already started is the most likely next step,
+        # so it goes on top and takes the screen's accent colour.
         resume_callback = 'return_to_saved_cart' if has_saved_cart else 'subscription_resume_checkout'
         rows.insert(
-            1,
+            0,
             [
                 icon_button(
                     'checkout',
                     t('MAIN_MENU_BTN_CHECKOUT', 'Продолжить оформление'),
                     callback_data=resume_callback,
-                    style=STYLE_SUCCESS,
+                    style=STYLE_PAY,
                 )
             ],
         )
@@ -249,7 +255,28 @@ def build_main_menu_keyboard(
         )
 
     keyboard = [[button for button in row if button is not None] for row in rows]
-    return InlineKeyboardMarkup(inline_keyboard=[row for row in keyboard if row])
+    return InlineKeyboardMarkup(inline_keyboard=keep_single_accent([row for row in keyboard if row]))
+
+
+def keep_single_accent(rows: list[list[InlineKeyboardButton]]) -> list[list[InlineKeyboardButton]]:
+    """Leave the colour only on the first coloured button of the screen.
+
+    One accent per screen is the rule of the colour system (see
+    :mod:`app.keyboards.icons`): a second coloured button competes with the
+    first and both stop reading as "the next step".
+    """
+    seen_accent = False
+    result = []
+    for row in rows:
+        new_row = []
+        for button in row:
+            if button.style:
+                if seen_accent:
+                    button = button.model_copy(update={'style': None})
+                seen_accent = True
+            new_row.append(button)
+        result.append(new_row)
+    return result
 
 
 __all__ = [
@@ -257,5 +284,6 @@ __all__ = [
     'MenuState',
     'build_main_menu_keyboard',
     'is_trial_available',
+    'keep_single_accent',
     'resolve_menu_state',
 ]

@@ -1666,5 +1666,6 @@
   "MAIN_MENU_BTN_MODERATION": "Модерація",
   "INFO_MENU_BTN_PROMOCODE": "Промокод",
   "INFO_MENU_BTN_LANGUAGE": "Мова",
-  "INFO_MENU_BTN_CONTESTS": "Конкурси"
+  "INFO_MENU_BTN_CONTESTS": "Конкурси",
+  "REGISTRATION_CONSENT_LINE": "ℹ️ Користуючись ботом, ви приймаєте правила сервісу та політику конфіденційності. Вони завжди доступні в розділі «Інфо»."
 }
