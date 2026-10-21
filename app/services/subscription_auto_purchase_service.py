@@ -17,6 +17,7 @@ from app.database.crud.subscription import extend_subscription, restore_reserve_
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.models import Subscription, SubscriptionStatus, TransactionType, User
+from app.keyboards.main_menu import connect_button
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.pricing_engine import PricingEngine, pricing_engine
@@ -640,7 +641,7 @@ async def _auto_extend_subscription(
             ).format(date=end_date_label)
             hint_message = texts.t(
                 'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                "Open the 'My subscription' section to access your link.",
+                'Tap “Connect” to set up the VPN.',
             )
 
             full_message = '\n\n'.join(
@@ -649,6 +650,7 @@ async def _auto_extend_subscription(
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 My subscription'),
@@ -1007,11 +1009,12 @@ async def _auto_purchase_tariff(
 
             hint = texts.t(
                 'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                'Перейдите в раздел «Моя подписка», чтобы получить ссылку.',
+                'Нажмите «Подключиться», чтобы настроить VPN.',
             )
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
@@ -1322,11 +1325,12 @@ async def _auto_switch_tariff(
 
             hint = texts.t(
                 'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                'Перейдите в раздел «Моя подписка», чтобы получить ссылку.',
+                'Нажмите «Подключиться», чтобы настроить VPN.',
             )
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
@@ -1664,6 +1668,7 @@ async def _auto_purchase_daily_tariff(
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
@@ -2000,6 +2005,7 @@ async def _auto_add_devices(
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
@@ -2348,6 +2354,7 @@ async def _auto_add_traffic(
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
@@ -2703,7 +2710,7 @@ async def try_auto_extend_expired_after_topup(
             ).format(date=end_date_label)
             hint_message = texts.t(
                 'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                "Open the 'My subscription' section to access your link.",
+                'Tap “Connect” to set up the VPN.',
             )
 
             full_message = '\n\n'.join(
@@ -2712,6 +2719,7 @@ async def try_auto_extend_expired_after_topup(
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 My subscription'),
@@ -3082,6 +3090,7 @@ async def try_resume_disabled_daily_after_topup(
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [connect_button(texts, None)],
                     [
                         InlineKeyboardButton(
                             text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 My subscription'),
@@ -3463,7 +3472,7 @@ async def _process_legacy_generic_cart(
 
                 hint_message = texts.t(
                     'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                    "Open the 'My subscription' section to access your link.",
+                    'Tap “Connect” to set up the VPN.',
                 )
 
                 purchase_message = purchase_result.get('message', '')
@@ -3473,6 +3482,7 @@ async def _process_legacy_generic_cart(
 
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
+                        [connect_button(texts, None)],
                         [
                             InlineKeyboardButton(
                                 text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 My subscription'),

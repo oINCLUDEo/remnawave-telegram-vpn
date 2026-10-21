@@ -872,7 +872,7 @@
   "AUTO_PURCHASE_SUBSCRIPTION_SUCCESS": "✅ Підписку на {period} автоматично оформлено після поповнення балансу.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ Підписку автоматично продовжено на {period}.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ Нова дата закінчення: {date}.",
-  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Перейдіть до розділу «Моя підписка», щоб отримати посилання та інструкції.",
+  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Натисніть «Підключитися», щоб налаштувати VPN.",
   "BALANCE_TOP_UP": "💳 Поповнити",
   "BLOCK_BY_TIME": "⏳ Блокування за часом",
   "BLOCK_FOREVER": "🚫 Заблокувати",
@@ -1683,5 +1683,8 @@
   "SUBSCRIPTION_BTN_RESUME": "Відновити",
   "BALANCE_BTN_TOPUP": "Поповнити",
   "BALANCE_BTN_HISTORY": "📊 Історія",
-  "BALANCE_BTN_CARDS": "💳 Картки"
+  "BALANCE_BTN_CARDS": "💳 Картки",
+  "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 Оберіть спосіб оплати, сума {amount} вже підставлена.",
+  "TARIFF_TOPUP_BALANCE_BUTTON": "💳 Поповнити баланс",
+  "PURCHASE_SUCCESS_CONNECT_HINT": "Натисніть «Підключитися», щоб налаштувати VPN."
 }

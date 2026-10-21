@@ -951,7 +951,7 @@
   "AUTO_PURCHASE_SUBSCRIPTION_SUCCESS": "✅ Подписка на {period} автоматически оформлена после пополнения баланса.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ Подписка автоматически продлена на {period}.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ Новая дата окончания: {date}.",
-  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Перейдите в раздел «Моя подписка», чтобы получить ссылку и инструкции.",
+  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Нажмите «Подключиться», чтобы настроить VPN.",
   "BALANCE_TOP_UP": "💳 Пополнить",
   "BLOCK_BY_TIME": "⏳ Блокировка по времени",
   "BLOCK_FOREVER": "🚫 Заблокировать",
@@ -1811,5 +1811,8 @@
   "SUBSCRIPTION_BTN_RESUME": "Возобновить",
   "BALANCE_BTN_TOPUP": "Пополнить",
   "BALANCE_BTN_HISTORY": "📊 История",
-  "BALANCE_BTN_CARDS": "💳 Карты"
+  "BALANCE_BTN_CARDS": "💳 Карты",
+  "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 Выберите способ оплаты, сумма {amount} уже подставлена.",
+  "TARIFF_TOPUP_BALANCE_BUTTON": "💳 Пополнить баланс",
+  "PURCHASE_SUCCESS_CONNECT_HINT": "Нажмите «Подключиться», чтобы настроить VPN."
 }

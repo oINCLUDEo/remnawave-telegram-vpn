@@ -909,7 +909,7 @@
   "AUTO_PURCHASE_SUBSCRIPTION_SUCCESS": "✅ Your {period} subscription was purchased automatically after topping up your balance.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ Subscription automatically extended for {period}.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ New expiration date: {date}.",
-  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Open the ‘My subscription’ section to access your link and setup instructions.",
+  "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Tap “Connect” to set up the VPN.",
   "BALANCE_TOP_UP": "💳 Top up",
   "BLOCK_BY_TIME": "⏳ Temporary block",
   "BLOCK_FOREVER": "🚫 Block permanently",
@@ -1748,5 +1748,8 @@
   "SUBSCRIPTION_BTN_RESUME": "Resume",
   "BALANCE_BTN_TOPUP": "Top up",
   "BALANCE_BTN_HISTORY": "📊 History",
-  "BALANCE_BTN_CARDS": "💳 Cards"
+  "BALANCE_BTN_CARDS": "💳 Cards",
+  "TARIFF_SHORTFALL_PAY_HINT": "\n\n👇 Choose a payment method, {amount} is already filled in.",
+  "TARIFF_TOPUP_BALANCE_BUTTON": "💳 Top up balance",
+  "PURCHASE_SUCCESS_CONNECT_HINT": "Tap “Connect” to set up the VPN."
 }
