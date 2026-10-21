@@ -110,3 +110,16 @@ def test_support_opens_the_chat_when_it_is_the_only_channel(monkeypatch, tickets
     rows = _targets(build_main_menu_keyboard('ru', subscription=None))
 
     assert rows[2][1] == expected
+
+
+def test_notification_buttons_open_the_bot_even_in_cabinet_mode(monkeypatch):
+    from app.utils.miniapp_buttons import build_miniapp_or_callback_button
+
+    monkeypatch.setattr(settings, 'MAIN_MENU_MODE', 'cabinet')
+    monkeypatch.setattr(settings, 'MINIAPP_CUSTOM_URL', 'https://cabinet.example.com')
+
+    button = build_miniapp_or_callback_button('Продлить', callback_data='subscription_extend', style='success')
+
+    assert button.callback_data == 'subscription_extend'
+    assert button.web_app is None
+    assert button.style == 'success'

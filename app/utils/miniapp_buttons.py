@@ -1,10 +1,8 @@
 import re
 
-from aiogram import types
 from aiogram.types import InlineKeyboardButton
 
 from app.config import settings
-from app.utils.button_styles_cache import CALLBACK_TO_SECTION, get_cached_button_styles
 
 
 # Leading emoji (with optional variation selector / ZWJ sequences) followed by
@@ -134,57 +132,22 @@ def build_miniapp_or_callback_button(
     style: str | None = None,
     icon_custom_emoji_id: str | None = None,
 ) -> InlineKeyboardButton:
-    """Create a button that opens the cabinet miniapp or falls back to a callback.
+    """A button for notifications and broadcasts that opens the bot's own screen.
 
-    In cabinet menu mode, if ``MINIAPP_CUSTOM_URL`` is configured the button
-    opens the relevant section of the cabinet.  The target section is determined
-    by ``cabinet_path`` (explicit) or inferred from ``callback_data`` via
-    ``CALLBACK_TO_CABINET_PATH``.
+    In cabinet menu mode these buttons used to open the cabinet mini app
+    (``CALLBACK_TO_CABINET_PATH``) with per-section colours from the cabinet's
+    settings. The owner decided (2026-10-21) that every button, in the menu
+    and in notifications, leads to the bot; the cabinet is reachable through
+    its own "Личный кабинет" button. So this always returns a callback button.
 
-    Button styling (Bot API 9.4):
-    - ``style`` overrides the button color: ``'primary'`` (blue),
-      ``'success'`` (green), ``'danger'`` (red).  When omitted the style is
-      resolved from ``CABINET_BUTTON_STYLE`` config or per-section defaults.
-    - ``icon_custom_emoji_id`` shows a custom emoji before the button text
-      (requires bot owner to have Telegram Premium).
-
-    When ``callback_data`` is not found in the mapping and no explicit
-    ``cabinet_path`` is given, the button falls back to a regular Telegram
-    callback — this keeps actions like ``claim_discount_*`` working correctly.
-
-    Only ``MINIAPP_CUSTOM_URL`` is considered here — the purchase-only URL
-    (``MINIAPP_PURCHASE_URL``) is intentionally excluded because it cannot
-    display subscription details and would load indefinitely.
+    *cabinet_path* is accepted and ignored, so existing callers keep working.
+    *style* and *icon_custom_emoji_id* are applied only when the caller passes
+    them; the colour rules are in :mod:`app.keyboards.icons`.
     """
-
-    if settings.is_cabinet_mode():
-        path = cabinet_path or CALLBACK_TO_CABINET_PATH.get(callback_data)
-        if path:
-            url = build_cabinet_url(path)
-            if url:
-                # Resolve per-section config from cache
-                section = CALLBACK_TO_SECTION.get(callback_data)
-                section_cfg = get_cached_button_styles().get(section or '', {}) if section else {}
-
-                # Style chain: explicit param > per-section DB > global config > hardcoded default
-                # 'default' in per-section config means "no color" — do not fall through.
-                if style:
-                    resolved_style = _resolve_style(style)
-                elif section_cfg.get('style'):
-                    resolved_style = _resolve_style(section_cfg['style'])
-                else:
-                    resolved_style = _resolve_style((settings.CABINET_BUTTON_STYLE or '').strip()) or _resolve_style(
-                        CALLBACK_TO_CABINET_STYLE.get(callback_data)
-                    )
-
-                # Emoji chain: explicit param > per-section DB
-                resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
-
-                return InlineKeyboardButton(
-                    text=text,
-                    web_app=types.WebAppInfo(url=url),
-                    style=resolved_style,
-                    icon_custom_emoji_id=resolved_emoji or None,
-                )
-
-    return InlineKeyboardButton(text=text, callback_data=callback_data)
+    del cabinet_path
+    return InlineKeyboardButton(
+        text=text,
+        callback_data=callback_data,
+        style=_resolve_style(style),
+        icon_custom_emoji_id=icon_custom_emoji_id or None,
+    )
