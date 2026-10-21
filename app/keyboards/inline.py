@@ -283,6 +283,10 @@ def get_info_menu_keyboard(
     buttons: list[list[InlineKeyboardButton]] = []
 
     # Moved here from the main menu, which now keeps only the everyday actions.
+    cabinet_url = settings.get_cabinet_home_url()
+    if cabinet_url:
+        buttons.append([icon_button('cabinet', texts.t('MAIN_MENU_BTN_CABINET', 'Личный кабинет'), url=cabinet_url)])
+
     personal_row = [
         icon_button('promocode', texts.t('INFO_MENU_BTN_PROMOCODE', 'Промокод'), callback_data='menu_promocode')
     ]
