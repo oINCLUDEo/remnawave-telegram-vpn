@@ -1505,23 +1505,61 @@ def get_confirmation_keyboard(
     )
 
 
-def get_autopay_keyboard(language: str = DEFAULT_LANGUAGE, sub_id: int | None = None) -> InlineKeyboardMarkup:
+def get_autopay_keyboard(
+    language: str = DEFAULT_LANGUAGE,
+    sub_id: int | None = None,
+    *,
+    enabled: bool = False,
+    missing_kopeks: int = 0,
+) -> InlineKeyboardMarkup:
+    """Only the actions that make sense now: turning on is green, turning off is plain.
+
+    When the balance lacks money for the renewal, the first button tops up
+    exactly that.
+    """
+    from app.keyboards.icons import STYLE_PAY, icon_button
+    from app.utils.pricing_utils import shortfall_topup_rubles
+
     texts = get_texts(language)
     back_cb = f'sm:{sub_id}' if sub_id and settings.is_multi_tariff_enabled() else 'menu_subscription'
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=texts.t('ENABLE_BUTTON', '✅ Включить'), callback_data='autopay_enable'),
-                InlineKeyboardButton(text=texts.t('DISABLE_BUTTON', '❌ Выключить'), callback_data='autopay_disable'),
-            ],
+    rows: list[list[InlineKeyboardButton]] = []
+    if enabled:
+        if missing_kopeks > 0:
+            rubles = shortfall_topup_rubles(missing_kopeks)
+            rows.append(
+                [
+                    icon_button(
+                        'balance',
+                        texts.t('TOPUP_FOR_AMOUNT_BUTTON', 'Пополнить на {amount}').format(
+                            amount=texts.format_price(rubles * 100)
+                        ),
+                        callback_data=f'balance_topup_amount:{rubles}',
+                        style=STYLE_PAY,
+                    )
+                ]
+            )
+        rows.append(
+            [InlineKeyboardButton(text=texts.t('AUTOPAY_BTN_DISABLE', 'Выключить'), callback_data='autopay_disable')]
+        )
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text=texts.t('AUTOPAY_SET_DAYS_BUTTON', '⚙️ Настроить дни'), callback_data='autopay_set_days'
+                    text=texts.t('AUTOPAY_BTN_DAYS', 'Когда продлевать'), callback_data='autopay_set_days'
                 )
-            ],
-            [InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)],
-        ]
-    )
+            ]
+        )
+    else:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('AUTOPAY_BTN_ENABLE', 'Включить'),
+                    callback_data='autopay_enable',
+                    style=STYLE_PAY,
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 _PAYMENT_METHOD_LOCALE_KEYS: dict[str, tuple[str, str]] = {
@@ -1587,25 +1625,28 @@ def get_confirm_unlink_keyboard(card_id: int, language: str = DEFAULT_LANGUAGE) 
 
 
 def get_autopay_days_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
+    from app.utils.formatters import format_days_declension
+
     texts = get_texts(language)
     keyboard = []
 
-    for days in [1, 3, 7, 14]:
+    # Autopay never charges earlier than 3 days before the end, so longer options
+    # would promise what does not happen (owner's choice, 2026-10-22).
+    for days in [1, 3]:
         keyboard.append(
-            [InlineKeyboardButton(text=f'{days} {_get_days_word(days)}', callback_data=f'autopay_days_{days}')]
+            [
+                InlineKeyboardButton(
+                    text=texts.t('AUTOPAY_DAYS_OPTION', 'За {days_text}').format(
+                        days_text=format_days_declension(days, language)
+                    ),
+                    callback_data=f'autopay_days_{days}',
+                )
+            ]
         )
 
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='subscription_autopay')])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-def _get_days_word(days: int) -> str:
-    if days % 10 == 1 and days % 100 != 11:
-        return 'день'
-    if 2 <= days % 10 <= 4 and not (12 <= days % 100 <= 14):
-        return 'дня'
-    return 'дней'
 
 
 # Deprecated: get_extend_subscription_keyboard() was removed.
@@ -2379,13 +2420,10 @@ def get_updated_subscription_settings_keyboard(
     # Autopay and buying traffic moved here from the subscription screen to
     # keep that screen to four rows.
     if not is_daily_tariff:
+        from app.keyboards.icons import icon_button
+
         keyboard.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.t('AUTOPAY_BUTTON', '💳 Автоплатеж'),
-                    callback_data='subscription_autopay',
-                )
-            ]
+            [icon_button('autopay', texts.t('AUTOPAY_BTN', 'Автопродление'), callback_data='subscription_autopay')]
         )
 
     # In tariff mode the tariff decides whether traffic can be bought, otherwise the global settings do.

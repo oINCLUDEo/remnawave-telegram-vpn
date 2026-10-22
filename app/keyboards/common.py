@@ -21,7 +21,8 @@ from app.utils.miniapp_buttons import strip_leading_emoji_if_custom_icon
 # Unicode emoji of its own — Telegram draws the custom icon beside it, and a
 # leading ⬅️ would render a second arrow next to the first.
 BACK_ICON_CUSTOM_EMOJI_ID = '5258236805890710909'
-CLOSE_ICON_CUSTOM_EMOJI_ID = '5465665476971471368'
+# ✖️, not ❌: in message text ❌ means something broke, so dismissing must look different.
+CLOSE_ICON_CUSTOM_EMOJI_ID = '5226660202035554522'
 
 
 def back_button(

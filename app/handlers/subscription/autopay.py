@@ -69,29 +69,59 @@ async def handle_autopay_menu(callback: types.CallbackQuery, db_user: User, db: 
         )
         return
 
-    status = (
-        texts.t('AUTOPAY_STATUS_ENABLED', 'включен')
-        if subscription.autopay_enabled
-        else texts.t('AUTOPAY_STATUS_DISABLED', 'выключен')
-    )
-    days = subscription.autopay_days_before
-
-    text = texts.t(
-        'AUTOPAY_MENU_TEXT',
-        (
-            '💳 <b>Автоплатеж</b>\n\n'
-            '📊 <b>Статус:</b> {status}\n'
-            '⏰ <b>Списание за:</b> {days} дн. до окончания\n\n'
-            'Выберите действие:'
-        ),
-    ).format(status=status, days=days)
+    text, missing = await _build_autopay_screen(texts, db, db_user, subscription)
 
     await callback.message.edit_text(
         text,
-        reply_markup=get_autopay_keyboard(db_user.language, sub_id=sub_id),
+        reply_markup=get_autopay_keyboard(
+            db_user.language,
+            sub_id=sub_id,
+            enabled=subscription.autopay_enabled,
+            missing_kopeks=missing,
+        ),
         parse_mode='HTML',
     )
     await callback.answer()
+
+
+async def _build_autopay_screen(texts, db: AsyncSession, db_user: User, subscription) -> tuple[str, int]:
+    """The autopay screen: its state as the title, then the date it acts on.
+
+    Returns the text and how much the balance lacks for the renewal (0 when
+    enough or unknown), so the keyboard can offer exactly that top-up.
+    """
+    from app.keyboards.icons import tg_emoji
+    from app.utils.formatters import format_days_declension, format_human_date
+    from app.utils.pricing_utils import balance_covers_price
+    from app.utils.subscription_utils import autopay_days_before, autopay_renewal_date, get_renewal_price
+
+    if not subscription.autopay_enabled:
+        text = texts.t(
+            'AUTOPAY_MENU_OFF',
+            '{icon} <b>Автопродление выключено</b>\nПодписка закончится {end_date}.',
+        ).format(icon=tg_emoji('autopay'), end_date=format_human_date(subscription.end_date, db_user.language))
+        return text, 0
+
+    days = autopay_days_before(subscription)
+    text = texts.t(
+        'AUTOPAY_MENU_ON',
+        '{icon} <b>Автопродление включено</b>\n'
+        'Подписка продлится {renew_date}, за {days_text} до окончания. Деньги спишутся с баланса.',
+    ).format(
+        icon=tg_emoji('autopay'),
+        renew_date=format_human_date(autopay_renewal_date(subscription), db_user.language),
+        days_text=format_days_declension(days, db_user.language),
+    )
+
+    missing = 0
+    price = await get_renewal_price(db, subscription, db_user)
+    if price is not None and not balance_covers_price(db_user.balance_kopeks, price):
+        missing = price - db_user.balance_kopeks
+        text += texts.t(
+            'AUTOPAY_MENU_SHORTFALL',
+            '\n<blockquote>На балансе {balance}, не хватает {missing}</blockquote>',
+        ).format(balance=texts.format_price(db_user.balance_kopeks), missing=texts.format_price(missing))
+    return text, missing
 
 
 async def toggle_autopay(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext = None):
@@ -134,8 +164,8 @@ async def toggle_autopay(callback: types.CallbackQuery, db_user: User, db: Async
     await update_subscription_autopay(db, subscription, enable)
 
     texts = get_texts(db_user.language)
-    status = texts.t('AUTOPAY_STATUS_ENABLED', 'включен') if enable else texts.t('AUTOPAY_STATUS_DISABLED', 'выключен')
-    await callback.answer(texts.t('AUTOPAY_TOGGLE_SUCCESS', '✅ Автоплатеж {status}!').format(status=status))
+    status = texts.t('AUTOPAY_STATUS_ENABLED', 'включено') if enable else texts.t('AUTOPAY_STATUS_DISABLED', 'выключено')
+    await callback.answer(texts.t('AUTOPAY_TOGGLE_SUCCESS', 'Автопродление {status}').format(status=status))
 
     try:
         await handle_autopay_menu(callback, db_user, db)
@@ -151,7 +181,7 @@ async def show_autopay_days(callback: types.CallbackQuery, db_user: User):
     await callback.message.edit_text(
         texts.t(
             'AUTOPAY_SELECT_DAYS_PROMPT',
-            '⏰ Выберите за сколько дней до окончания списывать средства:',
+            'За сколько дней до окончания продлевать подписку?',
         ),
         reply_markup=get_autopay_days_keyboard(db_user.language),
     )
@@ -167,8 +197,14 @@ async def set_autopay_days(callback: types.CallbackQuery, db_user: User, db: Asy
 
     await update_subscription_autopay(db, subscription, subscription.autopay_enabled, days)
 
+    from app.utils.formatters import format_days_declension
+
     texts = get_texts(db_user.language)
-    await callback.answer(texts.t('AUTOPAY_DAYS_SET', '✅ Установлено {days} дней!').format(days=days))
+    await callback.answer(
+        texts.t('AUTOPAY_DAYS_SET', 'Продление за {days_text} до окончания').format(
+            days=days, days_text=format_days_declension(days, db_user.language)
+        )
+    )
 
     await handle_autopay_menu(callback, db_user, db)
 

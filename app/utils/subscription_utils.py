@@ -1,3 +1,4 @@
+from datetime import timedelta
 from urllib.parse import quote, urlparse, urlunparse
 
 import structlog
@@ -192,3 +193,38 @@ def resolve_simple_subscription_device_limit() -> int:
         return forced_limit
 
     return int(getattr(settings, 'SIMPLE_SUBSCRIPTION_DEVICE_LIMIT', 0) or 0)
+
+
+# Autopay never charges earlier than this many days before the end, whatever
+# the subscription asks for (monitoring_service._process_autopayments).
+AUTOPAY_MAX_DAYS_BEFORE = 3
+
+
+def autopay_days_before(subscription: Subscription) -> int:
+    """How many days before the end autopay really renews this subscription."""
+    return min(subscription.autopay_days_before or AUTOPAY_MAX_DAYS_BEFORE, AUTOPAY_MAX_DAYS_BEFORE)
+
+
+def autopay_renewal_date(subscription: Subscription):
+    """When autopay will charge the balance for this subscription, or None."""
+    if not subscription.end_date:
+        return None
+    return subscription.end_date - timedelta(days=autopay_days_before(subscription))
+
+
+async def get_renewal_price(db: AsyncSession, subscription: Subscription, user) -> int | None:
+    """What autopay would charge now: the tariff's shortest period, with the user's discounts.
+
+    None when the price cannot be worked out; callers then say nothing about money.
+    *user* needs its promo groups loaded (get_user_by_id does that).
+    """
+    from app.services.pricing_engine import pricing_engine
+
+    tariff = getattr(subscription, 'tariff', None)
+    period = (tariff.get_shortest_period() if tariff else None) or 30
+    try:
+        pricing = await pricing_engine.calculate_renewal_price(db, subscription, period, user=user)
+    except Exception as error:
+        logger.warning('Не удалось рассчитать цену продления', subscription_id=subscription.id, error=error)
+        return None
+    return pricing.final_total if pricing.final_total > 0 else None

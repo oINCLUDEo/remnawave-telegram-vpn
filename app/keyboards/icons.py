@@ -44,11 +44,15 @@ ICONS: dict[str, Icon] = {
     'tariff': Icon('📦', '5854908544712707500'),
     'devices': Icon('📱'),
     'settings': Icon('⚙️'),
-    'autopay': Icon('💳', '5220048868682532055'),
+    # Autopay renews the subscription, so it wears the renewal icon, not the payment card.
+    'autopay': Icon('🕔', '5258419835922030550'),
     'traffic': Icon('📈'),
     'pause': Icon('⏸️'),
     'resume': Icon('▶️'),
-    # Statuses and values in message text.
+    # Statuses and values in message text. The first line of a message carries
+    # one of them: the object's icon when all is well, ⚠️ when the user needs to
+    # act, 🚫 when access has ended, ❌ only when something broke on our side.
+    'warning': Icon('⚠️'),
     'expired': Icon('🚫', '5240241223632954241'),
     'date': Icon('🗓', '5274055917766202507'),
     'language': Icon('🌍'),
