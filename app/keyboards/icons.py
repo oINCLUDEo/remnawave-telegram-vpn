@@ -24,10 +24,13 @@ class Icon:
     custom_emoji_id: str | None = None
 
 
-# Custom emoji ids were checked by the owner with an emoji-id bot. Most come
-# from one pack (ids starting 5258...), so the menu icons share one style; keep
-# to that pack when adding icons. The Unicode emoji is the custom emoji's own
-# glyph, used where Telegram cannot draw it.
+# Custom emoji ids were checked by the owner. Most come from one pack, «TG iOS &
+# macOS Icons» (https://t.me/addemoji/tgmacicons, ids mostly 5258...), so the
+# icons share one style; keep to that pack when adding icons (admin /emoji
+# lists it). The few colour ones (💎 🎁 🪐 💳 📦 🚫 🗓, and plain ⚠️) stay on
+# purpose: they mark the product and the statuses, and their colour is the
+# signal. The Unicode emoji is the custom emoji's own glyph, used where
+# Telegram cannot draw it.
 ICONS: dict[str, Icon] = {
     'connect': Icon('🪐', '5220067453006022598'),
     'subscription': Icon('💎', '5427168083074628963'),
@@ -42,11 +45,11 @@ ICONS: dict[str, Icon] = {
     'cabinet': Icon('👤', '5258011929993026890'),
     'info': Icon('ℹ️', '5258503720928288433'),
     'tariff': Icon('📦', '5854908544712707500'),
-    'devices': Icon('📱'),
-    'settings': Icon('⚙️'),
+    'devices': Icon('📱', '5258423306255604960'),
+    'settings': Icon('⚙️', '5258096772776991776'),
     # Autopay renews the subscription, so it wears the renewal icon, not the payment card.
     'autopay': Icon('🕔', '5258419835922030550'),
-    'traffic': Icon('📈'),
+    'traffic': Icon('📈', '5258391025281408576'),
     'pause': Icon('⏸️'),
     'resume': Icon('▶️'),
     # Statuses and values in message text. The first line of a message carries
@@ -55,11 +58,11 @@ ICONS: dict[str, Icon] = {
     'warning': Icon('⚠️'),
     'expired': Icon('🚫', '5240241223632954241'),
     'date': Icon('🗓', '5274055917766202507'),
-    'language': Icon('🌍'),
-    'promocode': Icon('🎫'),
-    'contests': Icon('🎲'),
-    'admin': Icon('⚙️'),
-    'moderation': Icon('🧑‍⚖️'),
+    'language': Icon('🌍', '5260512129240276089'),
+    'promocode': Icon('🎫', '5296385246579670377'),
+    'contests': Icon('🎲', '5258508428212445001'),
+    'admin': Icon('⚙️', '5258096772776991776'),
+    'moderation': Icon('🧑‍⚖️', '5258450450448915742'),
 }
 
 # Button colours (Telegram Bot API 9.4 ``style``). Colour says what kind of
