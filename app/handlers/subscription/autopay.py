@@ -63,7 +63,7 @@ async def handle_autopay_menu(callback: types.CallbackQuery, db_user: User, db: 
         await callback.answer(
             texts.t(
                 'AUTOPAY_NOT_AVAILABLE_FOR_DAILY',
-                'Автоплатеж недоступен для суточных тарифов. Списание происходит автоматически раз в сутки.',
+                'Суточный тариф продлевается сам раз в сутки, автопродление ему не нужно.',
             ),
             show_alert=True,
         )
@@ -137,7 +137,7 @@ async def toggle_autopay(callback: types.CallbackQuery, db_user: User, db: Async
             await callback.answer(
                 texts.t(
                     'AUTOPAY_NOT_AVAILABLE_CLASSIC',
-                    'Автоплатеж недоступен. Для продления необходимо выбрать тариф.',
+                    'Автопродление работает только с тарифом. Выберите тариф, чтобы его включить.',
                 ),
                 show_alert=True,
             )
@@ -155,7 +155,7 @@ async def toggle_autopay(callback: types.CallbackQuery, db_user: User, db: Async
             await callback.answer(
                 texts.t(
                     'AUTOPAY_NOT_AVAILABLE_FOR_DAILY',
-                    'Автоплатеж недоступен для суточных тарифов. Списание происходит автоматически раз в сутки.',
+                    'Суточный тариф продлевается сам раз в сутки, автопродление ему не нужно.',
                 ),
                 show_alert=True,
             )

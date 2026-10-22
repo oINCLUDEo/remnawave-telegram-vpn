@@ -540,7 +540,7 @@ def get_insufficient_balance_keyboard(
             and last_row[0].callback_data in {'menu_balance', 'back_to_menu'}
         ):
             keyboard.inline_keyboard[-1][0] = InlineKeyboardButton(
-                text=texts.t('PAYMENT_RETURN_HOME_BUTTON', '🏠 На главную'),
+                text=texts.t('PAYMENT_RETURN_HOME_BUTTON', '🏠 Главное меню'),
                 callback_data='back_to_menu',
             )
             back_row_index = len(keyboard.inline_keyboard) - 1
