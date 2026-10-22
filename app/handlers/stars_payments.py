@@ -536,15 +536,10 @@ async def handle_successful_payment(message: types.Message, db: AsyncSession, st
         )
 
         if success:
-            from app.services.payment.common import build_topup_success_message
-
+            # The user message is sent by the payment service: «Баланс пополнен» or,
+            # when the top-up bought the subscription, the purchase message.
             rubles_amount = TelegramStarsService.calculate_rubles_from_stars(payment.total_amount)
             amount_kopeks = int((rubles_amount * Decimal(100)).to_integral_value(rounding=ROUND_HALF_UP))
-
-            # The same message as for card and СБП. Telegram already shows how many
-            # stars were spent in its own service line, so the bot does not repeat it.
-            success_text, keyboard = await build_topup_success_message(user, amount_kopeks)
-            await message.answer(success_text, parse_mode='HTML', reply_markup=keyboard)
 
             logger.info(
                 '✅ Stars платеж успешно обработан: пользователь , звезд →',

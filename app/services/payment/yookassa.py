@@ -904,8 +904,27 @@ class YooKassaPaymentMixin:
 
                     # Для рекуррентных автоплатежей уведомления отправляет recurrent_payment_service
                     if not is_recurrent_topup:
+                        # The saved cart goes first: when the top-up buys or renews the
+                        # subscription, that message already says how much came in, and
+                        # the general «Баланс пополнен» message is not sent on top of it.
+                        # ВАЖНО: этот код должен выполняться даже при ошибках в уведомлениях
+                        topup_announced = False
+                        try:
+                            from app.services.payment.common import send_cart_notification_after_topup
+
+                            topup_announced = await send_cart_notification_after_topup(
+                                user, payment.amount_kopeks, db, getattr(self, 'bot', None)
+                            )
+                        except Exception as e:
+                            logger.error(
+                                'Ошибка при работе с сохраненной корзиной для пользователя',
+                                user_id=user.id,
+                                error=e,
+                                exc_info=True,
+                            )
+
                         # Отправляем уведомление пользователю (только Telegram-пользователям)
-                        if getattr(self, 'bot', None) and user.telegram_id:
+                        if not topup_announced and getattr(self, 'bot', None) and user.telegram_id:
                             try:
                                 # Передаем только простые данные, чтобы избежать проблем с ленивой загрузкой
                                 await self._send_payment_success_notification(
@@ -918,22 +937,6 @@ class YooKassaPaymentMixin:
                                 logger.info('Уведомление пользователю о платеже отправлено успешно')
                             except Exception as error:
                                 logger.error('Ошибка отправки уведомления о платеже', error=error, exc_info=True)
-
-                        # Проверяем наличие сохраненной корзины для возврата к оформлению подписки
-                        # ВАЖНО: этот код должен выполняться даже при ошибках в уведомлениях
-                        try:
-                            from app.services.payment.common import send_cart_notification_after_topup
-
-                            await send_cart_notification_after_topup(
-                                user, payment.amount_kopeks, db, getattr(self, 'bot', None)
-                            )
-                        except Exception as e:
-                            logger.error(
-                                'Ошибка при работе с сохраненной корзиной для пользователя',
-                                user_id=user.id,
-                                error=e,
-                                exc_info=True,
-                            )
 
                 if is_simple_subscription:
                     logger.info('Обнаружен платеж простой покупки подписки для пользователя', user_id=user.id)

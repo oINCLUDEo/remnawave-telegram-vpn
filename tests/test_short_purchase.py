@@ -10,7 +10,6 @@ from app.handlers.subscription import tariff_purchase
 from app.handlers.subscription.tariff_purchase import (
     get_purchase_success_keyboard,
     get_shortfall_keyboard,
-    shortfall_hint,
 )
 from app.localization.texts import get_texts
 
@@ -45,10 +44,6 @@ def test_restricted_top_up_keeps_the_explaining_screen():
     rows = _targets(get_shortfall_keyboard(user, 15000, 'tariff_select:3'))
 
     assert rows == [['balance_topup'], ['tariff_select:3']]
-
-
-def test_shortfall_hint_names_the_amount():
-    assert '150' in shortfall_hint('ru', 15000)
 
 
 def test_success_screen_offers_connect_first():

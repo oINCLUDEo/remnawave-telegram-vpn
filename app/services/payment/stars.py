@@ -487,14 +487,31 @@ class TelegramStarsMixin:
                 logger.error('Ошибка отправки уведомления о пополнении Stars', error=error, exc_info=True)
 
         # Проверяем наличие сохраненной корзины для возврата к оформлению подписки
+        topup_announced = False
         try:
             from app.services.payment.common import send_cart_notification_after_topup
 
-            await send_cart_notification_after_topup(user, amount_kopeks, db, getattr(self, 'bot', None))
+            topup_announced = await send_cart_notification_after_topup(
+                user, amount_kopeks, db, getattr(self, 'bot', None)
+            )
         except Exception as error:  # pragma: no cover - диагностический лог
             logger.error(
                 'Ошибка при работе с сохраненной корзиной для пользователя', user_id=user.id, error=error, exc_info=True
             )
+
+        # The same «Баланс пополнен» message as for card and СБП, unless the
+        # cart message above already told about this top-up. Telegram shows the
+        # stars spent in its own service line, so the count is not repeated.
+        if not topup_announced and getattr(self, 'bot', None) and user.telegram_id:
+            try:
+                from app.services.payment.common import build_topup_success_message
+
+                success_text, keyboard = await build_topup_success_message(user, amount_kopeks)
+                await self.bot.send_message(
+                    chat_id=user.telegram_id, text=success_text, reply_markup=keyboard, parse_mode='HTML'
+                )
+            except Exception as error:  # pragma: no cover - диагностический лог
+                logger.error('Ошибка отправки сообщения о пополнении Stars', user_id=user.id, error=error)
 
         logger.info(
             '✅ Обработан Stars платеж: пользователь , звезд →',

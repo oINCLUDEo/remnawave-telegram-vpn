@@ -309,7 +309,10 @@ async def send_cart_notification_after_topup(
 ) -> bool:
     """Handle saved cart after balance top-up: try auto-purchase, then send notification.
 
-    Returns True if a cart notification was sent.
+    Returns True when the user already got a message about this top-up: an
+    automatic purchase or renewal (its message says how much came in) or the
+    saved-cart notice. The caller then skips its own «Баланс пополнен»
+    message, so one top-up is one message.
     """
     from aiogram import types
 
@@ -322,9 +325,9 @@ async def send_cart_notification_after_topup(
 
     # Try to resume DISABLED daily subscription immediately (highest priority)
     try:
-        daily_resumed = await try_resume_disabled_daily_after_topup(db, user, bot=bot)
+        daily_resumed = await try_resume_disabled_daily_after_topup(db, user, bot=bot, topup_kopeks=amount_kopeks)
         if daily_resumed:
-            return False
+            return True
     except Exception as daily_error:
         logger.error(
             'Ошибка авто-возобновления суточной подписки после пополнения',
@@ -349,7 +352,9 @@ async def send_cart_notification_after_topup(
         # Try auto-purchase first
         auto_purchase_success = False
         try:
-            auto_purchase_success = await auto_purchase_saved_cart_after_topup(db, user, bot=bot)
+            auto_purchase_success = await auto_purchase_saved_cart_after_topup(
+                db, user, bot=bot, topup_kopeks=amount_kopeks
+            )
         except Exception as auto_error:
             logger.error(
                 'Ошибка автоматической покупки подписки для пользователя',
@@ -359,7 +364,7 @@ async def send_cart_notification_after_topup(
             )
 
         if auto_purchase_success:
-            return False
+            return True
 
         if not bot or not getattr(user, 'telegram_id', None):
             return False
@@ -369,52 +374,51 @@ async def send_cart_notification_after_topup(
         balance = getattr(refreshed_user or user, 'balance_kopeks', 0)
 
         texts = get_texts(getattr(user, 'language', 'ru'))
+        from app.keyboards.icons import STYLE_PAY, icon_button, tg_emoji
+        from app.utils.pricing_utils import shortfall_topup_rubles
 
-        # Build message based on whether balance is sufficient
+        # One message: the top-up and what it means for the saved purchase.
         fmt = settings.format_price
-        cart_total_formatted = fmt(cart_total)
         if balance >= cart_total:
-            template = texts.get('BALANCE_TOPPED_UP_CART_SUFFICIENT', '')
+            template = texts.t(
+                'BALANCE_TOPPED_UP_CART_SUFFICIENT',
+                '{icon} <b>Баланс пополнен на {amount}</b>\nТеперь хватает на подписку за {cart_total}.',
+            )
             message_text = template.format(
-                amount=fmt(amount_kopeks),
-                balance=fmt(balance),
-                cart_total=cart_total_formatted,
-                total_amount=cart_total_formatted,
+                icon=tg_emoji('balance'), amount=fmt(amount_kopeks), cart_total=fmt(cart_total)
+            )
+            next_button = icon_button(
+                'buy',
+                texts.t('CART_CHECKOUT_BUTTON', 'Оформить подписку'),
+                callback_data='return_to_saved_cart',
+                style=STYLE_PAY,
             )
         else:
             missing = cart_total - balance
-            template = texts.get('BALANCE_TOPPED_UP_CART_INSUFFICIENT', '')
-            message_text = template.format(
-                amount=fmt(amount_kopeks),
-                balance=fmt(balance),
-                cart_total=cart_total_formatted,
-                total_amount=cart_total_formatted,
-                missing=fmt(missing),
+            template = texts.t(
+                'BALANCE_TOPPED_UP_CART_INSUFFICIENT',
+                '{icon} <b>Баланс пополнен на {amount}</b>\n'
+                'Чтобы оформить подписку за {cart_total}, пополните баланс ещё на {missing}.',
             )
-
-        if not message_text:
-            logger.warning('Missing cart notification template', language=getattr(user, 'language', 'ru'))
-            return False
+            message_text = template.format(
+                icon=tg_emoji('balance'), amount=fmt(amount_kopeks), cart_total=fmt(cart_total), missing=fmt(missing)
+            )
+            topup_rubles = shortfall_topup_rubles(missing)
+            next_button = icon_button(
+                'balance',
+                texts.t('TOPUP_FOR_AMOUNT_BUTTON', 'Пополнить на {amount}').format(amount=fmt(topup_rubles * 100)),
+                callback_data=f'balance_topup_amount:{topup_rubles}',
+                style=STYLE_PAY,
+            )
 
         sent = False
         try:
             keyboard = types.InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [next_button],
                     [
                         types.InlineKeyboardButton(
-                            text=texts.get('RETURN_TO_SUBSCRIPTION_CHECKOUT', '⬅️ Checkout'),
-                            callback_data='return_to_saved_cart',
-                        )
-                    ],
-                    [
-                        types.InlineKeyboardButton(
-                            text=texts.get('MY_BALANCE_BUTTON', '💰 Balance'),
-                            callback_data='menu_balance',
-                        )
-                    ],
-                    [
-                        types.InlineKeyboardButton(
-                            text=texts.get('MAIN_MENU_BUTTON', '🏠 Menu'),
+                            text=texts.t('MAIN_MENU_BUTTON', '🏠 Главное меню'),
                             callback_data='back_to_menu',
                         )
                     ],
@@ -439,9 +443,9 @@ async def send_cart_notification_after_topup(
 
     # Try to auto-extend expired subscription only when there is no saved cart.
     try:
-        auto_extended = await try_auto_extend_expired_after_topup(db, user, bot=bot)
+        auto_extended = await try_auto_extend_expired_after_topup(db, user, bot=bot, topup_kopeks=amount_kopeks)
         if auto_extended:
-            return False
+            return True
     except Exception as extend_error:
         logger.error(
             'Ошибка автопродления истёкшей подписки после пополнения',
