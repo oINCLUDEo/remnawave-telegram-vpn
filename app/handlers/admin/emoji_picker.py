@@ -69,6 +69,11 @@ _HELP = (
 )
 
 
+async def _send(message: types.Message, text: str) -> None:
+    """A plain text message: ``Message.answer`` would put the logo over short ones (app/utils/message_patch.py)."""
+    await message.bot.send_message(message.chat.id, text)
+
+
 def _plain(emoji: str | None) -> str:
     """The emoji without variation selectors, so «ℹ️» and «ℹ» match."""
     return (emoji or '').replace('️', '')
@@ -151,7 +156,7 @@ async def _send_pack(message: types.Message, pack_name: str) -> None:
         f'Ссылка: https://t.me/addemoji/{sticker_set.name}'
     )
     for text in _chunks(_suggestion_lines(stickers)):
-        await message.answer(text)
+        await _send(message, text)
 
     full_list = ['<b>Весь набор</b>']
     full_list.extend(
@@ -160,7 +165,7 @@ async def _send_pack(message: types.Message, pack_name: str) -> None:
         for sticker in stickers
     )
     for text in _chunks(full_list):
-        await message.answer(text)
+        await _send(message, text)
 
 
 @admin_required
