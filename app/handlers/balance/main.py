@@ -1,17 +1,20 @@
 import html
+import re
+from datetime import UTC, datetime
 
 import structlog
 from aiogram import Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InaccessibleMessage
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.transaction import get_user_transactions
-from app.database.models import TransactionType, User
+from app.database.models import PaymentMethod, TransactionType, User, YooKassaPayment
 from app.handlers.subscription.autopay import handle_confirm_unlink, handle_saved_cards_list, handle_unlink_card
-from app.keyboards.icons import tg_emoji
+from app.keyboards.icons import STYLE_PAY, icon_button, tg_emoji
 from app.keyboards.inline import (
     get_back_keyboard,
     get_balance_keyboard,
@@ -21,7 +24,8 @@ from app.keyboards.inline import (
 from app.localization.texts import get_texts
 from app.states import BalanceStates
 from app.utils.decorators import error_handler
-from app.utils.pricing_utils import shortfall_topup_rubles
+from app.utils.formatters import format_days_declension, format_human_date
+from app.utils.pricing_utils import balance_covers_price, shortfall_topup_rubles
 
 
 logger = structlog.get_logger(__name__)
@@ -161,6 +165,42 @@ async def route_payment_by_method(
     return False
 
 
+async def _next_renewal(db: AsyncSession, db_user: User) -> tuple[datetime, int] | None:
+    """The next renewal the balance has to cover: its date and price.
+
+    None without an active paid subscription, for daily tariffs (they charge
+    every day) and when the price cannot be worked out. With several
+    subscriptions it is the one that ends first.
+    """
+    from app.database.crud.user import get_user_by_id
+    from app.utils.subscription_utils import autopay_renewal_date, get_renewal_price
+
+    try:
+        user = await get_user_by_id(db, db_user.id)
+        subscriptions = [
+            sub
+            for sub in (user.subscriptions if user else None) or []
+            if sub.is_active and not sub.is_trial and not getattr(sub.tariff, 'is_daily', False)
+        ]
+        if not subscriptions:
+            return None
+        subscription = min(subscriptions, key=lambda sub: sub.end_date)
+        price = await get_renewal_price(db, subscription, user)
+    except Exception as error:
+        logger.warning('Не удалось рассчитать продление для экрана баланса', user_id=db_user.id, error=error)
+        return None
+    if price is None:
+        return None
+
+    renewal_date = subscription.end_date
+    if subscription.autopay_enabled:
+        # Autopay charges a few days before the end; once that day has passed it keeps trying until the end.
+        autopay_date = autopay_renewal_date(subscription)
+        if autopay_date and autopay_date > datetime.now(UTC):
+            renewal_date = autopay_date
+    return renewal_date, price
+
+
 @error_handler
 async def show_balance_menu(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     # Проверяем, доступно ли сообщение
@@ -169,10 +209,26 @@ async def show_balance_menu(callback: types.CallbackQuery, db_user: User, db: As
         return
 
     texts = get_texts(db_user.language)
+    balance = db_user.balance_kopeks or 0
 
-    balance_text = texts.BALANCE_INFO.format(balance=texts.format_price(db_user.balance_kopeks))
+    # The balance is there to pay for the subscription, so the screen says
+    # whether it covers the next renewal.
+    balance_text = texts.BALANCE_INFO.format(balance=texts.format_price(balance))
+    missing_kopeks = 0
+    renewal = await _next_renewal(db, db_user)
+    if renewal is not None:
+        renewal_date, price = renewal
+        date_text = format_human_date(renewal_date, db_user.language)
+        if balance_covers_price(balance, price):
+            line = texts.t('BALANCE_RENEWAL_COVERED', 'Хватит на продление {date}.').format(date=date_text)
+        else:
+            missing_kopeks = price - balance
+            fmt = texts.format_price
+            line = texts.t('BALANCE_RENEWAL_SHORT', 'Продление {date} стоит {price}, не хватает {missing}.')
+            line = line.format(date=date_text, price=fmt(price), missing=fmt(missing_kopeks))
+        balance_text += '\n' + line
 
-    reply_markup = get_balance_keyboard(db_user.language)
+    reply_markup = get_balance_keyboard(db_user.language, missing_kopeks=missing_kopeks)
 
     try:
         if callback.message and callback.message.text:
@@ -220,25 +276,43 @@ async def show_balance_history(callback: types.CallbackQuery, db_user: User, db:
             seen_all.add(transaction_key)
             total_unique += 1
 
+    title = texts.t('HISTORY_TITLE', '📊 <b>История</b>')
+
     if not unique_transactions:
-        await callback.message.edit_text('📊 История операций пуста', reply_markup=get_back_keyboard(db_user.language))
+        keyboard = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    icon_button(
+                        'balance',
+                        texts.t('HISTORY_TOPUP_BUTTON', 'Пополнить баланс'),
+                        callback_data='balance_topup',
+                        style=STYLE_PAY,
+                    )
+                ],
+                [types.InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')],
+            ]
+        )
+        empty = texts.t('HISTORY_EMPTY', 'Здесь появятся пополнения и покупки.')
+        await callback.message.edit_text(f'{title}\n{empty}', reply_markup=keyboard, parse_mode='HTML')
         await callback.answer()
         return
 
-    text = '📊 <b>История операций</b>\n\n'
-
+    # One line per operation under a heading with its day: «💰 +300 ₽ · Пополнение по СБП».
+    yookassa_methods = await _yookassa_method_types(db, unique_transactions)
+    lines = [title]
+    current_day = None
     for transaction in unique_transactions:
-        is_credit = transaction.type in CREDIT_TRANSACTION_TYPES
-        emoji = '💰' if is_credit else '💸'
-        amount_text = (
-            f'+{texts.format_price(transaction.amount_kopeks)}'
-            if is_credit
-            else f'-{texts.format_price(abs(transaction.amount_kopeks))}'
-        )
+        day = _history_day(texts, transaction.created_at, db_user.language)
+        if day != current_day:
+            lines.extend(('', f'<b>{day}</b>'))
+            current_day = day
 
-        text += f'{emoji} {amount_text}\n'
-        text += f'📝 {html.escape(transaction.description or "")}\n'
-        text += f'📅 {transaction.created_at.strftime("%d.%m.%Y %H:%M")}\n\n'
+        amount = texts.format_price(abs(transaction.amount_kopeks))
+        # A real minus sign, not a hyphen.
+        amount_text = f'+{amount}' if transaction.type in CREDIT_TRANSACTION_TYPES else f'−{amount}'
+        label = _history_label(texts, transaction, yookassa_methods.get(transaction.id), db_user.language)
+        lines.append(f'{_history_icon(transaction.type)} {amount_text} · {label}')
+    text = '\n'.join(lines)
 
     keyboard = []
     total_pages = (total_unique + TRANSACTIONS_PER_PAGE - 1) // TRANSACTIONS_PER_PAGE
@@ -253,6 +327,85 @@ async def show_balance_history(callback: types.CallbackQuery, db_user: User, db:
         text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode='HTML'
     )
     await callback.answer()
+
+
+_HISTORY_CUSTOM_ICONS = {
+    TransactionType.DEPOSIT.value: 'balance',
+    TransactionType.REFERRAL_REWARD.value: 'referral',
+    TransactionType.SUBSCRIPTION_PAYMENT.value: 'subscription',
+}
+_HISTORY_EMOJI = {
+    TransactionType.REFUND.value: '↩️',
+    TransactionType.POLL_REWARD.value: '🎁',
+    TransactionType.GIFT_PAYMENT.value: '🎁',
+}
+_TARIFF_PAYMENT_RE = re.compile(r'^(Покупка|Продление) тарифа (.+) на (\d+) дней$')
+
+
+def _history_icon(transaction_type: str) -> str:
+    """The operation's icon: money in, a friend's bonus, the subscription, or money out."""
+    if transaction_type in _HISTORY_CUSTOM_ICONS:
+        return tg_emoji(_HISTORY_CUSTOM_ICONS[transaction_type])
+    return _HISTORY_EMOJI.get(transaction_type, '💸')
+
+
+def _history_day(texts, created_at: datetime, language: str) -> str:
+    """«Сегодня», «Вчера» or «18 октября», in the bot's timezone."""
+    from app.utils.timezone import to_local_datetime
+
+    local = to_local_datetime(created_at)
+    days_ago = (to_local_datetime(datetime.now(UTC)).date() - local.date()).days
+    if days_ago == 0:
+        return texts.t('HISTORY_TODAY', 'Сегодня')
+    if days_ago == 1:
+        return texts.t('HISTORY_YESTERDAY', 'Вчера')
+    return format_human_date(created_at, language)
+
+
+def _history_label(texts, transaction, yookassa_method: str | None, language: str) -> str:
+    """What the operation was, from its type, so payment ids never reach the user."""
+    kind = transaction.type
+    deposit = kind == TransactionType.DEPOSIT.value
+    if deposit and transaction.payment_method == PaymentMethod.YOOKASSA.value:
+        if yookassa_method == 'sbp':
+            return texts.t('HISTORY_TOPUP_SBP', 'Пополнение по СБП')
+        if yookassa_method == 'bank_card':
+            return texts.t('HISTORY_TOPUP_CARD', 'Пополнение картой')
+        return texts.t('HISTORY_TOPUP', 'Пополнение баланса')
+    if deposit and transaction.payment_method == PaymentMethod.TELEGRAM_STARS.value:
+        return texts.t('HISTORY_TOPUP_STARS', 'Пополнение звёздами')
+    if kind == TransactionType.REFERRAL_REWARD.value:
+        return texts.t('HISTORY_REFERRAL_REWARD', 'Бонус за приглашённого друга')
+    if kind == TransactionType.REFUND.value:
+        return texts.t('HISTORY_REFUND', 'Возврат на баланс')
+
+    # The rest keeps its own description, without the service part after a colon.
+    description = (transaction.description or '').split(':', 1)[0].strip()
+    match = _TARIFF_PAYMENT_RE.match(description)
+    if match:
+        action, tariff_name, days = match.groups()
+        if action == 'Покупка':
+            template = texts.t('HISTORY_SUBSCRIPTION_PURCHASE', 'Подписка «{tariff}», {period}')
+        else:
+            template = texts.t('HISTORY_SUBSCRIPTION_RENEWAL', 'Продление «{tariff}», {period}')
+        return template.format(tariff=html.escape(tariff_name), period=format_days_declension(int(days), language))
+    return html.escape(description) or texts.t('HISTORY_OPERATION', 'Операция')
+
+
+async def _yookassa_method_types(db: AsyncSession, transactions) -> dict[int, str]:
+    """СБП or card for each YooKassa top-up in the list, by transaction id."""
+    deposit, yookassa = TransactionType.DEPOSIT.value, PaymentMethod.YOOKASSA.value
+    ids = [item.id for item in transactions if item.type == deposit and item.payment_method == yookassa]
+    if not ids:
+        return {}
+    query = select(YooKassaPayment.transaction_id, YooKassaPayment.payment_method_type)
+    query = query.where(YooKassaPayment.transaction_id.in_(ids))
+    try:
+        result = await db.execute(query)
+    except Exception as error:
+        logger.warning('Не удалось узнать способы оплаты ЮKassa для истории', error=error)
+        return {}
+    return {transaction_id: method for transaction_id, method in result.all() if method}
 
 
 @error_handler
