@@ -24,45 +24,46 @@ class Icon:
     custom_emoji_id: str | None = None
 
 
-# Custom emoji ids were checked by the owner. Most come from one colour animated
-# pack, the one 💎 5427168083074628963 belongs to (admin ``/emoji
-# 5427168083074628963`` lists it), so the icons share one style; keep to that
-# pack when adding icons. Where it has nothing that fits, the icon comes from
-# the pack 💳 belongs to or from «TG iOS & macOS Icons»
-# (https://t.me/addemoji/tgmacicons). The Unicode emoji is the nearest plain
-# emoji, used where Telegram cannot draw the custom one.
+# Custom emoji ids were checked by the owner. Most come from one pack, «TG iOS &
+# macOS Icons» (https://t.me/addemoji/tgmacicons, ids mostly 5258...), so the
+# icons share one style; keep to that pack when adding icons (admin /emoji
+# lists it): the base is monochrome, in the spirit of Apple. The few colour ones
+# (💎 🎁 🪐 💳 📦 🚫 🗓 ⚠️) are the accents: they mark the product and the
+# statuses, and their colour is the signal; take accents from the colour
+# animated pack 💎 belongs to (/emoji 5427168083074628963). The Unicode emoji
+# is the custom emoji's own glyph, used where Telegram cannot draw it.
 ICONS: dict[str, Icon] = {
-    'connect': Icon('🌐', '5447410659077661506'),
+    'connect': Icon('🪐', '5220067453006022598'),
     'subscription': Icon('💎', '5427168083074628963'),
     'buy': Icon('💎', '5427168083074628963'),
     'trial': Icon('🎁', '5203996991054432397'),
-    'renew': Icon('🔄', '5386367538735104399'),
-    'checkout': Icon('🛍', '5406683434124859552'),
-    'balance': Icon('💰', '5231449120635370684'),
+    'renew': Icon('🕔', '5258419835922030550'),
+    'checkout': Icon('🛒'),
+    'balance': Icon('💰', '5258204546391351475'),
     'payment': Icon('💳', '5220048868682532055'),
-    'referral': Icon('✉️', '5253742260054409879'),
-    'support': Icon('💬', '5443038326535759644'),
-    'cabinet': Icon('🏠', '5416041192905265756'),
-    'info': Icon('ℹ️', '5334544901428229844'),
+    'referral': Icon('👥', '5258513401784573443'),
+    'support': Icon('🤙', '5258337316715373336'),
+    'cabinet': Icon('👤', '5258011929993026890'),
+    'info': Icon('ℹ️', '5258503720928288433'),
     'tariff': Icon('📦', '5854908544712707500'),
     'devices': Icon('📱', '5258423306255604960'),
-    'settings': Icon('⚙️', '5341715473882955310'),
+    'settings': Icon('⚙️', '5258096772776991776'),
     # Autopay renews the subscription, so it wears the renewal icon, not the payment card.
-    'autopay': Icon('🔄', '5386367538735104399'),
-    'traffic': Icon('📈', '5244837092042750681'),
-    'pause': Icon('⏸️', '5359543311897998264'),
-    'resume': Icon('▶️', '5348125953090403204'),
+    'autopay': Icon('🕔', '5258419835922030550'),
+    'traffic': Icon('📈', '5258391025281408576'),
+    'pause': Icon('⏸️'),
+    'resume': Icon('▶️'),
     # Statuses and values in message text. The first line of a message carries
     # one of them: the object's icon when all is well, ⚠️ when the user needs to
     # act, 🚫 when access has ended, ❌ only when something broke on our side.
     'warning': Icon('⚠️', '5447644880824181073'),
     'expired': Icon('🚫', '5240241223632954241'),
-    'date': Icon('📅', '5413879192267805083'),
+    'date': Icon('🗓', '5274055917766202507'),
     'language': Icon('🌍', '5260512129240276089'),
-    'promocode': Icon('🎫', '5229064374403998351'),
-    'contests': Icon('🥇', '5440539497383087970'),
-    'admin': Icon('⚙️', '5341715473882955310'),
-    'moderation': Icon('🛡', '5251203410396458957'),
+    'promocode': Icon('🎫', '5296385246579670377'),
+    'contests': Icon('🎲', '5258508428212445001'),
+    'admin': Icon('⚙️', '5258096772776991776'),
+    'moderation': Icon('🧑‍⚖️', '5258450450448915742'),
 }
 
 # Button colours (Telegram Bot API 9.4 ``style``). Colour says what kind of
