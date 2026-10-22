@@ -10,7 +10,7 @@ from app.config import settings
 from app.database.crud.rules import clear_all_rules, get_rules_statistics
 from app.database.crud.ticket import TicketCRUD
 from app.database.models import User
-from app.handlers.admin import support_settings as support_settings_handlers
+from app.handlers.admin import emoji_picker as emoji_picker_handlers, support_settings as support_settings_handlers
 from app.keyboards.admin import (
     get_admin_communications_submenu_keyboard,
     get_admin_main_keyboard,
@@ -349,6 +349,10 @@ async def admin_commands_help(message: types.Message, db_user: User, db: AsyncSe
 • <code>/clear_rules</code> - очистить все правила
 • <code>/rules_stats</code> - статистика правил
 
+<b>🧩 Премиум-эмодзи:</b>
+• <code>/emoji ссылка на набор</code> - весь набор и подбор под иконки бота
+• <code>/emoji</code> с эмодзи в сообщении - их ID
+
 <b>ℹ️ Справка:</b>
 • <code>/admin_help</code> - это сообщение
 
@@ -388,3 +392,5 @@ def register_handlers(dp: Dispatcher):
     dp.message.register(rules_stats_command, Command('rules_stats'))
 
     dp.message.register(admin_commands_help, Command('admin_help'))
+
+    emoji_picker_handlers.register_handlers(dp)
