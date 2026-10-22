@@ -4,23 +4,28 @@
   icon in ``app.keyboards.icons.ICONS``, suggests the pack's emoji that are tied
   to the same plain emoji (or a related one);
 - ``/emoji <id>`` does the same for the pack that emoji comes from;
+- ``/emoji icons`` shows the bot's icon dictionary as users see it: every
+  ``ICONS`` key, its icon, its id and the plain emoji that turn into it;
 - ``/emoji`` followed by premium emoji, or sent as a reply to a message with
   them, lists their ids.
 
-Every id is in ``<code>``, so a tap copies it.
+Every id is in ``<code>``, so a tap copies it. A pack also comes as a ``.json``
+file, to keep its ids without copying them off screenshots.
 """
 
 import html
+import json
 import re
 
 import structlog
 from aiogram import Dispatcher, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
+from aiogram.types import BufferedInputFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import User
-from app.keyboards.icons import ICONS, tg_emoji
+from app.keyboards.icons import ACCENT_KEYS, EMOJI_KEYS, ICONS, tg_emoji
 from app.utils.decorators import admin_required, error_handler
 
 
@@ -65,6 +70,7 @@ _HELP = (
     '🧩 <b>Премиум-эмодзи</b>\n\n'
     '<code>/emoji https://t.me/addemoji/имя</code>: весь набор и подбор под иконки бота\n'
     '<code>/emoji 5258204546391351475</code>: набор, из которого этот эмодзи\n'
+    '<code>/emoji icons</code>: все иконки бота, как их видят пользователи\n'
     '<code>/emoji</code> и эмодзи в том же сообщении или ответом на сообщение: их ID'
 )
 
@@ -167,6 +173,44 @@ async def _send_pack(message: types.Message, pack_name: str) -> None:
     for text in _chunks(full_list):
         await _send(message, text)
 
+    pack = {
+        'name': sticker_set.name,
+        'title': sticker_set.title,
+        'emoji': [
+            {
+                'id': sticker.custom_emoji_id,
+                'emoji': sticker.emoji,
+                'animated': bool(sticker.is_animated or sticker.is_video),
+            }
+            for sticker in stickers
+        ],
+    }
+    await message.bot.send_document(
+        message.chat.id,
+        BufferedInputFile(json.dumps(pack, ensure_ascii=False, indent=1).encode(), filename=f'{sticker_set.name}.json'),
+        caption='Весь набор одним файлом: id без скриншотов.',
+    )
+
+
+def _dictionary_lines() -> list[str]:
+    """The icon dictionary: the base first, then the colour statuses."""
+    plain: dict[str, list[str]] = {}
+    for emoji, key in EMOJI_KEYS.items():
+        plain.setdefault(key, []).append(emoji)
+
+    def line(key: str) -> str:
+        icon = ICONS[key]
+        emoji_id = f'<code>{icon.custom_emoji_id}</code>' if icon.custom_emoji_id else 'без своей иконки'
+        # In <code>, so the plain emoji stay plain (app/keyboards/text_icons.py skips code).
+        sources = f' ← <code>{" ".join(plain[key])}</code>' if key in plain else ''
+        return f'{tg_emoji(key)} <b>{key}</b> {emoji_id}{sources}'
+
+    lines = ['<b>Иконки бота</b>', '', '<b>Основа</b>, монохромная: кнопки, заголовки, тексты']
+    lines.extend(line(key) for key in ICONS if key not in ACCENT_KEYS)
+    lines += ['', '<b>Статусы</b>, в цвете: один на сообщение']
+    lines.extend(line(key) for key in ICONS if key in ACCENT_KEYS)
+    return lines
+
 
 @admin_required
 @error_handler
@@ -182,6 +226,11 @@ async def emoji_command(message: types.Message, db_user: User, db: AsyncSession)
 
     parts = (message.text or '').split(maxsplit=1)
     argument = parts[1].strip() if len(parts) > 1 else ''
+
+    if argument.lower() == 'icons':
+        for text in _chunks(_dictionary_lines()):
+            await _send(message, text)
+        return
 
     if _EMOJI_ID_RE.match(argument):
         stickers = await message.bot.get_custom_emoji_stickers(custom_emoji_ids=[argument])
