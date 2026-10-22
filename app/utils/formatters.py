@@ -86,9 +86,121 @@ def format_time_ago(dt: datetime | str, language: str = 'ru') -> str:
     return 'just now' if language_code == 'en' else 'только что'
 
 
+_MONTHS_GENITIVE = {
+    'ru': (
+        'января',
+        'февраля',
+        'марта',
+        'апреля',
+        'мая',
+        'июня',
+        'июля',
+        'августа',
+        'сентября',
+        'октября',
+        'ноября',
+        'декабря',
+    ),
+    'ua': (
+        'січня',
+        'лютого',
+        'березня',
+        'квітня',
+        'травня',
+        'червня',
+        'липня',
+        'серпня',
+        'вересня',
+        'жовтня',
+        'листопада',
+        'грудня',
+    ),
+    'fa': ('ژانویه', 'فوریه', 'مارس', 'آوریل', 'مه', 'ژوئن', 'ژوئیه', 'اوت', 'سپتامبر', 'اکتبر', 'نوامبر', 'دسامبر'),
+}
+_MONTHS_EN = (
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+)
+
+
+def format_human_date(dt: datetime | None, language: str = 'ru') -> str:
+    """A date as people say it, in the bot's timezone: «20 ноября», "November 20".
+
+    The year is added only when it is not the current one. Payment and
+    subscription messages use this instead of «20.11.2026 18:00».
+    """
+    from app.utils.timezone import to_local_datetime
+
+    local = to_local_datetime(dt)
+    if local is None:
+        return ''
+    language_code = (language or 'ru').split('-')[0].lower()
+    if language_code == 'uk':
+        language_code = 'ua'
+    show_year = local.year != to_local_datetime(datetime.now(UTC)).year
+
+    if language_code == 'zh':
+        text = f'{local.month}月{local.day}日'
+        return f'{local.year}年{text}' if show_year else text
+    if language_code == 'en':
+        text = f'{_MONTHS_EN[local.month - 1]} {local.day}'
+        return f'{text}, {local.year}' if show_year else text
+
+    months = _MONTHS_GENITIVE.get(language_code, _MONTHS_GENITIVE['ru'])
+    text = f'{local.day} {months[local.month - 1]}'
+    return f'{text} {local.year}' if show_year else text
+
+
+_TODAY_TOMORROW = {
+    'ru': ('сегодня в {time}', 'завтра в {time}'),
+    'ua': ('сьогодні о {time}', 'завтра о {time}'),
+    'en': ('today at {time}', 'tomorrow at {time}'),
+    'zh': ('今天 {time}', '明天 {time}'),
+    'fa': ('امروز ساعت {time}', 'فردا ساعت {time}'),
+}
+
+
+def format_deadline(dt: datetime | None, language: str = 'ru') -> str:
+    """«сегодня в 18:00» or «завтра в 18:00» when that close, otherwise «20 ноября»."""
+    from app.utils.timezone import to_local_datetime
+
+    local = to_local_datetime(dt)
+    if local is None:
+        return ''
+    language_code = (language or 'ru').split('-')[0].lower()
+    if language_code == 'uk':
+        language_code = 'ua'
+    today = to_local_datetime(datetime.now(UTC)).date()
+    days_ahead = (local.date() - today).days
+    if days_ahead in (0, 1):
+        template = _TODAY_TOMORROW.get(language_code, _TODAY_TOMORROW['ru'])[days_ahead]
+        return template.format(time=local.strftime('%H:%M'))
+    return format_human_date(dt, language)
+
+
 def format_days_declension(days: int, language: str = 'ru') -> str:
     language_code = (language or 'ru').split('-')[0].lower()
-    if language_code not in {'ru', 'fa'}:
+    if language_code in {'ua', 'uk'}:
+        if days % 10 == 1 and days % 100 != 11:
+            return f'{days} день'
+        if days % 10 in [2, 3, 4] and days % 100 not in [12, 13, 14]:
+            return f'{days} дні'
+        return f'{days} днів'
+    if language_code == 'zh':
+        return f'{days} 天'
+    if language_code == 'fa':
+        return f'{days} روز'
+    if language_code != 'ru':
         return f'{days} day{"s" if days != 1 else ""}'
 
     if days % 10 == 1 and days % 100 != 11:

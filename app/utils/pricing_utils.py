@@ -30,6 +30,20 @@ def balance_covers_price(balance_kopeks: int, price_kopeks: int) -> bool:
     return balance_kopeks >= price_kopeks - SUB_RUBLE_GRACE_KOPEKS
 
 
+# Smallest amount on the quick top-up buttons; every payment method accepts it.
+MIN_SHORTFALL_TOPUP_RUB = 100
+
+
+def shortfall_topup_rubles(missing_kopeks: int) -> int:
+    """Whole roubles for a «Пополнить на N ₽» button that covers *missing_kopeks*.
+
+    Rounded up, and never below the smallest top-up a payment method accepts,
+    so the button never leads to a "minimum amount" error.
+    """
+    rubles = -(-max(0, missing_kopeks) // 100)
+    return max(rubles, MIN_SHORTFALL_TOPUP_RUB)
+
+
 def calculate_months_from_days(days: int) -> int:
     return max(1, round(days / 30))
 

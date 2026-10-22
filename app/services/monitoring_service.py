@@ -52,6 +52,7 @@ from app.external.remnawave_api import (
     RemnaWaveUser,
     UserStatus as RemnaWaveUserStatus,
 )
+from app.keyboards.icons import ICONS, STYLE_PAY, tg_emoji
 from app.localization.texts import get_texts
 from app.services.notification_delivery_service import (
     notification_delivery_service,
@@ -60,18 +61,33 @@ from app.services.notification_settings_service import NotificationSettingsServi
 from app.services.promo_offer_service import promo_offer_service
 from app.services.subscription_service import SubscriptionService, get_traffic_reset_strategy
 from app.utils.cache import cache
-from app.utils.pricing_utils import balance_covers_price
+from app.utils.formatters import format_human_date
+from app.utils.pricing_utils import balance_covers_price, shortfall_topup_rubles
 from app.utils.message_patch import caption_exceeds_telegram_limit
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button, strip_leading_emoji_if_custom_icon
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 from app.utils.subscription_utils import (
+    autopay_days_before,
     resolve_hwid_device_limit_for_payload,
 )
 from app.utils.timezone import format_local_datetime, is_quiet_hours, quiet_hours_end
 
 
-# Кулдаун между повторными уведомлениями об автоплатеже с недостаточным балансом (6 часов)
-AUTOPAY_INSUFFICIENT_BALANCE_COOLDOWN_SECONDS: int = 21600
+# Сообщение о неудачном автопродлении приходит не больше трёх раз за одно продление:
+# при первой неудаче, за день до конца подписки и в последний день. Этап хранится
+# в SentNotification и стирается, когда подписку продлили (extend_subscription).
+_AUTOPAY_FAILED_NOTIFICATION = 'autopay_failed'
+
+
+def _autopay_failure_stage(end_date: datetime, now: datetime) -> int:
+    """1 while more than two days are left, 2 on the day before the end, 3 on the last day."""
+    left = end_date - now
+    if left > timedelta(days=2):
+        return 1
+    if left > timedelta(days=1):
+        return 2
+    return 3
+
 
 # Размер батча для проверки подписок на каналы (keyset pagination)
 _CHANNEL_CHECK_BATCH_SIZE: int = 100
@@ -96,8 +112,6 @@ class MonitoringService:
         self._notified_users: set[str] = set()
         self._last_cleanup = datetime.now(UTC)
         self._sla_task = None
-        # In-memory fallback для cooldown автоплатежей (на случай недоступности Redis)
-        self._autopay_fail_notified_at: dict[int, datetime] = {}
 
     async def _send_message_with_logo(
         self,
@@ -106,8 +120,13 @@ class MonitoringService:
         reply_markup=None,
         parse_mode: str | None = 'HTML',
         user: User | None = None,
+        disable_notification: bool = False,
     ):
-        """Отправляет сообщение, добавляя логотип при необходимости."""
+        """Отправляет сообщение, добавляя логотип при необходимости.
+
+        *disable_notification* делает сообщение тихим: так приходят чеки и
+        напоминания, которые не требуют действий.
+        """
         if not self.bot:
             raise RuntimeError('Bot instance is not available')
 
@@ -135,6 +154,7 @@ class MonitoringService:
                     caption=text,
                     reply_markup=reply_markup,
                     parse_mode=parse_mode,
+                    disable_notification=disable_notification,
                 )
                 _cache_logo_file_id(result)
                 return result
@@ -150,6 +170,7 @@ class MonitoringService:
             text=text,
             reply_markup=reply_markup,
             parse_mode=parse_mode,
+            disable_notification=disable_notification,
         )
 
     async def _replace_renewal_reminder(self, user: User, subscription: Subscription, sent_message) -> None:
@@ -371,75 +392,42 @@ class MonitoringService:
             old_count = len(self._notified_users)
             self._notified_users.clear()
 
-            # Чистим просроченные записи cooldown автоплатежей
-            cutoff = current_time - timedelta(seconds=AUTOPAY_INSUFFICIENT_BALANCE_COOLDOWN_SECONDS)
-            expired_ids = [uid for uid, ts in self._autopay_fail_notified_at.items() if ts < cutoff]
-            for uid in expired_ids:
-                del self._autopay_fail_notified_at[uid]
-
             self._last_cleanup = current_time
-            logger.info(
-                '🧹 Очищен кеш уведомлений',
-                old_count=old_count,
-                autopay_cooldown_evicted=len(expired_ids),
-                autopay_cooldown_remaining=len(self._autopay_fail_notified_at),
-            )
+            logger.info('🧹 Очищен кеш уведомлений', old_count=old_count)
 
-    async def _check_autopay_fail_cooldown(self, user_id: int, user_identifier: str) -> bool:
-        """Проверяет, можно ли отправить уведомление об ошибке автоплатежа.
+    async def _notify_autopay_failed(
+        self,
+        db: AsyncSession,
+        user: User,
+        subscription: Subscription,
+        required: int,
+        *,
+        email_reason: str,
+    ) -> None:
+        """Tell the user autopay could not renew, at most three times per renewal.
 
-        Использует Redis как primary хранилище cooldown, с in-memory fallback.
-        Returns True если уведомление можно отправить.
+        One message per stage (:func:`_autopay_failure_stage`). Each new one
+        replaces the previous reminder, and none arrives in quiet hours unless
+        the subscription ends before they are over.
         """
-        # 1. In-memory fallback (работает даже без Redis)
-        last_notified = self._autopay_fail_notified_at.get(user_id)
-        if last_notified:
-            elapsed = (datetime.now(UTC) - last_notified).total_seconds()
-            if elapsed < AUTOPAY_INSUFFICIENT_BALANCE_COOLDOWN_SECONDS:
-                logger.debug(
-                    'Пропуск уведомления об ошибке автоплатежа — in-memory cooldown активен',
-                    user_identifier=user_identifier,
-                    elapsed_seconds=int(elapsed),
-                )
-                return False
+        now = datetime.now(UTC)
+        stage = _autopay_failure_stage(subscription.end_date, now)
+        if await notification_sent(db, user.id, subscription.id, _AUTOPAY_FAILED_NOTIFICATION, stage):
+            return
+        if is_quiet_hours(now) and subscription.end_date > quiet_hours_end(now):
+            return
 
-        # 2. Redis check (если доступен)
-        cooldown_key = f'autopay_insufficient_balance_notified:{user_id}'
-        try:
-            if await cache.exists(cooldown_key):
-                logger.debug(
-                    'Пропуск уведомления об ошибке автоплатежа — Redis cooldown активен',
-                    user_identifier=user_identifier,
-                )
-                return False
-        except Exception as redis_err:
-            logger.warning(
-                'Ошибка проверки cooldown в Redis, используем in-memory fallback',
-                user_identifier=user_identifier,
-                redis_err=redis_err,
-            )
+        if user.telegram_id:
+            if not self.bot:
+                return
+            if not await self._send_autopay_failed_notification(
+                user, user.balance_kopeks, required, subscription=subscription
+            ):
+                return
+        else:
+            await notification_delivery_service.notify_autopay_failed(user=user, reason=email_reason)
 
-        return True
-
-    async def _set_autopay_fail_cooldown(self, user_id: int, user_identifier: str) -> None:
-        """Устанавливает cooldown после отправки уведомления об ошибке автоплатежа."""
-        # In-memory (всегда)
-        self._autopay_fail_notified_at[user_id] = datetime.now(UTC)
-
-        # Redis (если доступен)
-        cooldown_key = f'autopay_insufficient_balance_notified:{user_id}'
-        try:
-            await cache.set(
-                cooldown_key,
-                1,
-                expire=AUTOPAY_INSUFFICIENT_BALANCE_COOLDOWN_SECONDS,
-            )
-        except Exception as redis_err:
-            logger.warning(
-                'Не удалось установить cooldown в Redis, in-memory fallback активен',
-                user_identifier=user_identifier,
-                redis_err=redis_err,
-            )
+        await record_notification(db, user.id, subscription.id, _AUTOPAY_FAILED_NOTIFICATION, stage)
 
     async def _check_expired_subscriptions(self, db: AsyncSession):
         try:
@@ -711,7 +699,7 @@ class MonitoringService:
 
                     if self.bot:
                         success = await self._send_subscription_expiring_notification(
-                            user, subscription, days, has_saved_card=has_saved_card
+                            db, user, subscription, days, has_saved_card=has_saved_card
                         )
                         if success:
                             await record_notification(db, user.id, subscription.id, 'expiring', days)
@@ -1299,10 +1287,10 @@ class MonitoringService:
                                 await self.bot.send_message(
                                     chat_id=user.telegram_id,
                                     text=(
-                                        '⚠️ <b>Автоплатёж приостановлен</b>\n\n'
-                                        'Ваша подписка была создана до введения тарифов. '
-                                        'Для работы автоплатежа необходимо выбрать тариф.\n\n'
-                                        'Перейдите в раздел «Моя подписка» → «Продлить», чтобы выбрать тариф.'
+                                        '⚠️ <b>Автопродление приостановлено</b>\n'
+                                        'Подписка оформлена до появления тарифов. '
+                                        'Чтобы она продлевалась сама, выберите тариф: '
+                                        '«Моя подписка» → «Продлить подписку».'
                                     ),
                                     parse_mode='HTML',
                                 )
@@ -1311,8 +1299,8 @@ class MonitoringService:
                         logger.debug('Не удалось уведомить о пропуске autopay для legacy подписки', error=notify_err)
                     continue
 
-                days_before_expiry = (sub.end_date - current_time).days
-                if days_before_expiry <= min(sub.autopay_days_before or 3, 3):
+                # Not earlier than the subscription's days, so the date on the autopay screen holds.
+                if sub.end_date - current_time <= timedelta(days=autopay_days_before(sub)):
                     autopay_subscriptions.append(sub)
 
             processed_count = 0
@@ -1477,34 +1465,17 @@ class MonitoringService:
                         )
                     else:
                         failed_count += 1
-                        if await self._check_autopay_fail_cooldown(user.id, user_identifier):
-                            if user.telegram_id and self.bot:
-                                await self._send_autopay_failed_notification(
-                                    user, user.balance_kopeks, charge_amount, subscription=subscription
-                                )
-                            elif not user.telegram_id:
-                                await notification_delivery_service.notify_autopay_failed(
-                                    user=user,
-                                    reason='Ошибка списания средств',
-                                )
-                            await self._set_autopay_fail_cooldown(user.id, user_identifier)
+                        await self._notify_autopay_failed(
+                            db, user, subscription, charge_amount, email_reason='Ошибка списания средств'
+                        )
                         logger.warning(
                             '💳 Ошибка списания средств для автопродления пользователя', user_identifier=user_identifier
                         )
                 else:
                     failed_count += 1
-
-                    if await self._check_autopay_fail_cooldown(user.id, user_identifier):
-                        if user.telegram_id and self.bot:
-                            await self._send_autopay_failed_notification(
-                                user, user.balance_kopeks, charge_amount, subscription=subscription
-                            )
-                        elif not user.telegram_id:
-                            await notification_delivery_service.notify_autopay_failed(
-                                user=user,
-                                reason='Недостаточно средств на балансе',
-                            )
-                        await self._set_autopay_fail_cooldown(user.id, user_identifier)
+                    await self._notify_autopay_failed(
+                        db, user, subscription, charge_amount, email_reason='Недостаточно средств на балансе'
+                    )
 
                     logger.warning(
                         '💳 Недостаточно средств для автопродления у пользователя', user_identifier=user_identifier
@@ -1581,100 +1552,121 @@ class MonitoringService:
             return False
 
     async def _send_subscription_expiring_notification(
-        self, user: User, subscription: Subscription, days: int, *, has_saved_card: bool = False
+        self,
+        db: AsyncSession,
+        user: User,
+        subscription: Subscription,
+        days: int,
+        *,
+        has_saved_card: bool = False,
     ) -> bool:
+        """Remind that a paid subscription ends, saying what will actually happen.
+
+        - Autopay on and the money is there: a silent note with the renewal date.
+        - Autopay on and not enough money: once autopay has tried, its failure
+          message says this, so nothing more is sent; before that, «Не хватает
+          N ₽» with a button that tops up exactly that.
+        - Autopay off: «Подписка закончится …» with a renew button.
+
+        Returns True when the reminder is done with, including the case where
+        the autopay message covers it.
+        """
         try:
-            from app.utils.formatters import format_days_declension
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+            from app.keyboards.icons import icon_button
+            from app.utils.formatters import format_deadline
+            from app.utils.subscription_utils import autopay_renewal_date, get_renewal_price
 
             texts = get_texts(user.language)
-            days_text = format_days_declension(days, user.language)
+            now = datetime.now(UTC)
+            tariff_label = self._tariff_suffix(subscription)
+            price = await get_renewal_price(db, subscription, user) if subscription.autopay_enabled else None
+            balance = user.balance_kopeks or 0
+            silent = False
+            keyboard = None
 
-            if subscription.autopay_enabled and has_saved_card:
-                autopay_status = texts.t(
-                    'AUTOPAY_STATUS_CARD_ACTIVE',
-                    '✅ Включен — будет автоматическое списание с карты',
-                )
-                action_text = texts.t(
-                    'AUTOPAY_ACTION_CHECK_BALANCE',
-                    '💰 Убедитесь, что на балансе достаточно средств: {balance}',
-                ).format(balance=texts.format_price(user.balance_kopeks))
-            elif subscription.autopay_enabled:
-                autopay_status = texts.t(
-                    'AUTOPAY_STATUS_NO_CARD',
-                    '✅ Включен — подписка продлится автоматически',
-                )
-                action_text = texts.t(
-                    'AUTOPAY_ACTION_CHECK_BALANCE',
-                    '💰 Убедитесь, что на балансе достаточно средств: {balance}',
-                ).format(balance=texts.format_price(user.balance_kopeks))
-            else:
-                autopay_status = texts.t(
-                    'AUTOPAY_STATUS_OFF',
-                    '❌ Отключен — не забудьте продлить вручную!',
-                )
-                if settings.ENABLE_AUTOPAY:
-                    action_text = texts.t(
-                        'AUTOPAY_ACTION_ENABLE',
-                        '💡 Включите автоплатеж или продлите подписку вручную',
+            if subscription.autopay_enabled and price is not None:
+                renew_at = max(autopay_renewal_date(subscription) or now, now)
+                renew_date = format_human_date(renew_at, user.language)
+                if balance_covers_price(balance, price) or has_saved_card:
+                    if balance_covers_price(balance, price):
+                        message = texts.t(
+                            'SUBSCRIPTION_RENEWS_SOON',
+                            '{icon} <b>Подписка{tariff_label} продлится {renew_date}</b>\n'
+                            'С баланса спишется {amount}, денег хватает.',
+                        )
+                    else:
+                        message = texts.t(
+                            'SUBSCRIPTION_RENEWS_SOON_CARD',
+                            '{icon} <b>Подписка{tariff_label} продлится {renew_date}</b>\n'
+                            'На балансе не хватает {missing}, их спишут с карты.',
+                        )
+                    message = message.format(
+                        icon=tg_emoji('renew'),
+                        tariff_label=tariff_label,
+                        renew_date=renew_date,
+                        amount=settings.format_price(price),
+                        missing=settings.format_price(max(0, price - balance)),
                     )
+                    silent = True
                 else:
-                    action_text = texts.t(
-                        'AUTOPAY_ACTION_RENEW',
-                        '💡 Продлите подписку вручную',
+                    if subscription.end_date - now <= timedelta(days=autopay_days_before(subscription)):
+                        # Autopay has already tried and said «не хватает» itself.
+                        return True
+                    missing = price - balance
+                    message = texts.t(
+                        'SUBSCRIPTION_RENEWAL_SHORTFALL',
+                        '{icon} <b>Не хватает {missing} на продление подписки{tariff_label}</b>\n'
+                        'Чтобы подписка продлилась сама {renew_date}, пополните баланс. Продление стоит {amount}.',
+                    ).format(
+                        icon=tg_emoji('warning'),
+                        tariff_label=tariff_label,
+                        missing=settings.format_price(missing),
+                        renew_date=renew_date,
+                        amount=settings.format_price(price),
                     )
-
-            end_date = format_local_datetime(subscription.end_date, '%d.%m.%Y %H:%M')
-            # Add tariff name for multi-subscription clarity
-            tariff_label = ''
-            if settings.is_multi_tariff_enabled() and hasattr(subscription, 'tariff') and subscription.tariff:
-                tariff_label = f' «{subscription.tariff.name}»'
-            message = texts.t(
-                'SUBSCRIPTION_EXPIRING_PAID',
-                '\n⚠️ <b>Подписка{tariff_label} истекает через {days_text}!</b>\n\n'
-                'Ваша платная подписка истекает {end_date}.\n\n'
-                '💳 <b>Автоплатеж:</b> {autopay_status}\n\n'
-                '{action_text}\n',
-            ).format(
-                days_text=days_text,
-                end_date=end_date,
-                autopay_status=autopay_status,
-                action_text=action_text,
-                tariff_label=tariff_label,
-            )
-
-            from aiogram.types import InlineKeyboardMarkup
-
-            extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-            sub_btn_text = texts.t(
-                'BTN_MY_SUBSCRIPTIONS' if settings.is_multi_tariff_enabled() else 'BTN_MY_SUBSCRIPTION',
-                '📱 Мои подписки' if settings.is_multi_tariff_enabled() else '📱 Моя подписка',
-            )
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
+                    keyboard = self._shortfall_topup_keyboard(texts, missing)
+            else:
+                message = texts.t(
+                    'SUBSCRIPTION_ENDS_SOON',
+                    '{icon} <b>Подписка{tariff_label} закончится {end_date}</b>\n'
+                    'Чтобы VPN работал дальше, продлите подписку.',
+                ).format(
+                    icon=tg_emoji('warning'),
+                    tariff_label=tariff_label,
+                    end_date=format_deadline(subscription.end_date, user.language),
+                )
+                extend_callback = (
+                    f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+                )
+                rows = [
                     [
-                        build_miniapp_or_callback_button(
-                            text=texts.t('BTN_RENEW_SUBSCRIPTION', 'Продлить подписку'),
+                        icon_button(
+                            'renew',
+                            texts.t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
                             callback_data=extend_callback,
-                            cabinet_path='/subscription',
-                            style='success',
-                            icon_custom_emoji_id='5258419835922030550',
+                            style=STYLE_PAY,
                         )
-                    ],
-                    [
-                        build_miniapp_or_callback_button(
-                            text=texts.t('BTN_TOPUP_BALANCE', '💳 Пополнить баланс'),
-                            callback_data='balance_topup',
-                        )
-                    ],
-                    [build_miniapp_or_callback_button(text=sub_btn_text, callback_data='menu_subscription')],
+                    ]
                 ]
-            )
+                if settings.ENABLE_AUTOPAY and not subscription.autopay_enabled:
+                    rows.append(
+                        [
+                            InlineKeyboardButton(
+                                text=texts.t('AUTOPAY_ENABLE_BUTTON', 'Включить автопродление'),
+                                callback_data='autopay_enable',
+                            )
+                        ]
+                    )
+                keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
 
             sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
                 reply_markup=keyboard,
+                disable_notification=silent,
             )
             await self._replace_renewal_reminder(user, subscription, sent)
             return True
@@ -2011,26 +2003,33 @@ class MonitoringService:
             logger.error('Ошибка отправки скидочного уведомления пользователю', telegram_id=user.telegram_id, e=e)
             return False
 
+    @staticmethod
+    def _tariff_suffix(subscription: Subscription | None) -> str:
+        """« «Стандарт»» after the subject when the user can have several subscriptions."""
+        if settings.is_multi_tariff_enabled() and subscription and getattr(subscription, 'tariff', None):
+            return f' «{html.escape(subscription.tariff.name)}»'
+        return ''
+
     async def _send_autopay_success_notification(
         self, user: User, amount: int, days: int, *, subscription: Subscription | None = None
     ):
+        """A silent receipt: nothing to do, so it must not buzz."""
         try:
             texts = get_texts(user.language)
-            tariff_label = ''
-            if (
-                settings.is_multi_tariff_enabled()
-                and subscription
-                and hasattr(subscription, 'tariff')
-                and subscription.tariff
-            ):
-                tariff_label = f' «{subscription.tariff.name}»'
-            message = texts.AUTOPAY_SUCCESS.format(days=days, amount=settings.format_price(amount))
-            if tariff_label:
-                message += f'\n📦 Тариф:{tariff_label}'
+            end_date = format_human_date(subscription.end_date, user.language) if subscription else ''
+            message = texts.AUTOPAY_SUCCESS.format(
+                icon=tg_emoji('subscription'),
+                tariff_label=self._tariff_suffix(subscription),
+                end_date=end_date,
+                amount=settings.format_price(amount),
+                balance=settings.format_price(user.balance_kopeks),
+                days=days,
+            )
             await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
+                disable_notification=True,
             )
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
             if not await self._handle_unreachable_user(user, exc, 'уведомление об успешном автоплатеже'):
@@ -2046,45 +2045,69 @@ class MonitoringService:
         except Exception as e:
             logger.error('Ошибка отправки уведомления об автоплатеже пользователю', telegram_id=user.telegram_id, e=e)
 
+    @staticmethod
+    def _shortfall_topup_keyboard(texts, missing_kopeks: int):
+        """«Пополнить на N ₽» with the shortfall filled in, and «Другая сумма»."""
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        rubles = shortfall_topup_rubles(missing_kopeks)
+        balance_icon = ICONS['balance']
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=texts.t('TOPUP_FOR_AMOUNT_BUTTON', 'Пополнить на {amount}').format(
+                            amount=texts.format_price(rubles * 100)
+                        ),
+                        callback_data=f'balance_topup_amount:{rubles}',
+                        style=STYLE_PAY,
+                        icon_custom_emoji_id=balance_icon.custom_emoji_id,
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=texts.t('TOPUP_OTHER_AMOUNT_BUTTON', '✏️ Другая сумма'),
+                        callback_data='balance_topup_other',
+                    )
+                ],
+            ]
+        )
+
     async def _send_autopay_failed_notification(
         self, user: User, balance: int, required: int, *, subscription: Subscription | None = None
-    ):
+    ) -> bool:
+        """«Не хватает N ₽» with a button that tops up exactly that. Returns True when sent."""
         try:
             texts = get_texts(user.language)
+            missing = max(0, required - balance)
             message = texts.AUTOPAY_FAILED.format(
-                balance=settings.format_price(balance), required=settings.format_price(required)
-            )
-            if (
-                settings.is_multi_tariff_enabled()
-                and subscription
-                and hasattr(subscription, 'tariff')
-                and subscription.tariff
-            ):
-                message += f'\n📦 Тариф: «{subscription.tariff.name}»'
-
-            from aiogram.types import InlineKeyboardMarkup
-
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [build_miniapp_or_callback_button(text='💳 Пополнить баланс', callback_data='balance_topup')],
-                    [build_miniapp_or_callback_button(text='📱 Моя подписка', callback_data='menu_subscription')],
-                ]
+                icon='⚠️',
+                tariff_label=self._tariff_suffix(subscription),
+                missing=settings.format_price(missing),
+                end_date=format_human_date(subscription.end_date, user.language) if subscription else '',
+                balance=settings.format_price(balance),
+                required=settings.format_price(required),
             )
 
-            await self._send_message_with_logo(
+            sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
-                reply_markup=keyboard,
+                reply_markup=self._shortfall_topup_keyboard(texts, missing),
+                user=user,
             )
+            if sent and subscription:
+                await self._replace_renewal_reminder(user, subscription, sent)
+            return sent is not None
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            if not await self._handle_unreachable_user(user, exc, 'уведомление о неудачном автоплатеже'):
-                logger.error(
-                    'Ошибка Telegram API при отправке уведомления о неудачном автоплатеже пользователю',
-                    telegram_id=user.telegram_id,
-                    exc=exc,
-                )
+            if await self._handle_unreachable_user(user, exc, 'уведомление о неудачном автоплатеже'):
+                return True
+            logger.error(
+                'Ошибка Telegram API при отправке уведомления о неудачном автоплатеже пользователю',
+                telegram_id=user.telegram_id,
+                exc=exc,
+            )
         except TelegramNetworkError as e:
             logger.warning(
                 'Таймаут отправки уведомления о неудачном автоплатеже пользователю', telegram_id=user.telegram_id, e=e
@@ -2093,6 +2116,7 @@ class MonitoringService:
             logger.error(
                 'Ошибка отправки уведомления о неудачном автоплатеже пользователю', telegram_id=user.telegram_id, e=e
             )
+        return False
 
     async def _retry_stuck_guest_purchases(self, db: AsyncSession):
         from app.services.guest_purchase_service import (
