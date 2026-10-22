@@ -14,6 +14,7 @@ from app.utils.price_display import PriceInfo, format_price_button
 from app.utils.pricing_utils import (
     apply_percentage_discount,
     format_period_description,
+    shortfall_topup_rubles,
 )
 from app.utils.subscription_utils import (
     get_happ_cryptolink_redirect_link,
@@ -1011,11 +1012,47 @@ def get_subscription_confirm_keyboard(language: str = DEFAULT_LANGUAGE) -> Inlin
     )
 
 
-def get_balance_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
-    """ "Баланс": topping up is the main action, history and saved cards share a row."""
+def get_balance_keyboard(language: str = DEFAULT_LANGUAGE, missing_kopeks: int = 0) -> InlineKeyboardMarkup:
+    """ "Баланс": topping up is the main action, history and saved cards share a row.
+
+    When the balance falls short of the next renewal (*missing_kopeks*), the
+    main button tops up exactly that, rounded to whole roubles, and «Другая
+    сумма» sits under it.
+    """
     from app.keyboards.icons import STYLE_PAY, icon_button
 
     texts = get_texts(language)
+
+    if missing_kopeks > 0:
+        topup_rubles = shortfall_topup_rubles(missing_kopeks)
+        topup_label = texts.t('TOPUP_FOR_AMOUNT_BUTTON', 'Пополнить на {amount}')
+        topup_rows = [
+            [
+                icon_button(
+                    'balance',
+                    topup_label.format(amount=texts.format_price(topup_rubles * 100)),
+                    callback_data=f'balance_topup_amount:{topup_rubles}',
+                    style=STYLE_PAY,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=texts.t('TOPUP_OTHER_AMOUNT_BUTTON', '✏️ Другая сумма'),
+                    callback_data='balance_topup_other',
+                )
+            ],
+        ]
+    else:
+        topup_rows = [
+            [
+                icon_button(
+                    'payment',
+                    texts.t('BALANCE_BTN_TOPUP', 'Пополнить'),
+                    callback_data='balance_topup',
+                    style=STYLE_PAY,
+                )
+            ]
+        ]
 
     secondary = [
         InlineKeyboardButton(
@@ -1032,14 +1069,7 @@ def get_balance_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMark
         )
 
     keyboard = [
-        [
-            icon_button(
-                'payment',
-                texts.t('BALANCE_BTN_TOPUP', 'Пополнить'),
-                callback_data='balance_topup',
-                style=STYLE_PAY,
-            )
-        ],
+        *topup_rows,
         secondary,
         [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
     ]
