@@ -3,16 +3,16 @@
 The bot builds buttons in hundreds of places, and most labels start with a
 plain emoji («🔄 Обновить», «📊 Статистика»). Instead of changing each one, the
 bot's session runs :class:`ButtonIconsMiddleware` on every request: a button
-whose label starts with an emoji from :data:`BUTTON_EMOJI` gets that icon from
-:data:`app.keyboards.icons.ICONS` as its own icon (``icon_custom_emoji_id``),
-and the emoji is taken out of the label. So the base stays monochrome, in one
-style, and the colour accents are the ones in ``ICONS``.
+whose label starts with an emoji from :data:`app.keyboards.icons.EMOJI_KEYS`
+gets that icon from :data:`app.keyboards.icons.ICONS` as its own icon
+(``icon_custom_emoji_id``), and the emoji is taken out of the label. Buttons
+are always monochrome, statuses included (a ✅ toggle wears the line check):
+a button's colour is its ``style``, not its icon.
 
 Left as they are:
 
 - buttons that already have an icon (``icon_button``);
-- emoji not in :data:`BUTTON_EMOJI`: the statuses (✅ ❌ 🟢 🔴 🚫), flags,
-  platform logos and the rest;
+- emoji not in ``EMOJI_KEYS``: flags, the coloured circles, digits and the rest;
 - a label that is only an emoji, such as a pagination arrow: a button needs text;
 - reply keyboards: their text is sent back as a message, and handlers match it;
 - messages outside private chats: Telegram allows custom emoji on buttons in
@@ -23,85 +23,19 @@ Left as they are:
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.keyboards.icons import ICONS
+from app.keyboards.icons import ACCENT_KEYS, EMOJI_KEYS, ICONS
 
 
-# The plain emoji at the start of a label → the ICONS key whose icon replaces it.
-# Written without the variation selector (U+FE0F); labels match with or without it.
-BUTTON_EMOJI: dict[str, str] = {
-    '⬅': 'back',
-    '◀': 'back',
-    '🔙': 'back',
-    '↩': 'back',
-    '🏠': 'home',
-    '🔄': 'refresh',
-    '🔁': 'refresh',
-    '♻': 'refresh',
-    '📊': 'stats',
-    '📋': 'list',
-    '✏': 'edit',
-    '📝': 'edit',
-    '➕': 'add',
-    '🗑': 'delete',
-    '🔍': 'search',
-    '👁': 'view',
-    '👀': 'view',
-    '🔗': 'link',
-    '📤': 'share',
-    '⬇': 'download',
-    '📥': 'download',
-    '✉': 'send',
-    '📨': 'send',
-    '📬': 'send',
-    '💬': 'chat',
-    '📢': 'announce',
-    '📣': 'announce',
-    '📄': 'document',
-    '🧾': 'document',
-    '❓': 'guide',
-    '🔒': 'lock',
-    '🔐': 'lock',
-    '🛡': 'lock',
-    '📅': 'calendar',
-    '📆': 'calendar',
-    '🗓': 'calendar',
-    '⏳': 'time',
-    '⌛': 'time',
-    '⏰': 'time',
-    '⏱': 'time',
-    '🕒': 'time',
-    '👥': 'people',
-    '🤝': 'people',
-    '👤': 'profile',
-    '🪙': 'coin',
-    '⚙': 'settings',
-    '🔧': 'settings',
-    '🛠': 'settings',
-    '📱': 'devices',
-    '📈': 'traffic',
-    '💰': 'balance',
-    'ℹ': 'info',
-    '🆘': 'support',
-    '🛟': 'support',
-    '🎫': 'promocode',
-    # The product and the warning keep their colour icons.
-    '🪐': 'connect',
-    '💎': 'subscription',
-    '🎁': 'trial',
-    '💳': 'payment',
-    '📦': 'tariff',
-    '⚠': 'warning',
-}
+_VARIATION_SELECTOR = '\ufe0f'
 
-_VARIATION_SELECTOR = '️'
-
-# (label prefix, custom emoji id), longest prefix first, so «⚙️» is tried before «⚙».
+# (label prefix, ICONS key), longest prefix first, so «⚙️» is tried before «⚙».
+# Colour icons stay out: 🎉 on a button keeps its plain emoji.
 _PREFIXES: list[tuple[str, str]] = sorted(
     (
-        (prefix, ICONS[key].custom_emoji_id)
-        for emoji, key in BUTTON_EMOJI.items()
+        (prefix, key)
+        for emoji, key in EMOJI_KEYS.items()
+        if key not in ACCENT_KEYS
         for prefix in (emoji + _VARIATION_SELECTOR, emoji)
-        if ICONS[key].custom_emoji_id
     ),
     key=lambda item: len(item[0]),
     reverse=True,
@@ -110,11 +44,13 @@ _PREFIXES: list[tuple[str, str]] = sorted(
 
 def _label_icon(text: str) -> tuple[str, str] | None:
     """The icon id and the label without its leading emoji, or None to leave the label as it is."""
-    for prefix, emoji_id in _PREFIXES:
+    for prefix, key in _PREFIXES:
         if not text.startswith(prefix):
             continue
         rest = text[len(prefix) :]
-        if not rest[:1].isspace() or not rest.strip():
+        # The id is read here, not when the table is built: drop_unknown_icons may clear it at startup.
+        emoji_id = ICONS[key].custom_emoji_id
+        if not emoji_id or not rest[:1].isspace() or not rest.strip():
             return None
         return emoji_id, rest.strip()
     return None

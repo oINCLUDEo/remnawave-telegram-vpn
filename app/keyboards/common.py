@@ -12,17 +12,17 @@ translation are decided in one place.
 
 from aiogram.types import InlineKeyboardButton
 
+from app.keyboards.icons import ICONS
 from app.localization.texts import get_texts
 from app.utils.miniapp_buttons import strip_leading_emoji_if_custom_icon
 
 
-# Telegram custom emoji shown as the button's own icon (aiogram >= 3.25,
-# InlineKeyboardButton.icon_custom_emoji_id). The label deliberately carries no
-# Unicode emoji of its own — Telegram draws the custom icon beside it, and a
-# leading ⬅️ would render a second arrow next to the first.
-BACK_ICON_CUSTOM_EMOJI_ID = '5258236805890710909'
-# ✖️, not ❌: in message text ❌ means something broke, so dismissing must look different.
-CLOSE_ICON_CUSTOM_EMOJI_ID = '5226660202035554522'
+# The icons come from app.keyboards.icons.ICONS, read when a button is built
+# (drop_unknown_icons may switch one off at startup). Telegram draws the custom
+# emoji as the button's own icon (aiogram >= 3.25, icon_custom_emoji_id), so
+# the label carries no Unicode emoji: a leading ⬅️ would make a second arrow.
+# Close wears the line cross: on a button it is never the colour ❌ that means
+# something broke.
 
 
 def back_button(
@@ -40,10 +40,11 @@ def back_button(
     """
     texts = get_texts(language)
     label = text or texts.t('BACK_BUTTON', 'Назад')
+    icon_id = ICONS['back'].custom_emoji_id
     return InlineKeyboardButton(
-        text=strip_leading_emoji_if_custom_icon(label, BACK_ICON_CUSTOM_EMOJI_ID),
+        text=strip_leading_emoji_if_custom_icon(label, icon_id),
         callback_data=callback_data,
-        icon_custom_emoji_id=BACK_ICON_CUSTOM_EMOJI_ID,
+        icon_custom_emoji_id=icon_id,
     )
 
 
@@ -56,8 +57,9 @@ def close_button(
     """The standard "dismiss this message" button."""
     texts = get_texts(language)
     label = text or texts.t('CLOSE_BUTTON', 'Закрыть')
+    icon_id = ICONS['cross'].custom_emoji_id
     return InlineKeyboardButton(
-        text=strip_leading_emoji_if_custom_icon(label, CLOSE_ICON_CUSTOM_EMOJI_ID),
+        text=strip_leading_emoji_if_custom_icon(label, icon_id),
         callback_data=callback_data,
-        icon_custom_emoji_id=CLOSE_ICON_CUSTOM_EMOJI_ID,
+        icon_custom_emoji_id=icon_id,
     )

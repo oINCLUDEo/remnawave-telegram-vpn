@@ -421,7 +421,7 @@ def get_happ_cryptolink_keyboard(
             ],
             [
                 InlineKeyboardButton(
-                    text=texts.t('HAPP_PLATFORM_MACOS', '🖥️ Mac OS'),
+                    text=texts.t('HAPP_PLATFORM_MACOS', '🍎 Mac OS'),
                     callback_data='happ_download_macos',
                 )
             ],
@@ -452,7 +452,7 @@ def get_happ_download_platform_keyboard(language: str = DEFAULT_LANGUAGE) -> Inl
                 text=texts.t('HAPP_PLATFORM_ANDROID', '🤖 Android'), callback_data='happ_download_android'
             )
         ],
-        [InlineKeyboardButton(text=texts.t('HAPP_PLATFORM_MACOS', '🖥️ Mac OS'), callback_data='happ_download_macos')],
+        [InlineKeyboardButton(text=texts.t('HAPP_PLATFORM_MACOS', '🍎 Mac OS'), callback_data='happ_download_macos')],
         [
             InlineKeyboardButton(
                 text=texts.t('HAPP_PLATFORM_WINDOWS', '💻 Windows'), callback_data='happ_download_windows'
@@ -1056,7 +1056,7 @@ def get_balance_keyboard(language: str = DEFAULT_LANGUAGE, missing_kopeks: int =
 
     secondary = [
         InlineKeyboardButton(
-            text=texts.t('BALANCE_BTN_HISTORY', '📊 История'),
+            text=texts.t('BALANCE_BTN_HISTORY', '🕘 История'),
             callback_data='balance_history',
         )
     ]

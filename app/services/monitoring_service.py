@@ -1520,7 +1520,7 @@ class MonitoringService:
                             text='Продлить подписку',
                             callback_data=extend_callback,
                             style='success',
-                            icon_custom_emoji_id='5258419835922030550',
+                            icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
                         )
                     ],
                     [build_miniapp_or_callback_button(text='💳 Пополнить баланс', callback_data='balance_topup')],
@@ -1850,11 +1850,11 @@ class MonitoringService:
                     [
                         build_miniapp_or_callback_button(
                             text=strip_leading_emoji_if_custom_icon(
-                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
                             ),
                             callback_data=extend_callback,
                             style='success',
-                            icon_custom_emoji_id='5427168083074628963',
+                            icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
                         )
                     ],
                     [
@@ -1957,11 +1957,11 @@ class MonitoringService:
                     [
                         build_miniapp_or_callback_button(
                             text=strip_leading_emoji_if_custom_icon(
-                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
                             ),
                             callback_data=extend_callback,
                             style='success',
-                            icon_custom_emoji_id='5427168083074628963',
+                            icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
                         )
                     ],
                     [

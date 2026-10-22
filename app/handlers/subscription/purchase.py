@@ -247,7 +247,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     elif subscription.status == 'disabled':
         actual_status = 'disabled'
         status_display = texts.t('SUBSCRIPTION_STATUS_DISABLED', 'Приостановлена')
-        status_emoji = '⏸️'
+        status_emoji = '🚫'
     elif subscription.status == 'expired' or subscription.end_date <= current_time:
         actual_status = 'expired'
         status_display = texts.t('SUBSCRIPTION_STATUS_EXPIRED', 'Истекла')
@@ -260,7 +260,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
         else:
             actual_status = 'paid_active'
             status_display = texts.t('SUBSCRIPTION_STATUS_ACTIVE', 'Активна')
-            status_emoji = tg_emoji('subscription')
+            status_emoji = '✅'
     else:
         actual_status = 'unknown'
         status_display = texts.t('SUBSCRIPTION_STATUS_UNKNOWN', 'Неизвестно')
@@ -280,17 +280,22 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
             warning_text = ''
         elif days_left == 1:
             time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_DAYS', '{days} дн.').format(days=days_left)
-            warning_text = texts.t('SUBSCRIPTION_WARNING_TOMORROW', '\n⚠️ истекает завтра!')
+            warning_text = texts.t('SUBSCRIPTION_WARNING_TOMORROW', ', истекает завтра')
         elif hours_left > 0:
             time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_HOURS', '{hours} ч.').format(hours=hours_left)
-            warning_text = texts.t('SUBSCRIPTION_WARNING_TODAY', '\n⚠️ истекает сегодня!')
+            warning_text = texts.t('SUBSCRIPTION_WARNING_TODAY', ', истекает сегодня')
         else:
             minutes_left = (delta.seconds % 3600) // 60
             time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_MINUTES', '{minutes} мин.').format(minutes=minutes_left)
             warning_text = texts.t(
                 'SUBSCRIPTION_WARNING_MINUTES',
-                '\n🔴 истекает через несколько минут!',
+                ', истекает через несколько минут',
             )
+
+    # The status line carries the screen's one colour icon (app/keyboards/text_icons.py):
+    # an ending subscription needs the user, so it shows ⚠️ instead of ✅ or 🎁.
+    if warning_text and actual_status in ('paid_active', 'trial_active'):
+        status_emoji = '⚠️'
 
     subscription_type = (
         texts.t('SUBSCRIPTION_TYPE_TRIAL', 'Триал')

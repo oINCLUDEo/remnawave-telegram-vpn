@@ -62,6 +62,7 @@ from app.handlers.admin import (
 from app.handlers.channel_member import register_handlers as register_channel_member_handlers
 from app.handlers.gift_activation import register_handlers as register_gift_activation_handlers
 from app.handlers.stars_payments import register_stars_handlers
+from app.keyboards.icons import drop_unknown_icons
 from app.middlewares.auth import AuthMiddleware
 from app.middlewares.blacklist import BlacklistMiddleware
 from app.middlewares.button_stats import ButtonStatsMiddleware
@@ -106,6 +107,15 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     from app.bot_factory import create_bot
 
     bot = create_bot()
+
+    try:
+        unknown_icons, animated_icons = await drop_unknown_icons(bot)
+        if unknown_icons:
+            logger.warning('Неизвестные премиум-эмодзи отключены', icons=unknown_icons)
+        if animated_icons:
+            logger.info('Анимированные иконки в монохромной основе', icons=animated_icons)
+    except Exception as error:
+        logger.warning('Не удалось проверить премиум-эмодзи', error=error)
 
     proxy_url = settings.get_proxy_url()
     nalogo_proxy_url = settings.get_nalogo_proxy_url()

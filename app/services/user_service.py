@@ -53,6 +53,7 @@ from app.database.models import (
     WelcomeText,
     YooKassaPayment,
 )
+from app.keyboards.icons import ICONS
 from app.localization.texts import get_texts
 from app.services.notification_delivery_service import (
     NotificationType,
@@ -98,7 +99,7 @@ class UserService:
                 f'Спасибо за использование нашего сервиса! 🎉'
             )
             extend_callback = 'menu_subscription' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-            extend_icon = '5427168083074628963'
+            extend_icon = ICONS['renew'].custom_emoji_id
             keyboard = types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -125,7 +126,7 @@ class UserService:
                 f'👇 <b>Выберите действие:</b>'
             )
             extend_callback = 'menu_subscription' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-            extend_icon = '5427168083074628963'
+            extend_icon = ICONS['renew'].custom_emoji_id
             keyboard = types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text='🚀 АКТИВИРОВАТЬ ПОДПИСКУ', callback_data='subscription_buy')],
@@ -186,7 +187,7 @@ class UserService:
         has_extendable = any(sub.status in {'active', 'expired', 'trial'} for sub in subs)
         if has_extendable:
             extend_callback = 'menu_subscription' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-            extend_icon = '5427168083074628963'
+            extend_icon = ICONS['renew'].custom_emoji_id
             keyboard_rows.append(
                 [
                     types.InlineKeyboardButton(

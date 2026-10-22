@@ -13,6 +13,7 @@ from app.config import settings
 from app.database.database import AsyncSessionLocal
 from app.keyboards.admin import get_monitoring_keyboard
 from app.keyboards.common import back_button
+from app.keyboards.icons import ICONS
 from app.localization.texts import get_texts
 from app.services.monitoring_service import monitoring_service
 from app.services.nalogo_queue_service import nalogo_queue_service
@@ -183,11 +184,11 @@ async def _build_notification_preview_message(language: str, notification_type: 
                 [
                     InlineKeyboardButton(
                         text=strip_leading_emoji_if_custom_icon(
-                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
                         ),
                         callback_data='subscription_extend',
                         style='success',
-                        icon_custom_emoji_id='5427168083074628963',
+                        icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
                     )
                 ],
                 [
@@ -231,11 +232,11 @@ async def _build_notification_preview_message(language: str, notification_type: 
                 [
                     InlineKeyboardButton(
                         text=strip_leading_emoji_if_custom_icon(
-                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
                         ),
                         callback_data='subscription_extend',
                         style='success',
-                        icon_custom_emoji_id='5427168083074628963',
+                        icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
                     )
                 ],
                 [
@@ -280,11 +281,11 @@ async def _build_notification_preview_message(language: str, notification_type: 
                 [
                     InlineKeyboardButton(
                         text=strip_leading_emoji_if_custom_icon(
-                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), '5427168083074628963'
+                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
                         ),
                         callback_data='subscription_extend',
                         style='success',
-                        icon_custom_emoji_id='5427168083074628963',
+                        icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
                     )
                 ],
                 [

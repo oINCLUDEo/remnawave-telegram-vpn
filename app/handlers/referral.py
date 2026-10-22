@@ -62,7 +62,7 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
     cabinet_referral_link = settings.get_cabinet_referral_link(db_user.referral_code)
 
     referral_text = (
-        texts.t('REFERRAL_PROGRAM_TITLE', '👥 <b>Реферальная программа</b>')
+        texts.t('REFERRAL_PROGRAM_TITLE', '🤝 <b>Пригласить друга</b>')
         + '\n\n'
         + texts.t('REFERRAL_STATS_HEADER', '📊 <b>Ваша статистика:</b>')
         + '\n'

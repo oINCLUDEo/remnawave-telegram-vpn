@@ -13,6 +13,7 @@ from app.database.crud.server_squad import get_all_server_squads
 from app.database.crud.user import get_user_by_id
 from app.database.models import Subscription, SubscriptionStatus, User
 from app.external.remnawave_api import RemnaWaveAPI, RemnaWaveAPIError, RemnaWaveUser, TrafficLimitStrategy, UserStatus
+from app.keyboards.icons import ICONS
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
@@ -735,8 +736,8 @@ class SubscriptionService:
             'После истечения срока или лимита трафика доступ будет отключён.'
         )
 
-        extend_icon = '5258419835922030550'
-        balance_icon = '5220048868682532055'
+        extend_icon = ICONS['renew'].custom_emoji_id
+        balance_icon = ICONS['payment'].custom_emoji_id
         extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

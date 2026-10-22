@@ -35,6 +35,7 @@ from app.database.crud.subscription import (
 )
 from app.database.crud.user import get_user_by_id, get_user_by_remnawave_uuid, get_user_by_telegram_id
 from app.database.models import Subscription, SubscriptionServer, SubscriptionStatus, User
+from app.keyboards.icons import ICONS
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.notification_delivery_service import NotificationType, notification_delivery_service
@@ -615,7 +616,7 @@ class RemnaWaveWebhookService:
 
     def _get_renew_keyboard(self, user: User, subscription_id: int | None = None) -> InlineKeyboardMarkup:
         texts = get_texts(user.language)
-        extend_icon = '5258419835922030550'
+        extend_icon = ICONS['renew'].custom_emoji_id
         button_text = strip_leading_emoji_if_custom_icon(
             texts.get('WEBHOOK_RENEW_BUTTON', 'Renew subscription'), extend_icon
         )
@@ -1002,8 +1003,8 @@ class RemnaWaveWebhookService:
             'исчерпан. Продлите подписку, чтобы восстановить полный доступ.'
         )
 
-        extend_icon = '5258419835922030550'
-        balance_icon = '5220048868682532055'
+        extend_icon = ICONS['renew'].custom_emoji_id
+        balance_icon = ICONS['payment'].custom_emoji_id
         extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

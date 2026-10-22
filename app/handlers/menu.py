@@ -906,7 +906,7 @@ async def show_language_menu(
 
     await edit_or_answer_photo(
         callback=callback,
-        caption=texts.t('LANGUAGE_PROMPT', '🌐 Выберите язык интерфейса:'),
+        caption=texts.t('LANGUAGE_PROMPT', '🔤 Выберите язык интерфейса:'),
         keyboard=get_language_selection_keyboard(
             current_language=db_user.language,
             include_back=True,
@@ -969,7 +969,7 @@ async def process_language_change(
             db,
             skip_callback_answer=True,
         )
-        await callback.answer(texts.t('LANGUAGE_SELECTED', '🌐 Язык интерфейса обновлен.'))
+        await callback.answer(texts.t('LANGUAGE_SELECTED', '🔤 Язык интерфейса обновлен.'))
         return
 
     updated_user = await update_user(db, db_user, language=resolved_language)
@@ -981,7 +981,7 @@ async def process_language_change(
         db,
         skip_callback_answer=True,
     )
-    await callback.answer(texts.t('LANGUAGE_SELECTED', '🌐 Язык интерфейса обновлен.'))
+    await callback.answer(texts.t('LANGUAGE_SELECTED', '🔤 Язык интерфейса обновлен.'))
 
 
 async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext, db_user: User, db: AsyncSession):
@@ -1013,7 +1013,7 @@ async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext, 
 def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -> str:
     subscription = getattr(user, 'subscription', None)
     if not subscription:
-        return texts.t('SUB_STATUS_NONE', '❌ Отсутствует')
+        return texts.t('SUB_STATUS_NONE', '<b>Не оформлена</b>')
 
     # Reserve-squad grace: подписка локально уже истекла (её status/end_date не
     # подменяются — grace живёт только в панели, см. grant_reserve_squad_grace),
@@ -1038,18 +1038,18 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
         days_left = (subscription.end_date - current_time).days
 
     if actual_status == 'pending':
-        return texts.t('SUBSCRIPTION_NONE', '❌ Нет активной подписки')
+        return texts.t('SUB_STATUS_NONE', '<b>Не оформлена</b>')
 
     if actual_status == 'disabled':
-        return texts.t('SUB_STATUS_DISABLED', '⚫ Отключена')
+        return texts.t('SUB_STATUS_DISABLED', '🚫 <b>Отключена</b>')
 
     if actual_status == 'limited':
-        return texts.t('SUB_STATUS_LIMITED', '⚠️ Трафик исчерпан')
+        return texts.t('SUB_STATUS_LIMITED', '⚠️ <b>Трафик исчерпан</b>')
 
     if actual_status == 'expired':
         return texts.t(
             'SUB_STATUS_EXPIRED',
-            '🔴 Истекла\n📅 {end_date}',
+            '🚫 <b>Истекла</b> {end_date}',
         ).format(end_date=end_date_text or '—')
 
     is_trial_subscription = getattr(subscription, 'is_trial', False)
@@ -1060,7 +1060,7 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
         if days_left > 1 and end_date_text:
             return texts.t(
                 'SUB_STATUS_TRIAL_ACTIVE',
-                '🎁 Тестовая подписка\n📅 до {end_date} ({days} дн.)',
+                '🎁 <b>Тестовая</b>\n🗓 До {end_date}, осталось {days} дн.',
             ).format(
                 end_date=end_date_text,
                 days=days_left,
@@ -1068,22 +1068,22 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
         if days_left == 1:
             return texts.t(
                 'SUB_STATUS_TRIAL_TOMORROW',
-                '🎁 Тестовая подписка\n⚠️ истекает завтра!',
+                '⚠️ <b>Тестовая истекает завтра</b>',
             )
         return texts.t(
             'SUB_STATUS_TRIAL_TODAY',
-            '🎁 Тестовая подписка\n⚠️ истекает сегодня!',
+            '⚠️ <b>Тестовая истекает сегодня</b>',
         )
 
     if actual_status == 'active':
         # Для суточных тарифов не показываем предупреждение об истечении
         if is_daily_tariff:
-            return texts.t('SUB_STATUS_DAILY_ACTIVE', '💎 Активна')
+            return texts.t('SUB_STATUS_DAILY_ACTIVE', '✅ <b>Активна</b>')
 
         if days_left > 7 and end_date_text:
             return texts.t(
                 'SUB_STATUS_ACTIVE_LONG',
-                '💎 Активна\n📅 до {end_date} ({days} дн.)',
+                '✅ <b>Активна</b>\n🗓 До {end_date}, осталось {days} дн.',
             ).format(
                 end_date=end_date_text,
                 days=days_left,
@@ -1091,16 +1091,16 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
         if days_left > 1:
             return texts.t(
                 'SUB_STATUS_ACTIVE_FEW_DAYS',
-                '💎 Активна\n⚠️ истекает через {days} дн.',
+                '⚠️ <b>Истекает через {days} дн.</b>',
             ).format(days=days_left)
         if days_left == 1:
             return texts.t(
                 'SUB_STATUS_ACTIVE_TOMORROW',
-                '💎 Активна\n⚠️ истекает завтра!',
+                '⚠️ <b>Истекает завтра</b>',
             )
         return texts.t(
             'SUB_STATUS_ACTIVE_TODAY',
-            '💎 Активна\n⚠️ истекает сегодня!',
+            '⚠️ <b>Истекает сегодня</b>',
         )
 
     return texts.t('SUB_STATUS_UNKNOWN', '❓ Неизвестно')
@@ -1130,7 +1130,7 @@ async def _get_multi_tariff_status(user, texts, db: AsyncSession) -> tuple[str, 
     subscriptions = await get_all_subscriptions_by_user_id(db, user.id)
 
     if not subscriptions:
-        return texts.t('SUB_STATUS_NONE', '❌ Отсутствует'), ''
+        return texts.t('SUB_STATUS_NONE', '<b>Не оформлена</b>'), ''
 
     current_time = datetime.now(UTC)
     lines: list[str] = []
@@ -1194,10 +1194,7 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
                 tariff = await get_tariff_by_id(db, subscription.tariff_id)
                 if tariff:
                     is_daily_tariff = getattr(tariff, 'is_daily', False)
-                    tariff_info_block = (
-                        '\n<tg-emoji emoji-id="5854908544712707500">📦</tg-emoji> '
-                        f'Тариф: <b>{html.escape(tariff.name)}</b>'
-                    )
+                    tariff_info_block = f'\n📦 Тариф: <b>{html.escape(tariff.name)}</b>'
             except Exception as e:
                 logger.debug('Не удалось загрузить тариф для главного меню', error=e)
 

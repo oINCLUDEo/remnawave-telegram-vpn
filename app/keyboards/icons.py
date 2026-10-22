@@ -24,72 +24,214 @@ class Icon:
     custom_emoji_id: str | None = None
 
 
-# Custom emoji ids were checked by the owner. Most come from one pack, «TG iOS &
-# macOS Icons» (https://t.me/addemoji/tgmacicons, ids mostly 5258...), so the
-# icons share one style; keep to that pack when adding icons (admin /emoji
-# lists it): the base is monochrome, in the spirit of Apple. The few colour ones
-# (💎 🎁 🪐 💳 📦 🚫 🗓 ⚠️) are the accents: they mark the product and the
-# statuses, and their colour is the signal; take accents from the colour
-# animated pack 💎 belongs to (/emoji 5427168083074628963). The Unicode emoji
-# is the custom emoji's own glyph, used where Telegram cannot draw it.
+# The bot's icon system (the catalogue with every id and pack is kept outside the
+# repo, in the project files: emoji/catalog.md; admin /emoji icons shows it):
+#
+# - the base is monochrome, in the spirit of Apple: white line icons from one
+#   static pack (/emoji 5776375003280838798), on every button, screen title and
+#   icon in text. Buttons get no colour icons: their colour is their ``style``;
+# - colour means a status, and a message carries one at most: ok, warning,
+#   expired, error, celebrate, from the colour animated pack 💎 used to belong
+#   to (/emoji 5427168083074628963). The plain status emoji ✅ ❌ ⚠️ 🚫 in a
+#   text become that colour icon the first time and line icons after it
+#   (app/keyboards/text_icons.py), so a list of ✅ stays calm;
+# - locales and code write plain emoji. The bot's session turns those in
+#   EMOJI_KEYS into these icons on the way out (button_icons.py, text_icons.py),
+#   so a concept is restyled here, once, and never by hardcoding a
+#   ``<tg-emoji>`` id in a text.
+#
+# The ids were read off screenshots; the bot checks them with Telegram at
+# startup and switches off any it does not know (drop_unknown_icons). The
+# Unicode emoji is what Telegram shows where it cannot draw the custom one.
 ICONS: dict[str, Icon] = {
-    'connect': Icon('🪐', '5220067453006022598'),
-    'subscription': Icon('💎', '5427168083074628963'),
-    'buy': Icon('💎', '5427168083074628963'),
-    'trial': Icon('🎁', '5203996991054432397'),
-    'renew': Icon('🕔', '5258419835922030550'),
+    'connect': Icon('🪐', '5879585266426973039'),
+    'subscription': Icon('💎', '5807465992363710697'),
+    'buy': Icon('💎', '5807465992363710697'),
+    'trial': Icon('🎁', '5963213811597970978'),
+    'renew': Icon('🕔', '6005843436479975944'),
     'checkout': Icon('🛒'),
-    'balance': Icon('💰', '5258204546391351475'),
-    'payment': Icon('💳', '5220048868682532055'),
-    'referral': Icon('👥', '5258513401784573443'),
-    'support': Icon('🤙', '5258337316715373336'),
-    'cabinet': Icon('👤', '5258011929993026890'),
-    'info': Icon('ℹ️', '5258503720928288433'),
-    'tariff': Icon('📦', '5854908544712707500'),
-    'devices': Icon('📱', '5258423306255604960'),
-    'settings': Icon('⚙️', '5258096772776991776'),
+    'balance': Icon('💰', '5769403330761593044'),
+    'payment': Icon('💳', '5927169041595634481'),
+    # A lightning bolt: СБП is the fast way to pay.
+    'sbp': Icon('🏦', '5843553939672274145'),
+    'star': Icon('⭐', '5874948844935974490'),
+    'history': Icon('🕘', '5778202206922608769'),
+    'referral': Icon('🤝', '5944970130554359187'),
+    'support': Icon('🤙', '5884510167986343350'),
+    'cabinet': Icon('👤', '5879770735999717115'),
+    'info': Icon('ℹ️', '5879785854284599288'),
+    'tariff': Icon('📦', '5924720918826848520'),
+    'devices': Icon('📱', '5877318502947229960'),
+    'android': Icon('🤖', '5819078828017849357'),
+    'apple': Icon('🍎', '5818920837645867167'),
+    'windows': Icon('💻', '5818956713507689486'),
+    'settings': Icon('⚙️', '5877260593903177342'),
     # Autopay renews the subscription, so it wears the renewal icon, not the payment card.
-    'autopay': Icon('🕔', '5258419835922030550'),
-    'traffic': Icon('📈', '5258391025281408576'),
+    'autopay': Icon('🕔', '6005843436479975944'),
+    'traffic': Icon('📈', '5874986954180791957'),
     'pause': Icon('⏸️'),
     'resume': Icon('▶️'),
-    # Statuses and values in message text. The first line of a message carries
-    # one of them: the object's icon when all is well, ⚠️ when the user needs to
-    # act, 🚫 when access has ended, ❌ only when something broke on our side.
-    'warning': Icon('⚠️', '5447644880824181073'),
-    'expired': Icon('🚫', '5240241223632954241'),
-    'date': Icon('🗓', '5274055917766202507'),
-    'language': Icon('🌍', '5260512129240276089'),
-    'promocode': Icon('🎫', '5296385246579670377'),
-    'contests': Icon('🎲', '5258508428212445001'),
-    'admin': Icon('⚙️', '5258096772776991776'),
-    'moderation': Icon('🧑‍⚖️', '5258450450448915742'),
+    'date': Icon('🗓', '5967412305338568701'),
+    'language': Icon('🌍', '5778184941154078090'),
+    'globe': Icon('🌐', '5879585266426973039'),
+    'promocode': Icon('🎫', '5854776233950188167'),
+    'contests': Icon('🎲', '5960608239623082921'),
+    'admin': Icon('⚙️', '5877260593903177342'),
+    'moderation': Icon('🧑‍⚖️', '6028226658543082010'),
+    'bell': Icon('🔔', '5909201569898827582'),
+    'hint': Icon('💡', '5994473545650934240'),
+    'tools': Icon('🔧', '5988023995125993550'),
     # Everyday actions. Most buttons get these from the emoji at the start of
     # their label (app/keyboards/button_icons.py), not by key.
-    'back': Icon('⬅️', '5258236805890710909'),
-    'home': Icon('🏠', '5257963315258204021'),
-    'refresh': Icon('🔄', '5258420634785947640'),
-    'stats': Icon('📊', '5258330865674494479'),
-    'list': Icon('📋', '5257965174979042426'),
-    'edit': Icon('✏️', '5258331647358540449'),
-    'add': Icon('➕', '5258108352008823107'),
-    'delete': Icon('🗑', '5258130763148172425'),
-    'search': Icon('🔍', '5429571366384842791'),
-    'view': Icon('👁', '5253959125838090076'),
-    'link': Icon('🔗', '5260730055880876557'),
-    'share': Icon('📤', '5258043150110301407'),
-    'download': Icon('⬇️', '5258336354642697821'),
-    'send': Icon('📨', '5258073068852485953'),
-    'chat': Icon('💬', '5287595522993991899'),
-    'announce': Icon('📢', '5260268501515377807'),
-    'document': Icon('📄', '5257965810634202885'),
-    'guide': Icon('📖', '5258328383183396223'),
-    'lock': Icon('🔒', '5258476306152038031'),
-    'calendar': Icon('📅', '5258105663359294787'),
-    'time': Icon('⏳', '5258419835922030550'),
-    'people': Icon('👥', '5258513401784573443'),
-    'profile': Icon('👤', '5258011929993026890'),
-    'coin': Icon('🪙', '5258368777350816286'),
+    'back': Icon('⬅️', '5875082500023258804'),
+    'home': Icon('🏠', '6008258140108231117'),
+    'refresh': Icon('🔄', '5845943483382110702'),
+    'stats': Icon('📊', '5931472654660800739'),
+    'list': Icon('📋', '5875462364110787088'),
+    'edit': Icon('✏️', '5879841310902324730'),
+    'add': Icon('➕', '5775937998948404844'),
+    'delete': Icon('🗑', '5879896690210639947'),
+    'search': Icon('🔍', '5874960879434338403'),
+    'view': Icon('👁', '5960714428394507968'),
+    'link': Icon('🔗', '5877465816030515018'),
+    'share': Icon('📤', '5877540355187937244'),
+    'download': Icon('⬇️', '5879883461711367869'),
+    'send': Icon('📨', '5875465628285931233'),
+    'chat': Icon('💬', '5886666250158870040'),
+    'announce': Icon('📢', '5771695636411847302'),
+    'document': Icon('📄', '5956561916573782596'),
+    'guide': Icon('❓', '5873121512445187130'),
+    'lock': Icon('🔒', '5879895758202735862'),
+    'calendar': Icon('📅', '5967412305338568701'),
+    'time': Icon('⏳', '5776213190387961618'),
+    'people': Icon('👥', '5942877472163892475'),
+    'profile': Icon('👤', '5879770735999717115'),
+    'coin': Icon('🪙', '5992430854909989581'),
+    # Points down to the menu: the last line of the main menu text.
+    'down': Icon('🔽', '5875008416132370818'),
+    # Statuses in line form: a list item, or a status after the message's first one.
+    'check': Icon('✅', '5776375003280838798'),
+    'cross': Icon('❌', '5778527486270770928'),
+    'attention': Icon('⚠️', '5881702736843511327'),
+    'block': Icon('🚫', '5872829476143894491'),
+    # Statuses in colour, one per message. The first line of a message says
+    # how things are: ok when all is well, warning when the user needs to act,
+    # expired when access has ended, error only when something broke on our side.
+    'ok': Icon('✅', '5206607081334906820'),
+    'warning': Icon('⚠️', '5447644880824181073'),
+    'expired': Icon('🚫', '5240241223632954241'),
+    'error': Icon('❌', '5210952531676504517'),
+    'celebrate': Icon('🎉', '5461151367559141950'),
+}
+
+# The colour form of each line status: the first status in a message is drawn in colour.
+STATUS_ACCENTS: dict[str, str] = {
+    'check': 'ok',
+    'attention': 'warning',
+    'block': 'expired',
+    'cross': 'error',
+}
+ACCENT_KEYS = frozenset({*STATUS_ACCENTS.values(), 'celebrate'})
+
+# A plain emoji in a label or a text → the ICONS key drawn in its place. Written
+# without the variation selector (U+FE0F); texts match with or without it.
+# Left out on purpose: flags, the coloured circles of server status (🟢 🟡 🔴),
+# digits, and emoji that have no icon of their own here.
+EMOJI_KEYS: dict[str, str] = {
+    '⬅': 'back',
+    '◀': 'back',
+    '🔙': 'back',
+    '↩': 'back',
+    '🏠': 'home',
+    '🔄': 'refresh',
+    '🔁': 'refresh',
+    '♻': 'refresh',
+    '📊': 'stats',
+    '📋': 'list',
+    '✏': 'edit',
+    '📝': 'edit',
+    '➕': 'add',
+    '🗑': 'delete',
+    '🔍': 'search',
+    '👁': 'view',
+    '👀': 'view',
+    '🔗': 'link',
+    '📤': 'share',
+    '⬇': 'download',
+    '📥': 'download',
+    '✉': 'send',
+    '📨': 'send',
+    '📬': 'send',
+    '💬': 'chat',
+    '📢': 'announce',
+    '📣': 'announce',
+    '📄': 'document',
+    '🧾': 'document',
+    '❓': 'guide',
+    '💡': 'hint',
+    '🔒': 'lock',
+    '🔐': 'lock',
+    '🔑': 'lock',
+    '🛡': 'lock',
+    '📅': 'calendar',
+    '📆': 'calendar',
+    '🗓': 'date',
+    '⏳': 'time',
+    '⌛': 'time',
+    '⏰': 'time',
+    '⏱': 'time',
+    '🕐': 'time',
+    '🕒': 'time',
+    '🕘': 'history',
+    '🕔': 'renew',
+    '👥': 'people',
+    '🤝': 'referral',
+    '👤': 'profile',
+    '🆔': 'profile',
+    '🪙': 'coin',
+    '💸': 'coin',
+    '💵': 'coin',
+    '🔽': 'down',
+    '⚙': 'settings',
+    '🔧': 'tools',
+    '🛠': 'tools',
+    '📱': 'devices',
+    '📺': 'devices',
+    '🤖': 'android',
+    '🍎': 'apple',
+    '💻': 'windows',
+    '📈': 'traffic',
+    '💰': 'balance',
+    '💳': 'payment',
+    '🏦': 'sbp',
+    '⚡': 'sbp',
+    '⭐': 'star',
+    'ℹ': 'info',
+    '🤙': 'support',
+    '🆘': 'support',
+    '🛟': 'support',
+    '🎫': 'promocode',
+    '🎲': 'contests',
+    '🏆': 'contests',
+    '🔔': 'bell',
+    '🌐': 'globe',
+    '🌍': 'globe',
+    # 🌐 and 🌍 mostly mean servers and countries; the language screen writes 🔤.
+    '🔤': 'language',
+    '🪐': 'connect',
+    '🚀': 'connect',
+    '💎': 'subscription',
+    '📦': 'tariff',
+    '🎁': 'trial',
+    '✅': 'check',
+    '✔': 'check',
+    '❌': 'cross',
+    '✖': 'cross',
+    '⚠': 'attention',
+    '❗': 'attention',
+    '🚫': 'block',
+    '⛔': 'block',
+    '🎉': 'celebrate',
 }
 
 # Button colours (Telegram Bot API 9.4 ``style``). Colour says what kind of
@@ -110,6 +252,33 @@ ICONS: dict[str, Icon] = {
 STYLE_PAY = 'success'
 STYLE_USE = 'primary'
 STYLE_DANGER = 'danger'
+
+
+async def drop_unknown_icons(bot) -> tuple[list[str], list[str]]:
+    """Ask Telegram about every icon; switch off the ones it does not know.
+
+    The ids were copied from screenshots, and one wrong digit would make a
+    button or a text fail. An unknown icon falls back to its Unicode emoji.
+    Returns the unknown keys and the keys of the monochrome base that turned
+    out animated (only reported: the base should be the static pack).
+    """
+    ids = sorted({icon.custom_emoji_id for icon in ICONS.values() if icon.custom_emoji_id})
+    stickers = {}
+    for start in range(0, len(ids), 200):  # the Bot API's limit per call
+        for sticker in await bot.get_custom_emoji_stickers(custom_emoji_ids=ids[start : start + 200]):
+            stickers[sticker.custom_emoji_id] = sticker
+
+    unknown, animated = [], []
+    for key, icon in ICONS.items():
+        if not icon.custom_emoji_id:
+            continue
+        sticker = stickers.get(icon.custom_emoji_id)
+        if sticker is None:
+            unknown.append(key)
+            ICONS[key] = Icon(icon.emoji)
+        elif key not in ACCENT_KEYS and (sticker.is_animated or sticker.is_video):
+            animated.append(key)
+    return unknown, animated
 
 
 def tg_emoji(icon_key: str) -> str:

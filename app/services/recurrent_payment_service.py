@@ -24,6 +24,7 @@ from app.database.models import (
     User,
     UserPromoGroup,
 )
+from app.keyboards.icons import ICONS
 from app.utils.miniapp_buttons import strip_leading_emoji_if_custom_icon
 
 
@@ -58,7 +59,7 @@ def _build_extend_keyboard(texts, subscription_id: int | None = None) -> InlineK
     extend_callback = (
         f'se:{subscription_id}' if settings.is_multi_tariff_enabled() and subscription_id else 'subscription_extend'
     )
-    extend_icon = '5427168083074628963'
+    extend_icon = ICONS['renew'].custom_emoji_id
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
