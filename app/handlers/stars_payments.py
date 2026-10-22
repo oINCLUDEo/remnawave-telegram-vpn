@@ -390,7 +390,7 @@ async def handle_pre_checkout_query(query: types.PreCheckoutQuery):
                 ok=False,
                 error_message=texts.t(
                     'STARS_PRECHECK_INVALID_PAYLOAD',
-                    'Ошибка валидации платежа. Попробуйте еще раз.',
+                    'Не удалось проверить платёж. Попробуйте ещё раз.',
                 ),
             )
             return
@@ -561,11 +561,14 @@ async def handle_successful_payment(message: types.Message, db: AsyncSession, st
 
     except Exception as e:
         logger.error('Ошибка в successful_payment', error=e, exc_info=True)
+        from app.utils.payment_utils import get_payment_support_button
+
         await message.answer(
             texts.t(
                 'STARS_PAYMENT_PROCESSING_ERROR',
-                '❌ Техническая ошибка при обработке платежа. Обратитесь в поддержку для решения проблемы.',
-            )
+                '❌ Не удалось обработать оплату звёздами. Если баланс не пополнился, напишите в поддержку.',
+            ),
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[[get_payment_support_button(texts)]]),
         )
 
 
