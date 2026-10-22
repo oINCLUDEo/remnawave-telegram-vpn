@@ -25,7 +25,7 @@ from app.database.crud.user import subtract_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import Tariff, Transaction, TransactionType, User
 from app.keyboards.common import back_button
-from app.keyboards.icons import tg_emoji
+from app.keyboards.icons import STYLE_PAY, screen_title, tg_emoji
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.purchase_messages import CELEBRATION_EFFECT_ID, build_subscription_ready_message, subscription_details
@@ -2681,7 +2681,9 @@ async def show_tariff_switch_list(
 
     if not available_tariffs:
         await callback.message.edit_text(
-            '😔 <b>Нет доступных тарифов для переключения</b>\n\nВы уже используете единственный доступный тариф.',
+            screen_title('tariff', texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф'))
+            + '\n\n'
+            + texts.t('INSTANT_SWITCH_NONE', 'Других тарифов сейчас нет.'),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')]]
             ),
@@ -3390,46 +3392,73 @@ def _calculate_instant_switch_cost(
     return result.upgrade_cost, result.is_upgrade
 
 
+def _switch_traffic(texts, traffic_gb: int) -> str:
+    if traffic_gb == 0:
+        return texts.t('INSTANT_SWITCH_TRAFFIC_UNLIMITED', 'безлимитный трафик')
+    return texts.t('INSTANT_SWITCH_TRAFFIC_LIMITED', '{gb} ГБ трафика').format(gb=traffic_gb)
+
+
+def _switch_devices(texts, language: str, count: int) -> str:
+    """«2 устройства»: Russian and Ukrainian have three plural forms, the other languages two."""
+    if (language or 'ru').split('-')[0] in {'ru', 'ua', 'uk'}:
+        if count % 10 == 1 and count % 100 != 11:
+            form = 'ONE'
+        elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+            form = 'FEW'
+        else:
+            form = 'MANY'
+    else:
+        form = 'ONE' if count == 1 else 'MANY'
+    defaults = {'ONE': '{n} устройство', 'FEW': '{n} устройства', 'MANY': '{n} устройств'}
+    return texts.t(f'INSTANT_SWITCH_DEVICES_{form}', defaults[form]).format(n=count)
+
+
+def _switch_facts(texts, language: str, tariff: Tariff) -> str:
+    """«50 ГБ трафика · 2 устройства»: what the tariff gives, in the same words on every switch screen."""
+    traffic = _switch_traffic(texts, tariff.traffic_limit_gb)
+    return f'{traffic} · {_switch_devices(texts, language, tariff.device_limit)}'
+
+
 def format_instant_switch_list_text(
     tariffs: list[Tariff],
     current_tariff: Tariff,
     remaining_days: int,
     db_user: User | None = None,
 ) -> str:
-    """Форматирует текст со списком тарифов для мгновенного переключения."""
+    """The tariffs the user can switch to: one block each, facts and the price of the switch.
+
+    The descriptions are left for the next screen (preview_instant_switch), so
+    the list can be compared at a glance.
+    """
+    language = getattr(db_user, 'language', None) or 'ru'
+    texts = get_texts(language)
     lines = [
-        '📦 <b>Мгновенная смена тарифа</b>',
-        f'📌 Текущий: <b>{html.escape(current_tariff.name)}</b>',
-        f'⏰ Осталось: <b>{remaining_days} дн.</b>',
+        screen_title('tariff', texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф')),
         '',
-        '💡 При переключении остаток дней сохраняется.',
-        '⬆️ Повышение тарифа = доплата за разницу',
-        '⬇️ Понижение = бесплатно',
+        texts.t('INSTANT_SWITCH_CURRENT', 'Сейчас: <b>{tariff}</b>, осталось <b>{days} дн.</b>').format(
+            tariff=html.escape(current_tariff.name), days=remaining_days
+        ),
         '',
     ]
 
+    blocks = []
     for tariff in tariffs:
         if tariff.id == current_tariff.id:
             continue
-
-        traffic_gb = tariff.traffic_limit_gb
-        traffic = '∞' if traffic_gb == 0 else f'{traffic_gb} ГБ'
-
-        # Рассчитываем стоимость переключения
         cost, is_upgrade = _calculate_instant_switch_cost(current_tariff, tariff, remaining_days, db_user)
-
         if is_upgrade:
-            cost_text = f'⬆️ +{format_price_kopeks(cost, compact=True)}'
+            price = texts.t('INSTANT_SWITCH_EXTRA', 'доплата {amount}').format(amount=format_price_kopeks(cost))
         else:
-            cost_text = '⬇️ Бесплатно'
+            price = texts.t('INSTANT_SWITCH_FREE', 'без доплаты')
+        blocks.append(f'<b>{html.escape(tariff.name)}</b>\n{_switch_facts(texts, language, tariff)} · <b>{price}</b>')
 
-        lines.append(f'<b>{html.escape(tariff.name)}</b> — {traffic} / {tariff.device_limit} 📱 {cost_text}')
-
-        if tariff.description:
-            lines.append(f'<i>{html.escape(tariff.description)}</i>')
-
-        lines.append('')
-
+    lines.append('<blockquote>' + '\n\n'.join(blocks) + '</blockquote>')
+    lines.append(
+        texts.t(
+            'INSTANT_SWITCH_HINT',
+            '<i>Оставшиеся дни переходят на новый тариф. Доплата нужна только за тариф дороже текущего.</i>',
+        )
+    )
     return '\n'.join(lines)
 
 
@@ -3440,7 +3469,7 @@ def get_instant_switch_keyboard(
     language: str,
     db_user: User | None = None,
 ) -> InlineKeyboardMarkup:
-    """Создает клавиатуру для мгновенного переключения тарифа."""
+    """One button per tariff, with the price of the switch: «Семейный · +1002₽»."""
     texts = get_texts(language)
     buttons = []
 
@@ -3448,15 +3477,15 @@ def get_instant_switch_keyboard(
         if tariff.id == current_tariff.id:
             continue
 
-        # Рассчитываем стоимость
         cost, is_upgrade = _calculate_instant_switch_cost(current_tariff, tariff, remaining_days, db_user)
-
         if is_upgrade:
-            btn_text = f'{tariff.name} (+{format_price_kopeks(cost, compact=True)})'
+            price = f'+{format_price_kopeks(cost, compact=True)}'
         else:
-            btn_text = f'{tariff.name} (бесплатно)'
+            price = texts.t('INSTANT_SWITCH_FREE', 'без доплаты')
 
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f'instant_sw_preview:{tariff.id}')])
+        buttons.append(
+            [InlineKeyboardButton(text=f'{tariff.name} · {price}', callback_data=f'instant_sw_preview:{tariff.id}')]
+        )
 
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')])
 
@@ -3466,15 +3495,48 @@ def get_instant_switch_keyboard(
 def get_instant_switch_confirm_keyboard(
     tariff_id: int,
     language: str,
+    *,
+    cost_kopeks: int | None = None,
 ) -> InlineKeyboardMarkup:
-    """Создает клавиатуру подтверждения мгновенного переключения."""
+    """Confirm the switch. The button names the price when there is one: «Перейти за 1002 ₽»."""
     texts = get_texts(language)
+    if cost_kopeks:
+        label = texts.t('INSTANT_SWITCH_CONFIRM_PAY', 'Перейти за {amount}').format(
+            amount=format_price_kopeks(cost_kopeks)
+        )
+    else:
+        label = texts.t('INSTANT_SWITCH_CONFIRM_FREE', 'Перейти на тариф')
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text='✅ Подтвердить переключение', callback_data=f'instant_sw_confirm:{tariff_id}')],
+            [InlineKeyboardButton(text=label, callback_data=f'instant_sw_confirm:{tariff_id}', style=STYLE_PAY)],
             [InlineKeyboardButton(text=texts.BACK, callback_data='instant_switch')],
         ]
     )
+
+
+def _instant_switch_preview_text(
+    texts, language: str, new_tariff: Tariff, remaining_days: int, price_line: str
+) -> str:
+    """What the switch gives and costs: the new tariff, its description, the days and the price."""
+    lines = [
+        texts.t('INSTANT_SWITCH_PREVIEW_TITLE', '📦 <b>Переход на тариф «{tariff}»</b>').format(
+            tariff=html.escape(new_tariff.name)
+        ),
+        '',
+        _switch_facts(texts, language, new_tariff),
+    ]
+    if new_tariff.description:
+        lines.append(f'<blockquote expandable>{html.escape(new_tariff.description)}</blockquote>')
+    lines += [
+        '',
+        texts.t('INSTANT_SWITCH_PREVIEW_DAYS', '🗓 Остаток <b>{days} дн.</b> переходит на новый тариф').format(
+            days=remaining_days
+        ),
+        price_line,
+    ]
+    if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH and new_tariff.traffic_limit_gb:
+        lines += ['', texts.t('INSTANT_SWITCH_TRAFFIC_RESET', '<i>Счётчик трафика начнётся с нуля.</i>')]
+    return '\n'.join(lines)
 
 
 def get_instant_switch_insufficient_balance_keyboard(
@@ -3524,9 +3586,12 @@ async def show_instant_switch_list(
 
     if not subscription.end_date or subscription.end_date <= now:
         await callback.message.edit_text(
-            '❌ <b>Переключение недоступно</b>\n\n'
-            'У вашей подписки не осталось активных дней.\n'
-            'Используйте продление или покупку нового тарифа.',
+            screen_title('tariff', texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф'))
+            + '\n\n'
+            + texts.t(
+                'INSTANT_SWITCH_UNAVAILABLE',
+                'Сменить тариф можно, пока подписка активна. Продлите её или выберите новый тариф.',
+            ),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')]]
             ),
@@ -3549,7 +3614,9 @@ async def show_instant_switch_list(
 
     if not available_tariffs:
         await callback.message.edit_text(
-            '😔 <b>Нет доступных тарифов для переключения</b>\n\nВы уже используете единственный доступный тариф.',
+            screen_title('tariff', texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф'))
+            + '\n\n'
+            + texts.t('INSTANT_SWITCH_NONE', 'Других тарифов сейчас нет.'),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')]]
             ),
@@ -3695,19 +3762,14 @@ async def preview_instant_switch(
     if is_upgrade:
         # Upgrade - нужна доплата
         if balance_covers_price(user_balance, upgrade_cost):
+            price_line = texts.t(
+                'INSTANT_SWITCH_PREVIEW_PAY', '💰 Доплата <b>{amount}</b> с баланса, останется <b>{left}</b>'
+            ).format(amount=format_price_kopeks(upgrade_cost), left=format_price_kopeks(user_balance - upgrade_cost))
             await callback.message.edit_text(
-                f'⬆️ <b>Повышение тарифа</b>\n\n'
-                f'📌 Текущий: <b>{html.escape(current_tariff.name)}</b>\n'
-                f'   • Трафик: {current_traffic}\n'
-                f'   • Устройств: {current_tariff.device_limit}\n\n'
-                f'📦 Новый: <b>{html.escape(new_tariff.name)}</b>\n'
-                f'   • Трафик: {traffic}\n'
-                f'   • Устройств: {new_tariff.device_limit}\n\n'
-                f'⏰ Осталось дней: <b>{remaining_days}</b>\n'
-                f'💰 <b>Доплата: {format_price_kopeks(upgrade_cost)}</b>\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'После оплаты: {format_price_kopeks(user_balance - upgrade_cost)}',
-                reply_markup=get_instant_switch_confirm_keyboard(tariff_id, db_user.language),
+                _instant_switch_preview_text(texts, db_user.language, new_tariff, remaining_days, price_line),
+                reply_markup=get_instant_switch_confirm_keyboard(
+                    tariff_id, db_user.language, cost_kopeks=upgrade_cost
+                ),
                 parse_mode='HTML',
             )
         else:
@@ -3728,16 +3790,9 @@ async def preview_instant_switch(
             )
     else:
         # Downgrade или тот же уровень - бесплатно
+        price_line = texts.t('INSTANT_SWITCH_PREVIEW_FREE', '💰 Без доплаты')
         await callback.message.edit_text(
-            f'⬇️ <b>Переключение тарифа</b>\n\n'
-            f'📌 Текущий: <b>{html.escape(current_tariff.name)}</b>\n'
-            f'   • Трафик: {current_traffic}\n'
-            f'   • Устройств: {current_tariff.device_limit}\n\n'
-            f'📦 Новый: <b>{html.escape(new_tariff.name)}</b>\n'
-            f'   • Трафик: {traffic}\n'
-            f'   • Устройств: {new_tariff.device_limit}\n\n'
-            f'⏰ Осталось дней: <b>{remaining_days}</b>\n'
-            f'💰 <b>Бесплатно</b> (понижение/равный тариф)',
+            _instant_switch_preview_text(texts, db_user.language, new_tariff, remaining_days, price_line),
             reply_markup=get_instant_switch_confirm_keyboard(tariff_id, db_user.language),
             parse_mode='HTML',
         )
@@ -4006,22 +4061,28 @@ async def confirm_instant_switch(
                 parse_mode='HTML',
             )
         else:
-            if is_upgrade:
-                cost_text = f'💰 Списано: {format_price_kopeks(upgrade_cost)}'
-            else:
-                cost_text = '💰 Бесплатно'
-
+            done_lines = [
+                texts.t('INSTANT_SWITCH_DONE_TITLE', '✅ <b>Тариф изменён</b>'),
+                '',
+                texts.t('INSTANT_SWITCH_DONE_TARIFF', '📦 Тариф: <b>{tariff}</b>').format(
+                    tariff=html.escape(new_tariff.name)
+                ),
+                _switch_facts(texts, db_user.language, new_tariff),
+                texts.t('INSTANT_SWITCH_DONE_DAYS', '🗓 Осталось <b>{days} дн.</b>').format(days=remaining_days),
+            ]
+            if is_upgrade and upgrade_cost > 0:
+                done_lines.append(
+                    texts.t('INSTANT_SWITCH_DONE_PAID', '💰 Списано с баланса: <b>{amount}</b>').format(
+                        amount=format_price_kopeks(upgrade_cost)
+                    )
+                )
             await callback.message.edit_text(
-                f'🎉 <b>Тариф успешно изменён!</b>\n\n'
-                f'📦 Новый тариф: <b>{html.escape(new_tariff.name)}</b>\n'
-                f'📊 Трафик: {traffic}\n'
-                f'📱 Устройств: {new_tariff.device_limit}\n'
-                f'⏰ Осталось дней: {remaining_days}\n'
-                f'{cost_text}',
+                '\n'.join(done_lines),
                 reply_markup=get_purchase_success_keyboard(texts, subscription),
                 parse_mode='HTML',
             )
-        await callback.answer('Тариф изменён!', show_alert=True)
+        # The message above already says it; an alert on top would say it twice.
+        await callback.answer()
 
     except Exception as e:
         logger.error('Ошибка при мгновенном переключении тарифа', error=e, exc_info=True)
