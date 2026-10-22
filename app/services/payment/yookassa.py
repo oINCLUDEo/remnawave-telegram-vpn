@@ -697,15 +697,15 @@ class YooKassaPaymentMixin:
                                 # Уведомление пользователю (только для Telegram-пользователей)
                                 if getattr(self, 'bot', None) and user.telegram_id:
                                     try:
+                                        from app.services.payment.common import build_paid_trial_message
+
+                                        trial_text, trial_keyboard = await build_paid_trial_message(
+                                            db, user, subscription, payment.amount_kopeks
+                                        )
                                         await self.bot.send_message(
                                             chat_id=user.telegram_id,
-                                            text=(
-                                                f'🎉 <b>Пробная подписка активирована!</b>\n\n'
-                                                f'💳 Оплачено: {settings.format_price(payment.amount_kopeks)}\n'
-                                                f'📅 Период: {settings.TRIAL_DURATION_DAYS} дней\n'
-                                                f'📱 Устройств: {subscription.device_limit}\n\n'
-                                                f'Используйте меню для подключения к VPN.'
-                                            ),
+                                            text=trial_text,
+                                            reply_markup=trial_keyboard,
                                             parse_mode='HTML',
                                         )
                                     except Exception as notify_error:

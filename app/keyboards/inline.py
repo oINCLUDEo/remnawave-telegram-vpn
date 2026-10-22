@@ -1059,22 +1059,13 @@ def get_payment_methods_keyboard(amount_kopeks: int, language: str = DEFAULT_LAN
             return f'topup_amount|{method}|{amount_kopeks}'
         return f'topup_{method}'
 
-    if settings.TELEGRAM_STARS_ENABLED:
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.t('PAYMENT_TELEGRAM_STARS', '⭐ Telegram Stars'), callback_data=_build_callback('stars')
-                )
-            ]
-        )
-        has_direct_payment_methods = True
-
+    # СБП and card first: most people pay in roubles, Stars come after them.
     if settings.is_yookassa_enabled():
         if settings.YOOKASSA_SBP_ENABLED:
             keyboard.append(
                 [
                     InlineKeyboardButton(
-                        text=texts.t('PAYMENT_SBP_YOOKASSA', '🏦 Оплатить по СБП (YooKassa)'),
+                        text=texts.t('PAYMENT_SBP_YOOKASSA', '🏦 СБП'),
                         callback_data=_build_callback('yookassa_sbp'),
                     )
                 ]
@@ -1084,8 +1075,18 @@ def get_payment_methods_keyboard(amount_kopeks: int, language: str = DEFAULT_LAN
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    text=texts.t('PAYMENT_CARD_YOOKASSA', '💳 Банковская карта (YooKassa)'),
+                    text=texts.t('PAYMENT_CARD_YOOKASSA', '💳 Банковская карта'),
                     callback_data=_build_callback('yookassa'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.TELEGRAM_STARS_ENABLED:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_TELEGRAM_STARS', '⭐ Telegram Stars'), callback_data=_build_callback('stars')
                 )
             ]
         )

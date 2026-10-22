@@ -210,6 +210,28 @@ def format_days_declension(days: int, language: str = 'ru') -> str:
     return f'{days} дней'
 
 
+def _slavic_plural(count: int, one: str, few: str, many: str) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return few
+    return many
+
+
+def format_devices_count(count: int, language: str = 'ru') -> str:
+    """«1 устройство», «3 устройства», "2 devices"."""
+    language_code = (language or 'ru').split('-')[0].lower()
+    if language_code in {'ua', 'uk'}:
+        return f'{count} {_slavic_plural(count, "пристрій", "пристрої", "пристроїв")}'
+    if language_code == 'zh':
+        return f'{count} 台设备'
+    if language_code == 'fa':
+        return f'{count} دستگاه'
+    if language_code != 'ru':
+        return f'{count} device{"s" if count != 1 else ""}'
+    return f'{count} {_slavic_plural(count, "устройство", "устройства", "устройств")}'
+
+
 def format_duration(seconds: int) -> str:
     if seconds < 60:
         return f'{seconds} сек.'

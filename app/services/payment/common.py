@@ -19,14 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.crud.user import get_user_by_telegram_id
 from app.database.database import AsyncSessionLocal, get_db
-from app.database.models import Subscription
 from app.localization.texts import get_texts
-from app.services.subscription_checkout_service import (
-    has_subscription_checkout_draft,
-    should_offer_checkout_resume,
-)
 from app.services.user_cart_service import user_cart_service
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 from app.utils.payment_logger import payment_logger as logger
 
 
@@ -34,119 +28,9 @@ class PaymentCommonMixin:
     """Mixin с базовой логикой, которую используют остальные платёжные блоки."""
 
     async def build_topup_success_keyboard(self, user: Any) -> InlineKeyboardMarkup:
-        """Формирует клавиатуру по завершении платежа, подстраиваясь под пользователя."""
-        # Загружаем нужные тексты с учётом выбранного языка пользователя.
-        texts = get_texts(user.language if user else 'ru')
-
-        # Определяем статус подписки, чтобы показать подходящую кнопку.
-        has_active_subscription = False
-        subscription = None
-        if user:
-            try:
-                subs = getattr(user, 'subscriptions', None) or []
-                subscription = next(
-                    (s for s in subs if getattr(s, 'is_active', False)),
-                    None,
-                )
-                has_active_subscription = bool(
-                    subscription
-                    and not getattr(subscription, 'is_trial', False)
-                    and getattr(subscription, 'is_active', False)
-                )
-            except MissingGreenlet:
-                # user вне сессии — загружаем подписку отдельным запросом
-                try:
-                    async with AsyncSessionLocal() as session:
-                        result = await session.execute(
-                            select(Subscription.status, Subscription.is_trial, Subscription.end_date)
-                            .where(Subscription.user_id == user.id)
-                            .where(Subscription.status.in_(['active', 'trial']))
-                            .order_by(Subscription.created_at.desc())
-                        )
-                        rows = result.all()
-                        for row in rows:
-                            end_date = row.end_date
-                            if end_date is not None and end_date.tzinfo is None:
-                                end_date = end_date.replace(tzinfo=UTC)
-                            is_active = row.status == 'active' and end_date is not None and end_date > datetime.now(UTC)
-                            if is_active and not row.is_trial:
-                                has_active_subscription = True
-                                break
-                except Exception as db_error:
-                    logger.warning(
-                        'Не удалось загрузить подписку пользователя из БД',
-                        getattr=getattr(user, 'id', None),
-                        db_error=db_error,
-                    )
-            except Exception as error:  # pragma: no cover - защитный код
-                logger.error(
-                    'Ошибка загрузки подписки пользователя при построении клавиатуры после пополнения',
-                    getattr=getattr(user, 'id', None),
-                    error=error,
-                )
-
-        # Создаем основную кнопку: если есть активная подписка - продлить, иначе купить
-        first_button = build_miniapp_or_callback_button(
-            text=(texts.MENU_EXTEND_SUBSCRIPTION if has_active_subscription else texts.MENU_BUY_SUBSCRIPTION),
-            callback_data=('subscription_extend' if has_active_subscription else 'menu_buy'),
-        )
-
-        keyboard_rows: list[list[InlineKeyboardButton]] = [
-            [first_button],
-        ]
-
-        # Если для пользователя есть незавершённый checkout, предлагаем вернуться к нему.
-        if user:
-            try:
-                has_saved_cart = await user_cart_service.has_user_cart(user.id)
-            except Exception as cart_error:
-                logger.warning(
-                    'Не удалось проверить наличие сохраненной корзины у пользователя',
-                    user_id=user.id,
-                    cart_error=cart_error,
-                )
-                has_saved_cart = False
-
-            if has_saved_cart:
-                keyboard_rows.append(
-                    [
-                        build_miniapp_or_callback_button(
-                            text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT,
-                            callback_data='return_to_saved_cart',
-                        )
-                    ]
-                )
-            else:
-                draft_exists = await has_subscription_checkout_draft(user.id)
-                if should_offer_checkout_resume(user, draft_exists, subscription=subscription):
-                    keyboard_rows.append(
-                        [
-                            build_miniapp_or_callback_button(
-                                text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT,
-                                callback_data='subscription_resume_checkout',
-                            )
-                        ]
-                    )
-
-        # Стандартные кнопки быстрого доступа к балансу и главному меню.
-        keyboard_rows.append(
-            [
-                build_miniapp_or_callback_button(
-                    text='💰 Мой баланс',
-                    callback_data='menu_balance',
-                )
-            ]
-        )
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text='🏠 Главное меню',
-                    callback_data='back_to_menu',
-                )
-            ]
-        )
-
-        return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+        """The next step after a top-up: buy or renew the subscription, and the main menu."""
+        _, keyboard = await build_topup_success_message(user, 0)
+        return keyboard
 
     async def _send_payment_success_notification(
         self,
@@ -195,16 +79,8 @@ class PaymentCommonMixin:
         )
 
         try:
-            payment_method = payment_method_title or 'Банковская карта (YooKassa)'
-
-            # Стандартное сообщение с полной клавиатурой
-            keyboard = await self.build_topup_success_keyboard(user_snapshot)
-            message = (
-                '✅ <b>Платеж успешно завершен!</b>\n\n'
-                f'💰 Сумма: {settings.format_price(amount_kopeks)}\n'
-                f'💳 Способ: {payment_method}\n\n'
-                'Средства зачислены на ваш баланс!'
-            )
+            # The method is not repeated: the user has just chosen it.
+            message, keyboard = await build_topup_success_message(user_snapshot, amount_kopeks)
 
             await self.bot.send_message(
                 chat_id=telegram_id,
@@ -301,6 +177,128 @@ class PaymentCommonMixin:
         except Exception as error:
             logger.error('Ошибка обработки платежа', payment_id=payment_id, error=error)
             return False
+
+
+async def build_topup_success_message(user: Any, amount_kopeks: int) -> tuple[str, InlineKeyboardMarkup]:
+    """One message after a top-up by any method: the amount, the new balance and the next step.
+
+    The next step follows the subscription: no paid subscription means
+    "Купить подписку", a paid one means "Продлить подписку". When autopay is on
+    and the balance covers the renewal there is nothing to do, so a line says
+    so instead of a button.
+
+    *user* may be a detached user or a snapshot, so the user is read again in
+    its own session.
+    """
+    from app.database.crud.user import get_user_by_id
+    from app.keyboards.icons import STYLE_PAY, icon_button, tg_emoji
+    from app.utils.formatters import format_human_date
+    from app.utils.pricing_utils import balance_covers_price
+    from app.utils.subscription_utils import autopay_renewal_date, get_renewal_price
+
+    language = getattr(user, 'language', None) or 'ru'
+    balance = None
+    covered_renewal_date = None
+    next_button: InlineKeyboardButton | None = None
+
+    user_id = getattr(user, 'id', None)
+    if user_id:
+        try:
+            async with AsyncSessionLocal() as session:
+                fresh_user = await get_user_by_id(session, user_id)
+                if fresh_user:
+                    language = fresh_user.language or language
+                    balance = fresh_user.balance_kopeks
+                    texts = get_texts(language)
+                    subscription = next(
+                        (sub for sub in fresh_user.subscriptions or [] if sub.is_active and not sub.is_trial),
+                        None,
+                    )
+                    if subscription is None:
+                        next_button = icon_button(
+                            'buy',
+                            texts.t('MAIN_MENU_BTN_BUY', 'Купить подписку'),
+                            callback_data='menu_buy',
+                            style=STYLE_PAY,
+                        )
+                    else:
+                        price = None
+                        if subscription.autopay_enabled:
+                            price = await get_renewal_price(session, subscription, fresh_user)
+                        if price is not None and balance_covers_price(balance, price):
+                            covered_renewal_date = autopay_renewal_date(subscription)
+                        else:
+                            extend_callback = (
+                                f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+                            )
+                            next_button = icon_button(
+                                'renew',
+                                texts.t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
+                                callback_data=extend_callback,
+                                style=STYLE_PAY,
+                            )
+        except Exception as error:
+            logger.warning('Не удалось определить следующий шаг после пополнения', user_id=user_id, error=error)
+
+    texts = get_texts(language)
+    fmt = settings.format_price
+    if balance is None:
+        template = texts.t('TOPUP_SUCCESS_SHORT', '{icon} <b>Баланс пополнен на {amount}</b>')
+    else:
+        template = texts.t('TOPUP_SUCCESS', '{icon} <b>Баланс пополнен на {amount}</b>\nТеперь на балансе {balance}.')
+    text = template.format(icon=tg_emoji('balance'), amount=fmt(amount_kopeks), balance=fmt(balance or 0))
+    if covered_renewal_date is not None:
+        covered = texts.t('TOPUP_SUCCESS_RENEWAL_COVERED', 'Хватит на продление {date}.')
+        text += '\n' + covered.format(date=format_human_date(covered_renewal_date, language))
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if next_button is not None:
+        rows.append([next_button])
+    rows.append(
+        [InlineKeyboardButton(text=texts.t('MAIN_MENU_BUTTON', '🏠 Главное меню'), callback_data='back_to_menu')]
+    )
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def build_paid_trial_message(
+    db: AsyncSession, user: Any, subscription: Any, paid_kopeks: int
+) -> tuple[str, InlineKeyboardMarkup]:
+    """The message after a paid trial: until when it works, what was paid and the price after it.
+
+    The price line is left out when the renewal price cannot be worked out.
+    """
+    from app.keyboards.main_menu import connect_button
+    from app.utils.formatters import format_days_declension, format_devices_count, format_human_date
+    from app.utils.subscription_utils import get_renewal_price
+
+    language = getattr(user, 'language', None) or 'ru'
+    texts = get_texts(language)
+    lines = [
+        texts.t('PAID_TRIAL_ACTIVATED_TITLE', '🎁 <b>Пробный период до {date}</b>').format(
+            date=format_human_date(subscription.end_date, language)
+        ),
+        texts.t('PAID_TRIAL_ACTIVATED_PAID', '<blockquote>Оплачено {amount} · {devices}</blockquote>').format(
+            amount=settings.format_price(paid_kopeks),
+            devices=format_devices_count(subscription.device_limit or 1, language),
+        ),
+    ]
+
+    # Apple asks to say plainly what the subscription costs once the trial ends.
+    try:
+        price = await get_renewal_price(db, subscription, user)
+        tariff = getattr(subscription, 'tariff', None)
+        period = (tariff.get_shortest_period() if tariff else None) or 30
+    except Exception as error:  # the tariff may not be loaded on this subscription
+        logger.warning('Не удалось узнать цену после пробного периода', subscription_id=subscription.id, error=error)
+        price = None
+    if price is not None:
+        price_line = texts.t('PAID_TRIAL_ACTIVATED_PRICE', 'После пробного периода подписка стоит {price} за {period}.')
+        period_text = format_days_declension(period, language)
+        lines.append(price_line.format(price=settings.format_price(price), period=period_text))
+
+    sub_suffix = f':{subscription.id}' if settings.is_multi_tariff_enabled() else ''
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[connect_button(texts, subscription, sub_suffix=sub_suffix)]])
+    return '\n'.join(lines), keyboard
 
 
 async def send_cart_notification_after_topup(
