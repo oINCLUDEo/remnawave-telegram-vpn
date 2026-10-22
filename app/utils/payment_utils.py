@@ -1,3 +1,6 @@
+import re
+from decimal import ROUND_HALF_UP, Decimal
+
 from app.config import settings
 from app.localization.texts import get_texts
 
@@ -11,29 +14,127 @@ def verify_payment_amount(
     return abs(received_kopeks - expected_kopeks) <= tolerance_kopeks
 
 
+# «300 руб», «300₽», «500 рублей», «300 р.»: the unit is dropped before parsing.
+_AMOUNT_UNIT_RE = re.compile(r'(₽|руб\w*\.?|р\.?|rub\.?)$')
+_AMOUNT_SPACES_RE = re.compile(r'[\s\u00a0\u202f]+')
+_COMMA_THOUSANDS_RE = re.compile(r'\d{1,3}(,\d{3})+')
+_DOT_THOUSANDS_RE = re.compile(r'\d{1,3}(\.\d{3}){2,}')
+_PLAIN_AMOUNT_RE = re.compile(r'\d+(\.\d+)?')
+
+# Limits for providers that have no settings of their own (the old hard-coded 1–50 000 ₽).
+DEFAULT_TOPUP_MIN_KOPEKS = 100
+DEFAULT_TOPUP_MAX_KOPEKS = 5_000_000
+
+
+def parse_amount_kopeks(text: str | None) -> int | None:
+    """Kopeks from a typed amount, or None when it is not a number.
+
+    Accepts what people write: «500», «300 руб», «300₽», «1 000», «1,000» and
+    «99,50». A comma before exactly three digits groups thousands, any other
+    comma is a decimal one.
+    """
+    if not text:
+        return None
+    value = text.strip().lower()
+    value = _AMOUNT_UNIT_RE.sub('', value)
+    value = _AMOUNT_SPACES_RE.sub('', value)
+    if ',' in value and '.' in value:
+        # «1,000.50» or «1.000,50»: the last separator is the decimal one.
+        thousands = ',' if value.rfind('.') > value.rfind(',') else '.'
+        value = value.replace(thousands, '').replace(',', '.')
+    elif _COMMA_THOUSANDS_RE.fullmatch(value):
+        value = value.replace(',', '')
+    elif _DOT_THOUSANDS_RE.fullmatch(value):
+        value = value.replace('.', '')
+    else:
+        value = value.replace(',', '.')
+    if not _PLAIN_AMOUNT_RE.fullmatch(value):
+        return None
+    kopeks = int((Decimal(value) * 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+    return kopeks if kopeks > 0 else None
+
+
+def get_topup_amount_limits(payment_method: str) -> tuple[int, int]:
+    """Smallest and largest top-up in kopeks for a payment method."""
+    if payment_method in ('yookassa', 'yookassa_sbp'):
+        return settings.YOOKASSA_MIN_AMOUNT_KOPEKS, settings.YOOKASSA_MAX_AMOUNT_KOPEKS
+    return DEFAULT_TOPUP_MIN_KOPEKS, DEFAULT_TOPUP_MAX_KOPEKS
+
+
+def format_rubles(kopeks: int) -> str:
+    """Whole roubles with a space between thousands, for limits: «10 000»."""
+    return f'{kopeks // 100:,}'.replace(',', '\u00a0')
+
+
+def get_topup_amount_prompt(language: str, payment_method: str, icon: str) -> str:
+    """«Сколько пополнить? Напишите сумму от 50 до 10 000 ₽.» with the method's limits."""
+    texts = get_texts(language)
+    min_kopeks, max_kopeks = get_topup_amount_limits(payment_method)
+    return texts.t(
+        'TOPUP_AMOUNT_PROMPT',
+        '{icon} <b>Сколько пополнить?</b>\nНапишите сумму от {min} до {max} ₽.',
+    ).format(icon=icon, min=format_rubles(min_kopeks), max=format_rubles(max_kopeks))
+
+
+def topup_methods_callback(amount_kopeks: int) -> str:
+    """Callback for "Назад" to the payment methods, with the amount still filled in."""
+    if amount_kopeks > 0 and amount_kopeks % 100 == 0:
+        return f'balance_topup_amount:{amount_kopeks // 100}'
+    return 'balance_topup'
+
+
+def get_payment_support_button(texts):
+    """«Написать в поддержку» under a payment error: the support chat, or the support screen."""
+    from app.keyboards.icons import icon_button
+
+    label = texts.t('PAYMENT_SUPPORT_BUTTON', 'Написать в поддержку')
+    support_url = settings.get_support_contact_url()
+    if support_url:
+        return icon_button('support', label, url=support_url)
+    return icon_button('support', label, callback_data='menu_support')
+
+
+# Per-method wording of the limit errors: «для оплаты картой», «по СБП».
+_LIMIT_ERROR_KEYS = {
+    'yookassa': ('TOPUP_AMOUNT_MIN_CARD', 'TOPUP_AMOUNT_MAX_CARD'),
+    'yookassa_sbp': ('TOPUP_AMOUNT_MIN_SBP', 'TOPUP_AMOUNT_MAX_SBP'),
+}
+_LIMIT_ERROR_DEFAULTS = {
+    'TOPUP_AMOUNT_MIN_CARD': 'Минимальная сумма для оплаты картой — {amount} ₽.',
+    'TOPUP_AMOUNT_MAX_CARD': 'Максимальная сумма для оплаты картой — {amount} ₽.',
+    'TOPUP_AMOUNT_MIN_SBP': 'Минимальная сумма для оплаты по СБП — {amount} ₽.',
+    'TOPUP_AMOUNT_MAX_SBP': 'Максимальная сумма для оплаты по СБП — {amount} ₽.',
+    'TOPUP_AMOUNT_MIN': 'Минимальная сумма пополнения — {amount} ₽.',
+    'TOPUP_AMOUNT_MAX': 'Максимальная сумма пополнения — {amount} ₽.',
+}
+
+
+def get_topup_amount_error(language: str, payment_method: str, amount_kopeks: int) -> str | None:
+    """What to tell the user when the amount is outside the method's limits, else None."""
+    min_kopeks, max_kopeks = get_topup_amount_limits(payment_method)
+    min_key, max_key = _LIMIT_ERROR_KEYS.get(payment_method, ('TOPUP_AMOUNT_MIN', 'TOPUP_AMOUNT_MAX'))
+    if amount_kopeks < min_kopeks:
+        key, limit = min_key, min_kopeks
+    elif amount_kopeks > max_kopeks:
+        key, limit = max_key, max_kopeks
+    else:
+        return None
+    texts = get_texts(language)
+    return texts.t(key, _LIMIT_ERROR_DEFAULTS[key]).format(amount=format_rubles(limit))
+
+
 def get_available_payment_methods() -> list[dict[str, str]]:
     """
     Возвращает список доступных способов оплаты с их настройками
     """
     methods = []
 
-    if settings.TELEGRAM_STARS_ENABLED:
-        methods.append(
-            {
-                'id': 'stars',
-                'name': 'Telegram Stars',
-                'icon': '⭐',
-                'description': 'быстро и удобно',
-                'callback': 'topup_stars',
-            }
-        )
-
     if settings.is_yookassa_enabled():
         if getattr(settings, 'YOOKASSA_SBP_ENABLED', False):
             methods.append(
                 {
                     'id': 'yookassa_sbp',
-                    'name': 'СБП (YooKassa)',
+                    'name': 'СБП',
                     'icon': '🏦',
                     'description': 'моментальная оплата по QR',
                     'callback': 'topup_yookassa_sbp',
@@ -47,6 +148,17 @@ def get_available_payment_methods() -> list[dict[str, str]]:
                 'icon': '💳',
                 'description': 'через YooKassa',
                 'callback': 'topup_yookassa',
+            }
+        )
+
+    if settings.TELEGRAM_STARS_ENABLED:
+        methods.append(
+            {
+                'id': 'stars',
+                'name': 'Telegram Stars',
+                'icon': '⭐',
+                'description': 'быстро и удобно',
+                'callback': 'topup_stars',
             }
         )
 

@@ -379,6 +379,8 @@ class Settings(BaseSettings):
 
     YOOKASSA_ENABLED: bool = False
     YOOKASSA_DISPLAY_NAME: str = 'YooKassa'
+    # The payee as the bank statement shows it (the shop name in YooKassa); empty hides the line.
+    YOOKASSA_STATEMENT_NAME: str = ''
     YOOKASSA_SHOP_ID: str | None = None
     YOOKASSA_SECRET_KEY: str | None = None
     YOOKASSA_RETURN_URL: str | None = None

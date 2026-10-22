@@ -270,14 +270,10 @@ async def _handle_trial_payment(
             logger.warning('Ошибка отправки уведомления админам о триале', admin_error=admin_error)
 
         # Отправляем сообщение пользователю
-        await message.answer(
-            f'🎉 <b>Пробная подписка активирована!</b>\n\n'
-            f'⭐ Потрачено: {stars_amount} Stars\n'
-            f'📅 Период: {settings.TRIAL_DURATION_DAYS} дней\n'
-            f'📱 Устройств: {subscription.device_limit}\n\n'
-            f'Используйте меню для подключения к VPN.',
-            parse_mode='HTML',
-        )
+        from app.services.payment.common import build_paid_trial_message
+
+        trial_text, trial_keyboard = await build_paid_trial_message(db, user, subscription, amount_kopeks)
+        await message.answer(trial_text, reply_markup=trial_keyboard, parse_mode='HTML')
 
         logger.info(
             '✅ Платный триал активирован через Stars: user=, subscription=, stars',
@@ -540,30 +536,15 @@ async def handle_successful_payment(message: types.Message, db: AsyncSession, st
         )
 
         if success:
+            from app.services.payment.common import build_topup_success_message
+
             rubles_amount = TelegramStarsService.calculate_rubles_from_stars(payment.total_amount)
             amount_kopeks = int((rubles_amount * Decimal(100)).to_integral_value(rounding=ROUND_HALF_UP))
-            amount_text = settings.format_price(amount_kopeks).replace(' ₽', '')
 
-            keyboard = await payment_service.build_topup_success_keyboard(user)
-
-            transaction_id_short = payment.telegram_payment_charge_id[:8]
-
-            await message.answer(
-                texts.t(
-                    'STARS_PAYMENT_SUCCESS',
-                    '🎉 <b>Платеж успешно обработан!</b>\n\n'
-                    '⭐ Потрачено звезд: {stars_spent}\n'
-                    '💰 Зачислено на баланс: {amount} ₽\n'
-                    '🆔 ID транзакции: {transaction_id}...\n\n'
-                    'Спасибо за пополнение! 🚀',
-                ).format(
-                    stars_spent=payment.total_amount,
-                    amount=amount_text,
-                    transaction_id=transaction_id_short,
-                ),
-                parse_mode='HTML',
-                reply_markup=keyboard,
-            )
+            # The same message as for card and СБП. Telegram already shows how many
+            # stars were spent in its own service line, so the bot does not repeat it.
+            success_text, keyboard = await build_topup_success_message(user, amount_kopeks)
+            await message.answer(success_text, parse_mode='HTML', reply_markup=keyboard)
 
             logger.info(
                 '✅ Stars платеж успешно обработан: пользователь , звезд →',
@@ -573,12 +554,14 @@ async def handle_successful_payment(message: types.Message, db: AsyncSession, st
             )
         else:
             logger.error('Ошибка обработки Stars платежа для пользователя', user_id=user.id)
+            from app.utils.payment_utils import get_payment_support_button
+
             await message.answer(
                 texts.t(
                     'STARS_PAYMENT_ENROLLMENT_ERROR',
-                    '❌ Произошла ошибка при зачислении средств. '
-                    'Обратитесь в поддержку, платеж будет проверен вручную.',
-                )
+                    '❌ Звёзды списались, а баланс не пополнился. Чтобы деньги дошли до баланса, напишите в поддержку.',
+                ),
+                reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[[get_payment_support_button(texts)]]),
             )
 
     except Exception as e:
