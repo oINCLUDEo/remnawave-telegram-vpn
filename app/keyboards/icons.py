@@ -64,6 +64,32 @@ ICONS: dict[str, Icon] = {
     'contests': Icon('🎲', '5258508428212445001'),
     'admin': Icon('⚙️', '5258096772776991776'),
     'moderation': Icon('🧑‍⚖️', '5258450450448915742'),
+    # Everyday actions. Most buttons get these from the emoji at the start of
+    # their label (app/keyboards/button_icons.py), not by key.
+    'back': Icon('⬅️', '5258236805890710909'),
+    'home': Icon('🏠', '5257963315258204021'),
+    'refresh': Icon('🔄', '5258420634785947640'),
+    'stats': Icon('📊', '5258330865674494479'),
+    'list': Icon('📋', '5257965174979042426'),
+    'edit': Icon('✏️', '5258331647358540449'),
+    'add': Icon('➕', '5258108352008823107'),
+    'delete': Icon('🗑', '5258130763148172425'),
+    'search': Icon('🔍', '5429571366384842791'),
+    'view': Icon('👁', '5253959125838090076'),
+    'link': Icon('🔗', '5260730055880876557'),
+    'share': Icon('📤', '5258043150110301407'),
+    'download': Icon('⬇️', '5258336354642697821'),
+    'send': Icon('📨', '5258073068852485953'),
+    'chat': Icon('💬', '5287595522993991899'),
+    'announce': Icon('📢', '5260268501515377807'),
+    'document': Icon('📄', '5257965810634202885'),
+    'guide': Icon('📖', '5258328383183396223'),
+    'lock': Icon('🔒', '5258476306152038031'),
+    'calendar': Icon('📅', '5258105663359294787'),
+    'time': Icon('⏳', '5258419835922030550'),
+    'people': Icon('👥', '5258513401784573443'),
+    'profile': Icon('👤', '5258011929993026890'),
+    'coin': Icon('🪙', '5258368777350816286'),
 }
 
 # Button colours (Telegram Bot API 9.4 ``style``). Colour says what kind of
