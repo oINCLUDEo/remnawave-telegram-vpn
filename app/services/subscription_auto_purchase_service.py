@@ -21,6 +21,7 @@ from app.keyboards.main_menu import connect_button
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.pricing_engine import PricingEngine, pricing_engine
+from app.services.purchase_messages import CELEBRATION_EFFECT_ID, build_subscription_ready_message, topup_note
 from app.services.subscription_checkout_service import clear_subscription_checkout_draft
 from app.services.subscription_purchase_service import (
     MiniAppSubscriptionPurchaseService,
@@ -32,8 +33,7 @@ from app.services.subscription_purchase_service import (
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
-from app.utils.pricing_utils import balance_covers_price, format_period_description
-from app.utils.timezone import format_local_datetime
+from app.utils.pricing_utils import balance_covers_price
 
 
 logger = structlog.get_logger(__name__)
@@ -407,6 +407,7 @@ async def _auto_extend_subscription(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     # Lazy import to avoid circular dependency
     from app.cabinet.routes.websocket import notify_user_subscription_renewed
@@ -595,13 +596,7 @@ async def _auto_extend_subscription(
     await _delete_cart_for_subscription(user.id, cart_data)
     await clear_subscription_checkout_draft(user.id)
 
-    texts = get_texts(getattr(user, 'language', 'ru'))
-    period_label = format_period_description(
-        prepared.period_days,
-        getattr(user, 'language', 'ru'),
-    )
     new_end_date = updated_subscription.end_date
-    end_date_label = format_local_datetime(new_end_date, '%d.%m.%Y %H:%M')
 
     # Уведомление администраторам (не зависит от наличия bot)
     try:
@@ -629,41 +624,14 @@ async def _auto_extend_subscription(
     # Send user notification only for Telegram users
     if bot and user.telegram_id:
         try:
-            auto_message = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_EXTENDED',
-                '✅ Subscription automatically extended for {period}.',
-            ).format(period=period_label)
-            if settings.is_multi_tariff_enabled() and prepared.tariff_name:
-                auto_message += f'\n📦 Тариф: «{prepared.tariff_name}»'
-            details_message = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS',
-                'New expiration date: {date}.',
-            ).format(date=end_date_label)
-            hint_message = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                'Tap “Connect” to set up the VPN.',
-            )
-
-            full_message = '\n\n'.join(
-                part.strip() for part in [auto_message, details_message, hint_message] if part and part.strip()
-            )
-
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [connect_button(texts, None)],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 My subscription'),
-                            callback_data='menu_subscription',
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '🏠 Main menu'),
-                            callback_data='back_to_menu',
-                        )
-                    ],
-                ]
+            # One message for the top-up and the renewal it paid for.
+            full_message, keyboard = build_subscription_ready_message(
+                user,
+                updated_subscription,
+                renewed=True,
+                price_kopeks=prepared.price_kopeks,
+                topup_kopeks=topup_kopeks,
+                tariff_name=prepared.tariff_name,
             )
 
             await bot.send_message(
@@ -709,6 +677,7 @@ async def _auto_purchase_tariff(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Автоматическая покупка периодного тарифа из сохранённой корзины."""
     # Lazy imports to avoid circular dependency
@@ -823,6 +792,9 @@ async def _auto_purchase_tariff(
     saved_promo_percent = int(getattr(user, 'promo_offer_discount_percent', 0) or 0) if consume_promo else 0
     saved_promo_source = getattr(user, 'promo_offer_discount_source', None) if consume_promo else None
     saved_promo_expires = getattr(user, 'promo_offer_discount_expires_at', None) if consume_promo else None
+
+    # Before the charge marks the user as a paying one: the first purchase gets 🎉.
+    first_paid_purchase = not user.has_had_paid_subscription
 
     # Списываем баланс
     try:
@@ -997,44 +969,22 @@ async def _auto_purchase_tariff(
     # Send user notification only for Telegram users
     if bot and user.telegram_id:
         try:
-            texts = get_texts(getattr(user, 'language', 'ru'))
-            period_label = format_period_description(period_days, getattr(user, 'language', 'ru'))
-
-            message = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_SUCCESS',
-                '✅ Подписка на {period} автоматически оформлена после пополнения баланса.',
-            ).format(period=period_label)
-            if settings.is_multi_tariff_enabled() and tariff_name_for_label:
-                message += f'\n📦 Тариф: «{tariff_name_for_label}»'
-
-            hint = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                'Нажмите «Подключиться», чтобы настроить VPN.',
-            )
-
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [connect_button(texts, None)],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 Моя подписка'),
-                            callback_data='menu_subscription',
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '🏠 Главное меню'),
-                            callback_data='back_to_menu',
-                        )
-                    ],
-                ]
+            # One message for the top-up and the purchase it paid for.
+            message, keyboard = build_subscription_ready_message(
+                user,
+                subscription,
+                renewed=bool(existing_subscription) and not was_trial_conversion,
+                price_kopeks=final_price,
+                topup_kopeks=topup_kopeks,
+                tariff_name=tariff_name_for_label,
             )
 
             await bot.send_message(
                 chat_id=user.telegram_id,
-                text=f'{message}\n\n{hint}',
+                text=message,
                 reply_markup=keyboard,
                 parse_mode='HTML',
+                message_effect_id=CELEBRATION_EFFECT_ID if first_paid_purchase else None,
             )
         except Exception as error:
             logger.warning(
@@ -1084,6 +1034,7 @@ async def _auto_switch_tariff(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Применяем смену тарифа из сохранённой корзины после оплаты доплаты."""
     from sqlalchemy import delete as sql_delete
@@ -1328,6 +1279,11 @@ async def _auto_switch_tariff(
                 'Нажмите «Подключиться», чтобы настроить VPN.',
             )
 
+            # The top-up paid for this, so its message also says how much came in.
+            note = topup_note(getattr(user, 'language', 'ru'), topup_kopeks)
+            if note:
+                message += f'\n\n{note}'
+
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [connect_button(texts, None)],
@@ -1389,6 +1345,7 @@ async def _auto_purchase_daily_tariff(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Автоматическая покупка суточного тарифа из сохранённой корзины."""
 
@@ -1666,6 +1623,11 @@ async def _auto_purchase_daily_tariff(
                 f'ℹ️ Вы можете приостановить подписку в любой момент.'
             )
 
+            # The top-up paid for this, so its message also says how much came in.
+            note = topup_note(getattr(user, 'language', 'ru'), topup_kopeks)
+            if note:
+                message += f'\n\n{note}'
+
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [connect_button(texts, None)],
@@ -1737,6 +1699,7 @@ async def _auto_add_devices(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Auto-purchase devices from saved cart after balance topup."""
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -2003,6 +1966,11 @@ async def _auto_add_devices(
                 price=texts.format_price(price_kopeks),
             )
 
+            # The top-up paid for this, so its message also says how much came in.
+            note = topup_note(getattr(user, 'language', 'ru'), topup_kopeks)
+            if note:
+                message += f'\n\n{note}'
+
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [connect_button(texts, None)],
@@ -2057,6 +2025,7 @@ async def _auto_add_traffic(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Auto-purchase traffic from saved cart after balance topup."""
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -2352,6 +2321,11 @@ async def _auto_add_traffic(
                 price=texts.format_price(price_kopeks),
             )
 
+            # The top-up paid for this, so its message also says how much came in.
+            note = topup_note(getattr(user, 'language', 'ru'), topup_kopeks)
+            if note:
+                message += f'\n\n{note}'
+
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [connect_button(texts, None)],
@@ -2405,6 +2379,7 @@ async def try_auto_extend_expired_after_topup(
     user: User,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Try to auto-extend an expired subscription after balance top-up.
 
@@ -2667,10 +2642,7 @@ async def try_auto_extend_expired_after_topup(
             error=error,
         )
 
-    texts = get_texts(getattr(user, 'language', 'ru'))
-    period_label = format_period_description(period_days, getattr(user, 'language', 'ru'))
     new_end_date = updated_subscription.end_date
-    end_date_label = format_local_datetime(new_end_date, '%d.%m.%Y %H:%M')
 
     # Admin notification
     try:
@@ -2698,41 +2670,14 @@ async def try_auto_extend_expired_after_topup(
     # Send user notification (only for Telegram users)
     if bot and user.telegram_id:
         try:
-            auto_message = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_EXTENDED',
-                '✅ Subscription automatically extended for {period}.',
-            ).format(period=period_label)
-            if settings.is_multi_tariff_enabled() and tariff_name_for_label:
-                auto_message += f'\n📦 Тариф: «{tariff_name_for_label}»'
-            details_message = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS',
-                'New expiration date: {date}.',
-            ).format(date=end_date_label)
-            hint_message = texts.t(
-                'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                'Tap “Connect” to set up the VPN.',
-            )
-
-            full_message = '\n\n'.join(
-                part.strip() for part in [auto_message, details_message, hint_message] if part and part.strip()
-            )
-
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [connect_button(texts, None)],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 My subscription'),
-                            callback_data='menu_subscription',
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '🏠 Main menu'),
-                            callback_data='back_to_menu',
-                        )
-                    ],
-                ]
+            # One message for the top-up and the renewal it paid for.
+            full_message, keyboard = build_subscription_ready_message(
+                user,
+                updated_subscription,
+                renewed=True,
+                price_kopeks=renewal_cost,
+                topup_kopeks=topup_kopeks,
+                tariff_name=tariff_name_for_label,
             )
 
             await bot.send_message(
@@ -2778,6 +2723,7 @@ async def try_resume_disabled_daily_after_topup(
     user: User,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Resume a DISABLED daily subscription immediately after balance top-up.
 
@@ -3088,6 +3034,11 @@ async def try_resume_disabled_daily_after_topup(
                 balance=settings.format_price(user.balance_kopeks),
             )
 
+            # The top-up paid for this, so its message also says how much came in.
+            note = topup_note(getattr(user, 'language', 'ru'), topup_kopeks)
+            if note:
+                message += f'\n\n{note}'
+
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [connect_button(texts, None)],
@@ -3187,6 +3138,7 @@ async def _process_single_cart(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Process a single cart entry.  Returns True if purchase succeeded."""
     from app.database.crud.transaction import get_user_transactions
@@ -3250,17 +3202,17 @@ async def _process_single_cart(
             )
 
     if cart_mode == 'extend':
-        return await _auto_extend_subscription(db, user, cart_data, bot=bot)
+        return await _auto_extend_subscription(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
     if cart_mode == 'tariff_purchase':
-        return await _auto_purchase_tariff(db, user, cart_data, bot=bot)
+        return await _auto_purchase_tariff(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
     if cart_mode == 'daily_tariff_purchase':
-        return await _auto_purchase_daily_tariff(db, user, cart_data, bot=bot)
+        return await _auto_purchase_daily_tariff(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
     if cart_mode == 'add_devices':
-        return await _auto_add_devices(db, user, cart_data, bot=bot)
+        return await _auto_add_devices(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
     if cart_mode == 'add_traffic':
-        return await _auto_add_traffic(db, user, cart_data, bot=bot)
+        return await _auto_add_traffic(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
     if cart_mode == 'tariff_switch':
-        return await _auto_switch_tariff(db, user, cart_data, bot=bot)
+        return await _auto_switch_tariff(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
 
     logger.warning(
         'Автопокупка: неизвестный cart_mode, пропускаем',
@@ -3275,6 +3227,7 @@ async def auto_purchase_saved_cart_after_topup(
     user: User,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Attempts to automatically purchase subscriptions from saved carts.
 
@@ -3327,13 +3280,13 @@ async def auto_purchase_saved_cart_after_topup(
 
         # For non-mode carts (legacy generic purchase), handle separately below
         if cart_mode:
-            result = await _process_single_cart(db, user, cart_data, bot=bot)
+            result = await _process_single_cart(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
             if result:
                 any_succeeded = True
             continue
 
         # Legacy generic purchase flow (no cart_mode -- old-style cart from FSM state)
-        result = await _process_legacy_generic_cart(db, user, cart_data, bot=bot)
+        result = await _process_legacy_generic_cart(db, user, cart_data, bot=bot, topup_kopeks=topup_kopeks)
         if result:
             any_succeeded = True
 
@@ -3346,6 +3299,7 @@ async def _process_legacy_generic_cart(
     cart_data: dict,
     *,
     bot: Bot | None = None,
+    topup_kopeks: int = 0,
 ) -> bool:
     """Handle old-style carts without an explicit cart_mode (generic FSM carts)."""
     # Lazy imports to avoid circular dependency
@@ -3394,6 +3348,8 @@ async def _process_legacy_generic_cart(
         return False
 
     purchase_service = prepared.service
+    # Before the purchase marks the user as a paying one: the first purchase gets 🎉.
+    first_paid_purchase = not user.has_had_paid_subscription
 
     try:
         purchase_result = await purchase_service.submit_purchase(
@@ -3428,7 +3384,6 @@ async def _process_legacy_generic_cart(
     subscription = purchase_result.get('subscription')
     transaction = purchase_result.get('transaction')
     was_trial_conversion = purchase_result.get('was_trial_conversion', False)
-    texts = get_texts(getattr(user, 'language', 'ru'))
 
     if bot:
         try:
@@ -3450,52 +3405,26 @@ async def _process_legacy_generic_cart(
             )
 
         # Send user notification only for Telegram users
-        if user.telegram_id:
+        if user.telegram_id and subscription:
             try:
-                period_label = format_period_description(
-                    selection.period.days,
-                    getattr(user, 'language', 'ru'),
-                )
-                auto_message = texts.t(
-                    'AUTO_PURCHASE_SUBSCRIPTION_SUCCESS',
-                    '✅ Subscription purchased automatically after balance top-up ({period}).',
-                ).format(period=period_label)
-                if settings.is_multi_tariff_enabled() and subscription and getattr(subscription, 'tariff_id', None):
+                tariff_name = None
+                if settings.is_multi_tariff_enabled() and getattr(subscription, 'tariff_id', None):
                     try:
                         from app.database.crud.tariff import get_tariff_by_id as _get_tariff_label
 
                         _t = await _get_tariff_label(db, subscription.tariff_id)
-                        if _t:
-                            auto_message += f'\n📦 Тариф: «{_t.name}»'
+                        tariff_name = _t.name if _t else None
                     except Exception:
                         pass
 
-                hint_message = texts.t(
-                    'AUTO_PURCHASE_SUBSCRIPTION_HINT',
-                    'Tap “Connect” to set up the VPN.',
-                )
-
-                purchase_message = purchase_result.get('message', '')
-                full_message = '\n\n'.join(
-                    part.strip() for part in [auto_message, purchase_message, hint_message] if part and part.strip()
-                )
-
-                keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [connect_button(texts, None)],
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('MY_SUBSCRIPTION_BUTTON', '📱 My subscription'),
-                                callback_data='menu_subscription',
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '🏠 Main menu'),
-                                callback_data='back_to_menu',
-                            )
-                        ],
-                    ]
+                # One message for the top-up and the purchase it paid for.
+                full_message, keyboard = build_subscription_ready_message(
+                    user,
+                    subscription,
+                    renewed=False,
+                    price_kopeks=pricing.final_total,
+                    topup_kopeks=topup_kopeks,
+                    tariff_name=tariff_name,
                 )
 
                 await bot.send_message(
@@ -3503,6 +3432,7 @@ async def _process_legacy_generic_cart(
                     text=full_message,
                     reply_markup=keyboard,
                     parse_mode='HTML',
+                    message_effect_id=CELEBRATION_EFFECT_ID if first_paid_purchase else None,
                 )
             except Exception as error:  # pragma: no cover - defensive logging
                 logger.error(

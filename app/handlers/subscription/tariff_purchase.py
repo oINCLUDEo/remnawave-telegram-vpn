@@ -28,11 +28,12 @@ from app.keyboards.common import back_button
 from app.keyboards.icons import tg_emoji
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
+from app.services.purchase_messages import CELEBRATION_EFFECT_ID, build_subscription_ready_message, subscription_details
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.utils.decorators import error_handler
 from app.utils.formatting import format_period, format_price_kopeks, format_traffic
-from app.utils.pricing_utils import balance_covers_price
+from app.utils.pricing_utils import balance_covers_price, shortfall_topup_rubles
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 
 
@@ -312,6 +313,30 @@ def get_purchase_success_keyboard(texts, subscription) -> InlineKeyboardMarkup:
     )
 
 
+async def _show_purchase_result(
+    callback: types.CallbackQuery, text: str, keyboard: InlineKeyboardMarkup, *, celebrate: bool
+) -> None:
+    """Puts the purchase result in place of the purchase screen.
+
+    Telegram plays a message effect only on a new message, so the first paid
+    purchase gets a new message with 🎉 and the purchase screen is removed.
+    """
+    if celebrate:
+        try:
+            await callback.message.answer(
+                text, reply_markup=keyboard, parse_mode='HTML', message_effect_id=CELEBRATION_EFFECT_ID
+            )
+        except Exception as error:
+            logger.warning('Не удалось отправить сообщение о покупке с эффектом', error=error)
+        else:
+            try:
+                await callback.message.delete()
+            except Exception as error:
+                logger.debug('Не удалось удалить экран покупки', error=error)
+            return
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
+
+
 def get_shortfall_keyboard(db_user: User | None, missing_kopeks: int, back_callback: str) -> InlineKeyboardMarkup:
     """The "Недостаточно средств" screen's buttons: payment methods for the shortfall.
 
@@ -341,21 +366,67 @@ def get_shortfall_keyboard(db_user: User | None, missing_kopeks: int, back_callb
 
     from app.keyboards.inline import get_payment_methods_keyboard
 
-    methods = get_payment_methods_keyboard(missing_kopeks, language).inline_keyboard
+    # Whole roubles and at least the smallest top-up, so no method answers "minimum amount".
+    topup_kopeks = shortfall_topup_rubles(missing_kopeks) * 100
+    methods = get_payment_methods_keyboard(topup_kopeks, language).inline_keyboard
     # The methods keyboard ends with "Назад" to the balance; here it goes back to the purchase.
     return InlineKeyboardMarkup(inline_keyboard=[*methods[:-1], [back]])
 
 
-def shortfall_hint(language: str, missing_kopeks: int) -> str:
-    """A line under "Не хватает: …" that says the buttons below pay exactly that."""
-    return (
-        get_texts(language)
-        .t(
-            'TARIFF_SHORTFALL_PAY_HINT',
-            '\n\n👇 Выберите способ оплаты, сумма {amount} уже подставлена.',
-        )
-        .format(amount=format_price_kopeks(missing_kopeks))
-    )
+def shortfall_text(
+    language: str,
+    *,
+    missing_kopeks: int,
+    item: str,
+    price_kopeks: int,
+    balance_kopeks: int,
+    cart: str | None = None,
+    discount_percent: int = 0,
+    note: str = '',
+) -> str:
+    """«💳 Осталось доплатить 179 ₽» with the receipt lines and what happens after the payment.
+
+    The person is one step from paying and nothing broke, so the screen has no
+    ❌ and no «недостаточно». *item* names what is bought («Стандарт, 30 дней»).
+    *cart* is 'buy' or 'renew' when a saved cart completes the purchase after
+    the top-up, and None on the tariff switch screens, which save no cart.
+    *note* is a warning that goes last.
+    """
+    texts = get_texts(language)
+
+    price = format_price_kopeks(price_kopeks)
+    if discount_percent > 0:
+        price += texts.t('PURCHASE_SHORTFALL_DISCOUNT', ', скидка {percent}%').format(percent=discount_percent)
+    title = texts.t('PURCHASE_SHORTFALL_TITLE', '{icon} <b>Осталось доплатить {amount}</b>')
+    receipt = texts.t('PURCHASE_SHORTFALL_RECEIPT', '{item} — {price}\nНа балансе — {balance}')
+    receipt = receipt.format(item=item, price=price, balance=format_price_kopeks(balance_kopeks))
+    lines = [
+        title.format(icon=tg_emoji('payment'), amount=format_price_kopeks(missing_kopeks)),
+        f'<blockquote>{receipt}</blockquote>',
+    ]
+
+    if cart and settings.is_auto_purchase_after_topup_enabled():
+        if cart == 'renew':
+            lines.append(texts.t('PURCHASE_SHORTFALL_AFTER_RENEW', 'Подписка продлится сразу после оплаты.'))
+        else:
+            lines.append(texts.t('PURCHASE_SHORTFALL_AFTER_BUY', 'Подписка оформится сразу после оплаты.'))
+    elif cart:
+        lines.append(texts.t('PURCHASE_SHORTFALL_AFTER_CART', 'После оплаты останется нажать «Оформить подписку».'))
+    else:
+        lines.append(texts.t('PURCHASE_SHORTFALL_AFTER_SWITCH', 'После оплаты вернитесь к смене тарифа.'))
+
+    topup_kopeks = shortfall_topup_rubles(missing_kopeks) * 100
+    if topup_kopeks - missing_kopeks >= 100:
+        # The buttons pay more than is missing: say so before the invoice does.
+        minimum = texts.t('PURCHASE_SHORTFALL_MINIMUM', 'Пополнить можно от {amount}, остаток останется на балансе.')
+        lines.append(minimum.format(amount=format_price_kopeks(topup_kopeks)))
+
+    return '\n'.join(lines) + note
+
+
+def _daily_item(language: str, tariff_name: str) -> str:
+    """«Стандарт, сутки»: a daily tariff in the receipt lines."""
+    return get_texts(language).t('PURCHASE_ITEM_DAILY', '{tariff}, сутки').format(tariff=html.escape(tariff_name))
 
 
 def get_tariff_insufficient_balance_keyboard(
@@ -781,15 +852,15 @@ async def open_tariff(
             await user_cart_service.save_user_cart(db_user.id, cart_data)
 
             await callback.message.edit_text(
-                f'❌ <b>Недостаточно средств</b>\n\n'
-                f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-                f'🔄 Тип: Суточный\n'
-                f'💰 Цена: {format_price_kopeks(daily_price)}/день'
-                f'{discount_text}\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>\n\n'
-                f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>'
-                + shortfall_hint(db_user.language, missing),
+                shortfall_text(
+                    db_user.language,
+                    missing_kopeks=missing,
+                    item=_daily_item(db_user.language, tariff.name),
+                    price_kopeks=daily_price,
+                    balance_kopeks=user_balance,
+                    cart='buy',
+                    discount_percent=daily_discount,
+                ),
                 reply_markup=get_daily_tariff_insufficient_balance_keyboard(
                     tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
                 ),
@@ -1035,14 +1106,14 @@ async def handle_custom_confirm(
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
-    texts = get_texts(db_user.language)
-
     # Save promo offer state before deduction (for restore on failure)
     consume_promo = result.promo_offer_discount > 0
     saved_promo_percent = int(getattr(db_user, 'promo_offer_discount_percent', 0) or 0) if consume_promo else 0
     saved_promo_source = getattr(db_user, 'promo_offer_discount_source', None) if consume_promo else None
     saved_promo_expires = getattr(db_user, 'promo_offer_discount_expires_at', None) if consume_promo else None
 
+    # Read before the charge: the charge marks the user as one who has paid.
+    first_paid_purchase = not db_user.has_had_paid_subscription
     try:
         # Списываем баланс
         success = await subtract_user_balance(
@@ -1086,6 +1157,9 @@ async def handle_custom_confirm(
     # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
     if existing_subscription:
         restore_reserve_grace_if_active(existing_subscription)
+    # A trial or another tariff turns into a new subscription, the same tariff is renewed.
+    previous = existing_subscription
+    renewed = bool(previous) and previous.tariff_id == tariff.id and not previous.is_trial
 
     try:
         if existing_subscription:
@@ -1205,20 +1279,16 @@ async def handle_custom_confirm(
 
         await state.clear()
 
-        traffic_display = format_traffic(traffic_limit)
-
-        await callback.message.edit_text(
-            f'🎉 <b>Подписка успешно оформлена!</b>\n\n'
-            f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-            f'📊 Трафик: {traffic_display}\n'
-            f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {format_period(custom_days)}\n'
-            f'💰 Списано: {format_price_kopeks(total_price)}\n\n'
-            + texts.t('PURCHASE_SUCCESS_CONNECT_HINT', 'Нажмите «Подключиться», чтобы настроить VPN.'),
-            reply_markup=get_purchase_success_keyboard(texts, subscription),
-            parse_mode='HTML',
+        text, keyboard = build_subscription_ready_message(
+            db_user,
+            subscription,
+            renewed=renewed,
+            price_kopeks=total_price,
+            tariff_name=tariff.name,
+            details=subscription_details(db_user.language, tariff.name, tariff.device_limit, traffic_limit),
         )
-        await callback.answer('Подписка оформлена!', show_alert=True)
+        await _show_purchase_result(callback, text, keyboard, celebrate=first_paid_purchase)
+        await callback.answer()
 
     except Exception as e:
         logger.error('Ошибка при покупке тарифа с кастомными параметрами', error=e, exc_info=True)
@@ -1371,14 +1441,15 @@ async def select_tariff_period(
         await user_cart_service.save_user_cart(db_user.id, cart_data)
 
         await callback.message.edit_text(
-            f'❌ <b>Недостаточно средств</b>\n\n'
-            f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-            f'📅 Период: {format_period(period)}\n'
-            f'💰 Стоимость: {format_price_kopeks(final_price)}\n\n'
-            f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-            f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>\n\n'
-            f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет оформлена автоматически.</i>'
-            + shortfall_hint(db_user.language, missing),
+            shortfall_text(
+                db_user.language,
+                missing_kopeks=missing,
+                item=f'{html.escape(tariff.name)}, {format_period(period)}',
+                price_kopeks=final_price,
+                balance_kopeks=user_balance,
+                cart='buy',
+                discount_percent=discount_percent,
+            ),
             reply_markup=get_tariff_insufficient_balance_keyboard(
                 tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
             ),
@@ -1450,14 +1521,14 @@ async def confirm_tariff_purchase(
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
-    texts = get_texts(db_user.language)
-
     # Списываем баланс
     consume_promo = result.promo_offer_discount > 0
     # Save promo offer state before deduction (for restore on failure)
     saved_promo_percent = int(getattr(db_user, 'promo_offer_discount_percent', 0) or 0) if consume_promo else 0
     saved_promo_source = getattr(db_user, 'promo_offer_discount_source', None) if consume_promo else None
     saved_promo_expires = getattr(db_user, 'promo_offer_discount_expires_at', None) if consume_promo else None
+    # Read before the charge: the charge marks the user as one who has paid.
+    first_paid_purchase = not db_user.has_had_paid_subscription
     try:
         success = await subtract_user_balance(
             db,
@@ -1493,6 +1564,9 @@ async def confirm_tariff_purchase(
     # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
     if existing_subscription:
         restore_reserve_grace_if_active(existing_subscription)
+    # A trial or another tariff turns into a new subscription, the same tariff is renewed.
+    previous = existing_subscription
+    renewed = bool(previous) and previous.tariff_id == tariff.id and not previous.is_trial
 
     try:
         if settings.is_multi_tariff_enabled():
@@ -1717,20 +1791,16 @@ async def confirm_tariff_purchase(
 
     await state.clear()
 
-    traffic = format_traffic(tariff.traffic_limit_gb)
-
-    await callback.message.edit_text(
-        f'🎉 <b>Подписка успешно оформлена!</b>\n\n'
-        f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-        f'📊 Трафик: {traffic}\n'
-        f'📱 Устройств: {tariff.device_limit}\n'
-        f'📅 Период: {format_period(period)}\n'
-        f'💰 Списано: {format_price_kopeks(final_price)}\n\n'
-        + texts.t('PURCHASE_SUCCESS_CONNECT_HINT', 'Нажмите «Подключиться», чтобы настроить VPN.'),
-        reply_markup=get_purchase_success_keyboard(texts, subscription),
-        parse_mode='HTML',
+    text, keyboard = build_subscription_ready_message(
+        db_user,
+        subscription,
+        renewed=renewed,
+        price_kopeks=final_price,
+        tariff_name=tariff.name,
+        details=subscription_details(db_user.language, tariff.name, tariff.device_limit, tariff.traffic_limit_gb),
     )
-    await callback.answer('Подписка оформлена!', show_alert=True)
+    await _show_purchase_result(callback, text, keyboard, celebrate=first_paid_purchase)
+    await callback.answer()
 
 
 # ==================== Покупка суточного тарифа ====================
@@ -1787,6 +1857,8 @@ async def confirm_daily_tariff_purchase(
 
     texts = get_texts(db_user.language)
 
+    # Read before the charge: the charge marks the user as one who has paid.
+    first_paid_purchase = not db_user.has_had_paid_subscription
     try:
         # Списываем первый день сразу
         success = await subtract_user_balance(
@@ -1827,6 +1899,9 @@ async def confirm_daily_tariff_purchase(
     # иначе новый сквад/трафик будет перезаписан устаревшим резервным значением.
     if existing_subscription:
         restore_reserve_grace_if_active(existing_subscription)
+    # A trial or another tariff turns into a new subscription, the same tariff is renewed.
+    previous = existing_subscription
+    renewed = bool(previous) and previous.tariff_id == tariff.id and not previous.is_trial
 
     try:
         if existing_subscription:
@@ -1968,21 +2043,18 @@ async def confirm_daily_tariff_purchase(
 
     await state.clear()
 
-    traffic = format_traffic(tariff.traffic_limit_gb)
-
-    await callback.message.edit_text(
-        f'🎉 <b>Суточная подписка оформлена!</b>\n\n'
-        f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-        f'📊 Трафик: {traffic}\n'
-        f'📱 Устройств: {tariff.device_limit}\n'
-        f'🔄 Тип: Суточный\n'
-        f'💰 Списано: {format_price_kopeks(final_daily_price)}\n\n'
-        f'ℹ️ Следующее списание через 24 часа.\n'
-        + texts.t('PURCHASE_SUCCESS_CONNECT_HINT', 'Нажмите «Подключиться», чтобы настроить VPN.'),
-        reply_markup=get_purchase_success_keyboard(texts, subscription),
-        parse_mode='HTML',
+    text, keyboard = build_subscription_ready_message(
+        db_user,
+        subscription,
+        renewed=renewed,
+        price_kopeks=final_daily_price,
+        tariff_name=tariff.name,
+        details=subscription_details(db_user.language, tariff.name, tariff.device_limit, tariff.traffic_limit_gb),
     )
-    await callback.answer('Подписка оформлена!', show_alert=True)
+    next_charge = texts.t('PURCHASE_DAILY_NEXT_CHARGE', 'Следующее списание — {price} через сутки.')
+    text += '\n' + next_charge.format(price=format_price_kopeks(final_daily_price))
+    await _show_purchase_result(callback, text, keyboard, celebrate=first_paid_purchase)
+    await callback.answer()
 
 
 # ==================== Продление по тарифу ====================
@@ -2252,14 +2324,15 @@ async def select_tariff_extend_period(
         await user_cart_service.save_user_cart(db_user.id, cart_data)
 
         await callback.message.edit_text(
-            f'❌ <b>Недостаточно средств</b>\n\n'
-            f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-            f'📅 Период: {format_period(period)}\n'
-            f'💰 К оплате: {format_price_kopeks(final_price)}\n\n'
-            f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-            f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>\n\n'
-            f'🛒 <i>Корзина сохранена! После пополнения баланса подписка будет продлена автоматически.</i>'
-            + shortfall_hint(db_user.language, missing),
+            shortfall_text(
+                db_user.language,
+                missing_kopeks=missing,
+                item=f'{html.escape(tariff.name)}, {format_period(period)}',
+                price_kopeks=final_price,
+                balance_kopeks=user_balance,
+                cart='renew',
+                discount_percent=discount_percent,
+            ),
             reply_markup=get_shortfall_keyboard(db_user, missing, 'subscription_extend'),
             parse_mode='HTML',
         )
@@ -2324,8 +2397,8 @@ async def confirm_tariff_extend(
         await callback.answer('Недостаточно средств на балансе', show_alert=True)
         return
 
-    texts = get_texts(db_user.language)
-
+    # Read before the charge: the charge marks the user as one who has paid.
+    first_paid_purchase = not db_user.has_had_paid_subscription
     try:
         # Списываем баланс
         success = await subtract_user_balance(
@@ -2409,19 +2482,16 @@ async def confirm_tariff_extend(
 
         await state.clear()
 
-        traffic = format_traffic(tariff.traffic_limit_gb)
-
-        await callback.message.edit_text(
-            f'🎉 <b>Подписка успешно продлена!</b>\n\n'
-            f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-            f'📊 Трафик: {traffic}\n'
-            f'📱 Устройств: {actual_device_limit}\n'
-            f'📅 Добавлено: {format_period(period)}\n'
-            f'💰 Списано: {format_price_kopeks(final_price)}',
-            reply_markup=get_purchase_success_keyboard(texts, subscription),
-            parse_mode='HTML',
+        text, keyboard = build_subscription_ready_message(
+            db_user,
+            subscription,
+            renewed=not was_trial,
+            price_kopeks=final_price,
+            tariff_name=tariff.name,
+            details=subscription_details(db_user.language, tariff.name, actual_device_limit, tariff.traffic_limit_gb),
         )
-        await callback.answer('Подписка продлена!', show_alert=True)
+        await _show_purchase_result(callback, text, keyboard, celebrate=first_paid_purchase)
+        await callback.answer()
 
     except Exception as e:
         logger.error('Ошибка при продлении тарифа', error=e, exc_info=True)
@@ -2722,14 +2792,15 @@ async def select_tariff_switch(
         else:
             missing = daily_price - user_balance
             await callback.message.edit_text(
-                f'❌ <b>Недостаточно средств</b>\n\n'
-                f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-                f'🔄 Тип: Суточный\n'
-                f'💰 Цена: {format_price_kopeks(daily_price)}/день'
-                f'{discount_text}\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>'
-                f'{days_warning}' + shortfall_hint(db_user.language, missing),
+                shortfall_text(
+                    db_user.language,
+                    missing_kopeks=missing,
+                    item=_daily_item(db_user.language, tariff.name),
+                    price_kopeks=daily_price,
+                    balance_kopeks=user_balance,
+                    discount_percent=daily_discount,
+                    note=days_warning,
+                ),
                 reply_markup=get_shortfall_keyboard(db_user, missing, 'tariff_switch'),
                 parse_mode='HTML',
             )
@@ -2836,12 +2907,14 @@ async def select_tariff_switch_period(
     else:
         missing = final_price - user_balance
         await callback.message.edit_text(
-            f'❌ <b>Недостаточно средств</b>\n\n'
-            f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-            f'📅 Период: {format_period(period)}\n'
-            f'💰 К оплате: {format_price_kopeks(final_price)}\n\n'
-            f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-            f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
+            shortfall_text(
+                db_user.language,
+                missing_kopeks=missing,
+                item=f'{html.escape(tariff.name)}, {format_period(period)}',
+                price_kopeks=final_price,
+                balance_kopeks=user_balance,
+                discount_percent=discount_percent,
+            ),
             reply_markup=get_tariff_switch_insufficient_balance_keyboard(
                 tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
             ),
@@ -3594,14 +3667,15 @@ async def preview_instant_switch(
         else:
             missing = daily_price - user_balance
             await callback.message.edit_text(
-                f'❌ <b>Недостаточно средств</b>\n\n'
-                f'📦 Тариф: <b>{html.escape(new_tariff.name)}</b>\n'
-                f'🔄 Тип: Суточный\n'
-                f'💰 Цена: {format_price_kopeks(daily_price)}/день'
-                f'{discount_text}\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>'
-                f'{daily_warning}' + shortfall_hint(db_user.language, missing),
+                shortfall_text(
+                    db_user.language,
+                    missing_kopeks=missing,
+                    item=_daily_item(db_user.language, new_tariff.name),
+                    price_kopeks=daily_price,
+                    balance_kopeks=user_balance,
+                    discount_percent=daily_discount,
+                    note=daily_warning,
+                ),
                 reply_markup=get_instant_switch_insufficient_balance_keyboard(
                     tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
                 ),
@@ -3638,12 +3712,15 @@ async def preview_instant_switch(
             )
         else:
             missing = upgrade_cost - user_balance
+            upgrade_item = texts.t('PURCHASE_ITEM_UPGRADE', 'Переход на «{tariff}»')
             await callback.message.edit_text(
-                f'❌ <b>Недостаточно средств</b>\n\n'
-                f'📦 Новый тариф: <b>{html.escape(new_tariff.name)}</b>\n'
-                f'💰 Требуется доплата: {format_price_kopeks(upgrade_cost)}\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
+                shortfall_text(
+                    db_user.language,
+                    missing_kopeks=missing,
+                    item=upgrade_item.format(tariff=html.escape(new_tariff.name)),
+                    price_kopeks=upgrade_cost,
+                    balance_kopeks=user_balance,
+                ),
                 reply_markup=get_instant_switch_insufficient_balance_keyboard(
                     tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
                 ),
@@ -3987,46 +4064,28 @@ async def return_to_saved_tariff_cart(
         missing = total_price - user_balance
 
         if cart_mode == 'daily_tariff_purchase':
-            await callback.message.edit_text(
-                f'❌ <b>Все еще недостаточно средств</b>\n\n'
-                f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-                f'🔄 Тип: Суточный\n'
-                f'💰 Стоимость: {format_price_kopeks(total_price)}\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
-                reply_markup=get_daily_tariff_insufficient_balance_keyboard(
-                    tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
-                ),
-                parse_mode='HTML',
+            item = _daily_item(db_user.language, tariff.name)
+            keyboard = get_daily_tariff_insufficient_balance_keyboard(
+                tariff_id, db_user.language, db_user=db_user, missing_kopeks=missing
             )
-        elif cart_mode == 'extend':
+        else:
             period = cart_data.get('period_days', 30)
-            await callback.message.edit_text(
-                f'❌ <b>Все еще недостаточно средств</b>\n\n'
-                f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-                f'📅 Период: {format_period(period)}\n'
-                f'💰 Стоимость: {format_price_kopeks(total_price)}\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
-                reply_markup=get_tariff_insufficient_balance_keyboard(
-                    tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
-                ),
-                parse_mode='HTML',
+            item = f'{html.escape(tariff.name)}, {format_period(period)}'
+            keyboard = get_tariff_insufficient_balance_keyboard(
+                tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
             )
-        else:  # tariff_purchase
-            period = cart_data.get('period_days', 30)
-            await callback.message.edit_text(
-                f'❌ <b>Все еще недостаточно средств</b>\n\n'
-                f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-                f'📅 Период: {format_period(period)}\n'
-                f'💰 Стоимость: {format_price_kopeks(total_price)}\n\n'
-                f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-                f'⚠️ Не хватает: <b>{format_price_kopeks(missing)}</b>' + shortfall_hint(db_user.language, missing),
-                reply_markup=get_tariff_insufficient_balance_keyboard(
-                    tariff_id, period, db_user.language, db_user=db_user, missing_kopeks=missing
-                ),
-                parse_mode='HTML',
-            )
+        await callback.message.edit_text(
+            shortfall_text(
+                db_user.language,
+                missing_kopeks=missing,
+                item=item,
+                price_kopeks=total_price,
+                balance_kopeks=user_balance,
+                cart='renew' if cart_mode == 'extend' else 'buy',
+            ),
+            reply_markup=keyboard,
+            parse_mode='HTML',
+        )
         await callback.answer()
         return
 
