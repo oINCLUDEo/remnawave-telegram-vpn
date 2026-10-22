@@ -5,6 +5,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.config import settings
+from app.keyboards.button_icons import ButtonIconsMiddleware
 
 
 def create_bot(token: str | None = None, **kwargs) -> Bot:
@@ -17,4 +18,7 @@ def create_bot(token: str | None = None, **kwargs) -> Bot:
         session = AiohttpSession(proxy=proxy_url)
 
     kwargs.setdefault('default', DefaultBotProperties(parse_mode=ParseMode.HTML))
-    return Bot(token=token or settings.BOT_TOKEN, session=session, **kwargs)
+    bot = Bot(token=token or settings.BOT_TOKEN, session=session, **kwargs)
+    # Leading emoji on inline buttons become the bot's monochrome icons (app/keyboards/button_icons.py).
+    bot.session.middleware(ButtonIconsMiddleware())
+    return bot
