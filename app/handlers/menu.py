@@ -23,13 +23,14 @@ from app.keyboards.inline import (
     get_language_selection_keyboard,
     get_main_menu_keyboard,
 )
+from app.keyboards.main_menu import is_trial_available
 from app.localization.texts import get_rules, get_texts
 from app.services.faq_service import FaqService
 from app.services.main_menu_button_service import MainMenuButtonService
 from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
 from app.services.support_settings_service import SupportSettingsService
-from app.utils.formatters import format_days_declension, format_human_date
+from app.utils.formatters import format_days_declension, format_devices_count, format_human_date
 from app.utils.photo_message import edit_or_answer_photo
 from app.utils.pricing_utils import format_period_description
 from app.utils.promo_offer import (
@@ -1011,18 +1012,58 @@ async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext, 
     await callback.answer()
 
 
-def _status_card(headline: str, *details: str) -> str:
-    """The main menu's status: the state in bold, then «⚡ Безлимит · осталось 298 дней» under it."""
-    detail = ' · '.join(part for part in details if part)
-    if not detail:
-        return headline
-    return f'{headline}\n{detail[:1].upper()}{detail[1:]}'
+def _status_card(headline: str, *lines: str) -> str:
+    """The main menu's card: the state in bold, then one fact per line."""
+    return '\n'.join([headline, *(line for line in lines if line)])
 
 
-def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False, tariff_label: str = '') -> str:
+def _gigabytes(value: float, language: str) -> str:
+    """«12,4», «50»: one decimal at most, with a comma where the language writes one."""
+    text = f'{value:.1f}'.rstrip('0').rstrip('.')
+    return text.replace('.', ',') if language.split('-')[0] in {'ru', 'ua', 'uk'} else text
+
+
+def _menu_facts(texts, subscription, tariff) -> tuple[str, str]:
+    """«⚡ Тариф «Безлимит» · 5 устройств» and, when traffic is limited, «📈 Обход белых списков: 12,4 из 50 ГБ»."""
+    from app.handlers.subscription.tariff_purchase import _tariff_icon_and_name
+
+    language = texts.language
+    devices = format_devices_count(subscription.device_limit, language) if subscription.device_limit else ''
+    if tariff:
+        icon, name = _tariff_icon_and_name(tariff)
+        plan = texts.t('MAIN_MENU_TARIFF', '{icon} Тариф «{name}»').format(
+            icon=html.escape(icon or '📦'), name=html.escape(name)
+        )
+        plan_line = f'{plan} · {devices}' if devices else plan
+    else:
+        plan_line = f'📱 {devices}' if devices else ''
+
+    limit = subscription.traffic_limit_gb or 0
+    if not limit:
+        return plan_line, ''
+    # On tariffs the gigabytes count only on the servers that bypass whitelists.
+    if tariff:
+        traffic = texts.t('MAIN_MENU_TRAFFIC_BYPASS', '📈 Обход белых списков: {used} из {limit} ГБ')
+    else:
+        traffic = texts.t('MAIN_MENU_TRAFFIC', '📈 Трафик: {used} из {limit} ГБ')
+    used = _gigabytes(subscription.traffic_used_gb or 0, language)
+    return plan_line, traffic.format(used=used, limit=limit)
+
+
+def _get_subscription_status(user: User, texts, tariff=None) -> str:
     subscription = getattr(user, 'subscription', None)
+    no_subscription = texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>')
+    trial_hint = ''
+    if is_trial_available(
+        subscription,
+        has_had_paid_subscription=user.has_had_paid_subscription,
+        auth_type=getattr(user, 'auth_type', None),
+    ):
+        trial_hint = texts.t('MAIN_MENU_TRIAL_HINT', '🎁 Пробный период: {days} бесплатно').format(
+            days=format_days_declension(settings.TRIAL_DURATION_DAYS, texts.language)
+        )
     if not subscription:
-        return texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>')
+        return _status_card(no_subscription, trial_hint)
 
     # Reserve-squad grace: подписка локально уже истекла (её status/end_date не
     # подменяются — grace живёт только в панели, см. grant_reserve_squad_grace),
@@ -1047,24 +1088,29 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False, t
         days_left = (subscription.end_date - current_time).days
 
     days_text = format_days_declension(days_left, texts.language)
-    left = texts.t('MAIN_MENU_DAYS_LEFT', 'осталось {days}').format(days=days_text)
-    until = texts.t('MAIN_MENU_UNTIL', 'до {date}').format(date=end_date_text) if end_date_text else ''
+    period = ''
+    until = ''
+    if end_date_text:
+        period = texts.t('MAIN_MENU_PERIOD', '🗓 До {date}, осталось {days}').format(date=end_date_text, days=days_text)
+        until = texts.t('MAIN_MENU_UNTIL', '🗓 До {date}').format(date=end_date_text)
+    plan_line, traffic_line = _menu_facts(texts, subscription, tariff)
 
     if actual_status == 'pending':
-        return texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>')
+        return _status_card(no_subscription, trial_hint)
 
     if actual_status == 'disabled':
-        return _status_card(texts.t('SUB_STATUS_DISABLED', '🚫 <b>Подписка отключена</b>'), tariff_label)
+        return _status_card(texts.t('SUB_STATUS_DISABLED', '🚫 <b>Подписка отключена</b>'), plan_line)
 
     if actual_status == 'limited':
-        return _status_card(texts.t('SUB_STATUS_LIMITED', '⚠️ <b>Трафик закончился</b>'), tariff_label)
+        headline = texts.t('SUB_STATUS_LIMITED', '⚠️ <b>Трафик закончился</b>')
+        return _status_card(headline, plan_line, traffic_line)
 
     if actual_status == 'expired':
         headline = texts.t(
             'SUB_STATUS_EXPIRED',
             '🚫 <b>Подписка закончилась {end_date}</b>',
         ).format(end_date=end_date_text or '—')
-        return _status_card(headline, tariff_label)
+        return _status_card(headline, plan_line)
 
     is_trial_subscription = getattr(subscription, 'is_trial', False)
 
@@ -1072,39 +1118,34 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False, t
 
     if is_trial_like_status:
         if days_left > 1 and end_date_text:
-            headline = texts.t(
-                'SUB_STATUS_TRIAL_ACTIVE',
-                '🎁 <b>Пробный период до {end_date}</b>',
-            ).format(end_date=end_date_text)
-            return _status_card(headline, tariff_label, left)
+            headline = texts.t('SUB_STATUS_TRIAL_ACTIVE', '🎁 <b>Пробный период</b>')
+            return _status_card(headline, period, plan_line, traffic_line)
         if days_left == 1:
             headline = texts.t('SUB_STATUS_TRIAL_TOMORROW', '⚠️ <b>Пробный период закончится завтра</b>')
-            return _status_card(headline, tariff_label)
+            return _status_card(headline, plan_line, traffic_line)
         headline = texts.t('SUB_STATUS_TRIAL_TODAY', '⚠️ <b>Пробный период закончится сегодня</b>')
-        return _status_card(headline, tariff_label)
+        return _status_card(headline, plan_line, traffic_line)
 
     if actual_status == 'active':
         # Для суточных тарифов не показываем предупреждение об истечении
-        if is_daily_tariff:
-            return _status_card(texts.t('SUB_STATUS_DAILY_ACTIVE', '✅ <b>Подписка активна</b>'), tariff_label)
+        if tariff and getattr(tariff, 'is_daily', False):
+            headline = texts.t('SUB_STATUS_DAILY_ACTIVE', '✅ <b>Подписка активна</b>')
+            return _status_card(headline, plan_line, traffic_line)
 
         if days_left > 7 and end_date_text:
-            headline = texts.t(
-                'SUB_STATUS_ACTIVE_LONG',
-                '✅ <b>Подписка активна до {end_date}</b>',
-            ).format(end_date=end_date_text)
-            return _status_card(headline, tariff_label, left)
+            headline = texts.t('SUB_STATUS_ACTIVE_LONG', '✅ <b>Подписка активна</b>')
+            return _status_card(headline, period, plan_line, traffic_line)
         if days_left > 1:
             headline = texts.t(
                 'SUB_STATUS_ACTIVE_FEW_DAYS',
                 '⚠️ <b>Подписка закончится через {days}</b>',
             ).format(days=days_text)
-            return _status_card(headline, tariff_label, until)
+            return _status_card(headline, until, plan_line, traffic_line)
         if days_left == 1:
             headline = texts.t('SUB_STATUS_ACTIVE_TOMORROW', '⚠️ <b>Подписка закончится завтра</b>')
-            return _status_card(headline, tariff_label)
+            return _status_card(headline, plan_line, traffic_line)
         headline = texts.t('SUB_STATUS_ACTIVE_TODAY', '⚠️ <b>Подписка закончится сегодня</b>')
-        return _status_card(headline, tariff_label)
+        return _status_card(headline, plan_line, traffic_line)
 
     return texts.t('SUB_STATUS_UNKNOWN', '❓ Неизвестно')
 
@@ -1167,26 +1208,19 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
     else:
         # Single-tariff mode: legacy behavior
         tariff = None
-        is_daily_tariff = False
-        tariff_label = ''
 
         subscription = getattr(user, 'subscription', None)
         if settings.is_tariffs_mode() and subscription and subscription.tariff_id:
             try:
                 from app.database.crud.tariff import get_tariff_by_id
-                from app.handlers.subscription.tariff_purchase import _tariff_icon_and_name
 
                 tariff = await get_tariff_by_id(db, subscription.tariff_id)
-                if tariff:
-                    is_daily_tariff = getattr(tariff, 'is_daily', False)
-                    icon, name = _tariff_icon_and_name(tariff)
-                    tariff_label = f'{html.escape(icon or "📦")} {html.escape(name)}'
             except Exception as e:
                 logger.debug('Не удалось загрузить тариф для главного меню', error=e)
 
         base_text = texts.MAIN_MENU.format(
             user_name=html.escape(user.full_name or ''),
-            subscription_status=_get_subscription_status(user, texts, is_daily_tariff, tariff_label),
+            subscription_status=_get_subscription_status(user, texts, tariff),
         )
 
     info_sections: list[str] = []
