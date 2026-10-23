@@ -157,7 +157,7 @@ def _period_label(texts, language: str | None, days: int) -> str:
 def _tariff_bypass(texts, tariff: Tariff) -> str:
     """«50 ГБ обхода»: the tariff's gigabytes count only on the servers that bypass whitelists."""
     if not tariff.traffic_limit_gb:
-        return texts.t('TARIFF_BYPASS_UNLIMITED_SHORT', 'обход без лимита')
+        return texts.t('TARIFF_BYPASS_UNLIMITED_SHORT', 'безлимитный трафик')
     return texts.t('TARIFF_BYPASS_SHORT', '{gb} ГБ обхода').format(gb=tariff.traffic_limit_gb)
 
 
@@ -182,14 +182,16 @@ def _tariff_icon_and_name(tariff: Tariff) -> tuple[str, str]:
 def _tariff_servers_lines(texts, tariff: Tariff) -> list[str]:
     """The tariff's traffic in full, for its own screen."""
     if not tariff.traffic_limit_gb:
-        return [texts.t('TARIFF_ALL_UNLIMITED_LINE', 'Все серверы без лимита, включая обход белых списков')]
+        return [
+            texts.t('TARIFF_ALL_UNLIMITED_LINE', 'Безлимитный трафик на всех серверах, включая обход белых списков')
+        ]
     mode = (getattr(tariff, 'traffic_reset_mode', None) or settings.DEFAULT_TRAFFIC_RESET_STRATEGY or '').upper()
     if mode in {'MONTH', 'MONTH_ROLLING'}:
-        bypass = texts.t('TARIFF_BYPASS_MONTHLY_LINE', 'Обход белых списков: {gb} ГБ в месяц')
+        bypass = texts.t('TARIFF_BYPASS_MONTHLY_LINE', '{gb} ГБ в месяц на серверах обхода белых списков')
     else:
-        bypass = texts.t('TARIFF_BYPASS_LINE', 'Обход белых списков: {gb} ГБ')
+        bypass = texts.t('TARIFF_BYPASS_LINE', '{gb} ГБ на серверах обхода белых списков')
     return [
-        texts.t('TARIFF_REGULAR_LINE', 'Обычные серверы без лимита'),
+        texts.t('TARIFF_REGULAR_LINE', 'Безлимитный трафик на обычных серверах'),
         bypass.format(gb=tariff.traffic_limit_gb),
     ]
 
@@ -288,8 +290,8 @@ def format_tariffs_list_text(
             '',
             texts.t(
                 'TARIFF_LIST_NOTE',
-                'На всех тарифах обычные серверы без лимита. '
-                'Гигабайты считаются только на серверах обхода белых списков.',
+                'Гигабайты считаются только на серверах обхода белых списков. '
+                'На обычных серверах безлимитный трафик.',
             ),
         ]
 

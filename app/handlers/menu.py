@@ -29,6 +29,7 @@ from app.services.main_menu_button_service import MainMenuButtonService
 from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
 from app.services.support_settings_service import SupportSettingsService
+from app.utils.formatters import format_days_declension, format_human_date
 from app.utils.photo_message import edit_or_answer_photo
 from app.utils.pricing_utils import format_period_description
 from app.utils.promo_offer import (
@@ -1010,10 +1011,18 @@ async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext, 
     await callback.answer()
 
 
-def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -> str:
+def _status_card(headline: str, *details: str) -> str:
+    """The main menu's status: the state in bold, then «⚡ Безлимит · осталось 298 дней» under it."""
+    detail = ' · '.join(part for part in details if part)
+    if not detail:
+        return headline
+    return f'{headline}\n{detail[:1].upper()}{detail[1:]}'
+
+
+def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False, tariff_label: str = '') -> str:
     subscription = getattr(user, 'subscription', None)
     if not subscription:
-        return texts.t('SUB_STATUS_NONE', '<b>Не оформлена</b>')
+        return texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>')
 
     # Reserve-squad grace: подписка локально уже истекла (её status/end_date не
     # подменяются — grace живёт только в панели, см. grant_reserve_squad_grace),
@@ -1025,32 +1034,37 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
         end_date_text = format_local_datetime(grace_expire_at, '%d.%m.%Y %H:%M')
         return texts.t(
             'SUB_STATUS_RESERVE_GRACE',
-            '🔌 Временный доступ\n⚠️ Подписка истекла, доступ ограничен до {end_date}',
+            '⚠️ <b>Подписка закончилась</b>\nВременный доступ до {end_date}',
         ).format(end_date=end_date_text or '—')
 
     current_time = datetime.now(UTC)
     actual_status = (subscription.actual_status or '').lower()
     end_date = getattr(subscription, 'end_date', None)
-    end_date_text = format_local_datetime(end_date, '%d.%m.%Y') if end_date else None
+    end_date_text = format_human_date(end_date, texts.language) if end_date else None
     days_left = 0
 
     if subscription.end_date > current_time:
         days_left = (subscription.end_date - current_time).days
 
+    days_text = format_days_declension(days_left, texts.language)
+    left = texts.t('MAIN_MENU_DAYS_LEFT', 'осталось {days}').format(days=days_text)
+    until = texts.t('MAIN_MENU_UNTIL', 'до {date}').format(date=end_date_text) if end_date_text else ''
+
     if actual_status == 'pending':
-        return texts.t('SUB_STATUS_NONE', '<b>Не оформлена</b>')
+        return texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>')
 
     if actual_status == 'disabled':
-        return texts.t('SUB_STATUS_DISABLED', '🚫 <b>Отключена</b>')
+        return _status_card(texts.t('SUB_STATUS_DISABLED', '🚫 <b>Подписка отключена</b>'), tariff_label)
 
     if actual_status == 'limited':
-        return texts.t('SUB_STATUS_LIMITED', '⚠️ <b>Трафик исчерпан</b>')
+        return _status_card(texts.t('SUB_STATUS_LIMITED', '⚠️ <b>Трафик закончился</b>'), tariff_label)
 
     if actual_status == 'expired':
-        return texts.t(
+        headline = texts.t(
             'SUB_STATUS_EXPIRED',
-            '🚫 <b>Истекла</b> {end_date}',
+            '🚫 <b>Подписка закончилась {end_date}</b>',
         ).format(end_date=end_date_text or '—')
+        return _status_card(headline, tariff_label)
 
     is_trial_subscription = getattr(subscription, 'is_trial', False)
 
@@ -1058,66 +1072,41 @@ def _get_subscription_status(user: User, texts, is_daily_tariff: bool = False) -
 
     if is_trial_like_status:
         if days_left > 1 and end_date_text:
-            return texts.t(
+            headline = texts.t(
                 'SUB_STATUS_TRIAL_ACTIVE',
-                '🎁 <b>Тестовая</b>\n🗓 До {end_date}, осталось {days} дн.',
-            ).format(
-                end_date=end_date_text,
-                days=days_left,
-            )
+                '🎁 <b>Пробный период до {end_date}</b>',
+            ).format(end_date=end_date_text)
+            return _status_card(headline, tariff_label, left)
         if days_left == 1:
-            return texts.t(
-                'SUB_STATUS_TRIAL_TOMORROW',
-                '⚠️ <b>Тестовая истекает завтра</b>',
-            )
-        return texts.t(
-            'SUB_STATUS_TRIAL_TODAY',
-            '⚠️ <b>Тестовая истекает сегодня</b>',
-        )
+            headline = texts.t('SUB_STATUS_TRIAL_TOMORROW', '⚠️ <b>Пробный период закончится завтра</b>')
+            return _status_card(headline, tariff_label)
+        headline = texts.t('SUB_STATUS_TRIAL_TODAY', '⚠️ <b>Пробный период закончится сегодня</b>')
+        return _status_card(headline, tariff_label)
 
     if actual_status == 'active':
         # Для суточных тарифов не показываем предупреждение об истечении
         if is_daily_tariff:
-            return texts.t('SUB_STATUS_DAILY_ACTIVE', '✅ <b>Активна</b>')
+            return _status_card(texts.t('SUB_STATUS_DAILY_ACTIVE', '✅ <b>Подписка активна</b>'), tariff_label)
 
         if days_left > 7 and end_date_text:
-            return texts.t(
+            headline = texts.t(
                 'SUB_STATUS_ACTIVE_LONG',
-                '✅ <b>Активна</b>\n🗓 До {end_date}, осталось {days} дн.',
-            ).format(
-                end_date=end_date_text,
-                days=days_left,
-            )
+                '✅ <b>Подписка активна до {end_date}</b>',
+            ).format(end_date=end_date_text)
+            return _status_card(headline, tariff_label, left)
         if days_left > 1:
-            return texts.t(
+            headline = texts.t(
                 'SUB_STATUS_ACTIVE_FEW_DAYS',
-                '⚠️ <b>Истекает через {days} дн.</b>',
-            ).format(days=days_left)
+                '⚠️ <b>Подписка закончится через {days}</b>',
+            ).format(days=days_text)
+            return _status_card(headline, tariff_label, until)
         if days_left == 1:
-            return texts.t(
-                'SUB_STATUS_ACTIVE_TOMORROW',
-                '⚠️ <b>Истекает завтра</b>',
-            )
-        return texts.t(
-            'SUB_STATUS_ACTIVE_TODAY',
-            '⚠️ <b>Истекает сегодня</b>',
-        )
+            headline = texts.t('SUB_STATUS_ACTIVE_TOMORROW', '⚠️ <b>Подписка закончится завтра</b>')
+            return _status_card(headline, tariff_label)
+        headline = texts.t('SUB_STATUS_ACTIVE_TODAY', '⚠️ <b>Подписка закончится сегодня</b>')
+        return _status_card(headline, tariff_label)
 
     return texts.t('SUB_STATUS_UNKNOWN', '❓ Неизвестно')
-
-
-def _insert_random_message(base_text: str, random_message: str, action_prompt: str) -> str:
-    if not random_message:
-        return base_text
-
-    prompt = action_prompt or ''
-    if prompt and prompt in base_text:
-        parts = base_text.split(prompt, 1)
-        if len(parts) == 2:
-            return f'{parts[0]}\n{random_message}\n\n{prompt}{parts[1]}'
-        return base_text.replace(prompt, f'\n{random_message}\n\n{prompt}', 1)
-
-    return f'{base_text}\n\n{random_message}'
 
 
 async def _get_multi_tariff_status(user, texts, db: AsyncSession) -> tuple[str, str]:
@@ -1130,7 +1119,7 @@ async def _get_multi_tariff_status(user, texts, db: AsyncSession) -> tuple[str, 
     subscriptions = await get_all_subscriptions_by_user_id(db, user.id)
 
     if not subscriptions:
-        return texts.t('SUB_STATUS_NONE', '<b>Не оформлена</b>'), ''
+        return texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>'), ''
 
     current_time = datetime.now(UTC)
     lines: list[str] = []
@@ -1160,8 +1149,8 @@ async def _get_multi_tariff_status(user, texts, db: AsyncSession) -> tuple[str, 
 
         lines.append(f'{emoji} <b>{tariff_name}</b>{status_suffix}')
 
-    status_text = '\n<blockquote>' + '\n'.join(lines) + '</blockquote>'
-    return status_text, ''
+    # MAIN_MENU puts the status in a quote itself, and Telegram does not nest quotes.
+    return '\n'.join(lines), ''
 
 
 async def get_main_menu_text(user, texts, db: AsyncSession):
@@ -1169,46 +1158,36 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
 
     # Multi-tariff: show summary of all subscriptions
     if settings.is_multi_tariff_enabled():
-        subscriptions_status, tariff_info_block = await _get_multi_tariff_status(user, texts, db)
+        subscriptions_status, _ = await _get_multi_tariff_status(user, texts, db)
 
         base_text = texts.MAIN_MENU.format(
             user_name=html.escape(user.full_name or ''),
             subscription_status=subscriptions_status,
         )
-
-        if tariff_info_block:
-            action_prompt_text = texts.t('MAIN_MENU_ACTION_PROMPT', 'Выберите действие:')
-            if action_prompt_text in base_text:
-                base_text = base_text.replace(action_prompt_text, f'{tariff_info_block}\n{action_prompt_text}')
     else:
         # Single-tariff mode: legacy behavior
         tariff = None
         is_daily_tariff = False
-        tariff_info_block = ''
+        tariff_label = ''
 
         subscription = getattr(user, 'subscription', None)
         if settings.is_tariffs_mode() and subscription and subscription.tariff_id:
             try:
                 from app.database.crud.tariff import get_tariff_by_id
+                from app.handlers.subscription.tariff_purchase import _tariff_icon_and_name
 
                 tariff = await get_tariff_by_id(db, subscription.tariff_id)
                 if tariff:
                     is_daily_tariff = getattr(tariff, 'is_daily', False)
-                    tariff_info_block = f'\n📦 Тариф: <b>{html.escape(tariff.name)}</b>'
+                    icon, name = _tariff_icon_and_name(tariff)
+                    tariff_label = f'{html.escape(icon or "📦")} {html.escape(name)}'
             except Exception as e:
                 logger.debug('Не удалось загрузить тариф для главного меню', error=e)
 
         base_text = texts.MAIN_MENU.format(
             user_name=html.escape(user.full_name or ''),
-            subscription_status=_get_subscription_status(user, texts, is_daily_tariff),
+            subscription_status=_get_subscription_status(user, texts, is_daily_tariff, tariff_label),
         )
-
-        if tariff_info_block:
-            action_prompt_text = texts.t('MAIN_MENU_ACTION_PROMPT', 'Выберите действие:')
-            if action_prompt_text in base_text:
-                base_text = base_text.replace(action_prompt_text, f'{tariff_info_block}\n{action_prompt_text}')
-
-    action_prompt = texts.t('MAIN_MENU_ACTION_PROMPT', 'Выберите действие:')
 
     info_sections: list[str] = []
 
@@ -1237,12 +1216,12 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
     if info_sections:
         extra_block = '\n\n'.join(section for section in info_sections if section)
         if extra_block:
-            base_text = _insert_random_message(base_text, extra_block, action_prompt)
+            base_text = f'{base_text}\n\n{extra_block}'
 
     try:
         random_message = await get_random_active_message(db)
         if random_message:
-            return _insert_random_message(base_text, random_message, action_prompt)
+            return f'{base_text}\n\n{random_message}'
 
     except Exception as e:
         logger.error('Ошибка получения случайного сообщения', error=e)
