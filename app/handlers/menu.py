@@ -1013,7 +1013,7 @@ async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext, 
 
 
 def _status_card(headline: str, *lines: str) -> str:
-    """The main menu's card: the state in bold, then one fact per line."""
+    """The main menu's status: the state in bold, then one fact per line."""
     return '\n'.join([headline, *(line for line in lines if line)])
 
 
@@ -1190,7 +1190,6 @@ async def _get_multi_tariff_status(user, texts, db: AsyncSession) -> tuple[str, 
 
         lines.append(f'{emoji} <b>{tariff_name}</b>{status_suffix}')
 
-    # MAIN_MENU puts the status in a quote itself, and Telegram does not nest quotes.
     return '\n'.join(lines), ''
 
 
