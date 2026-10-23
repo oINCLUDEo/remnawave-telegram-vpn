@@ -1460,7 +1460,7 @@
   "SUBSCRIPTION_WARNING_TODAY": "，今天到期",
   "SUBSCRIPTION_WARNING_TOMORROW": "，明天到期",
   "SUB_STATUS_ACTIVE_FEW_DAYS": "⚠️ <b>订阅将在{days}后到期</b>",
-  "SUB_STATUS_ACTIVE_LONG": "✅ <b>订阅有效期至{end_date}</b>",
+  "SUB_STATUS_ACTIVE_LONG": "✅ <b>订阅有效</b>",
   "SUB_STATUS_ACTIVE_TODAY": "⚠️ <b>订阅今天到期</b>",
   "SUB_STATUS_ACTIVE_TOMORROW": "⚠️ <b>订阅明天到期</b>",
   "SUB_STATUS_DAILY_ACTIVE": "✅ <b>订阅有效</b>",
@@ -1468,7 +1468,7 @@
   "SUB_STATUS_DISABLED": "🚫 <b>订阅已停用</b>",
   "SUB_STATUS_PENDING": "⏳等待激活",
   "SUB_STATUS_NONE": "💎 <b>暂无订阅</b>",
-  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>免费试用至{end_date}</b>",
+  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>免费试用</b>",
   "SUB_STATUS_TRIAL_TODAY": "⚠️ <b>免费试用今天结束</b>",
   "SUB_STATUS_TRIAL_TOMORROW": "⚠️ <b>免费试用明天结束</b>",
   "SUCCESS": "✅成功",
@@ -1818,7 +1818,11 @@
   "TARIFF_PAY_DISCOUNT": "🎁 折扣 {percent}%：−{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 将从余额扣除<b>{amount}</b>，剩余<b>{left}</b>",
   "TARIFF_PAY_BUTTON": "支付 {amount}",
-  "MAIN_MENU_DAYS_LEFT": "剩余{days}",
-  "MAIN_MENU_UNTIL": "至{date}",
-  "SUB_STATUS_LIMITED": "⚠️ <b>流量已用完</b>"
+  "MAIN_MENU_UNTIL": "🗓 至{date}",
+  "SUB_STATUS_LIMITED": "⚠️ <b>流量已用完</b>",
+  "MAIN_MENU_PERIOD": "🗓 至{date}，剩余{days}",
+  "MAIN_MENU_TARIFF": "{icon} 「{name}」套餐",
+  "MAIN_MENU_TRAFFIC_BYPASS": "📈 绕过白名单：已用 {used} / {limit} GB",
+  "MAIN_MENU_TRAFFIC": "📈 流量：已用 {used} / {limit} GB",
+  "MAIN_MENU_TRIAL_HINT": "🎁 免费试用 {days}"
 }

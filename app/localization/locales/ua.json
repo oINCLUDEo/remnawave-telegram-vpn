@@ -1491,7 +1491,7 @@
   "SUBSCRIPTION_WARNING_TODAY": ", закінчується сьогодні",
   "SUBSCRIPTION_WARNING_TOMORROW": ", закінчується завтра",
   "SUB_STATUS_ACTIVE_FEW_DAYS": "⚠️ <b>Підписка закінчиться через {days}</b>",
-  "SUB_STATUS_ACTIVE_LONG": "✅ <b>Підписка активна до {end_date}</b>",
+  "SUB_STATUS_ACTIVE_LONG": "✅ <b>Підписка активна</b>",
   "SUB_STATUS_ACTIVE_TODAY": "⚠️ <b>Підписка закінчиться сьогодні</b>",
   "SUB_STATUS_ACTIVE_TOMORROW": "⚠️ <b>Підписка закінчиться завтра</b>",
   "SUB_STATUS_DAILY_ACTIVE": "✅ <b>Підписка активна</b>",
@@ -1499,7 +1499,7 @@
   "SUB_STATUS_DISABLED": "🚫 <b>Підписку вимкнено</b>",
   "SUB_STATUS_PENDING": "⏳ Очікує активації",
   "SUB_STATUS_NONE": "💎 <b>Підписки поки немає</b>",
-  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>Пробний період до {end_date}</b>",
+  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>Пробний період</b>",
   "SUB_STATUS_TRIAL_TODAY": "⚠️ <b>Пробний період закінчиться сьогодні</b>",
   "SUB_STATUS_TRIAL_TOMORROW": "⚠️ <b>Пробний період закінчиться завтра</b>",
   "SUCCESS": "✅ Успішно",
@@ -1820,7 +1820,11 @@
   "TARIFF_PAY_DISCOUNT": "🎁 Знижка {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> спишемо з балансу, залишиться <b>{left}</b>",
   "TARIFF_PAY_BUTTON": "Сплатити {amount}",
-  "MAIN_MENU_DAYS_LEFT": "залишилося {days}",
-  "MAIN_MENU_UNTIL": "до {date}",
-  "SUB_STATUS_LIMITED": "⚠️ <b>Трафік закінчився</b>"
+  "MAIN_MENU_UNTIL": "🗓 До {date}",
+  "SUB_STATUS_LIMITED": "⚠️ <b>Трафік закінчився</b>",
+  "MAIN_MENU_PERIOD": "🗓 До {date}, залишилося {days}",
+  "MAIN_MENU_TARIFF": "{icon} Тариф «{name}»",
+  "MAIN_MENU_TRAFFIC_BYPASS": "📈 Обхід білих списків: {used} з {limit} ГБ",
+  "MAIN_MENU_TRAFFIC": "📈 Трафік: {used} з {limit} ГБ",
+  "MAIN_MENU_TRIAL_HINT": "🎁 Пробний період: {days} безкоштовно"
 }

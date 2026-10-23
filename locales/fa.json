@@ -1514,7 +1514,7 @@
   "SUBSCRIPTION_WARNING_TODAY": "، امروز منقضی می‌شود",
   "SUBSCRIPTION_WARNING_TOMORROW": "، فردا منقضی می‌شود",
   "SUB_STATUS_ACTIVE_FEW_DAYS": "⚠️ <b>اشتراک {days} دیگر تمام می‌شود</b>",
-  "SUB_STATUS_ACTIVE_LONG": "✅ <b>اشتراک تا {end_date} فعال است</b>",
+  "SUB_STATUS_ACTIVE_LONG": "✅ <b>اشتراک فعال است</b>",
   "SUB_STATUS_ACTIVE_TODAY": "⚠️ <b>اشتراک امروز تمام می‌شود</b>",
   "SUB_STATUS_ACTIVE_TOMORROW": "⚠️ <b>اشتراک فردا تمام می‌شود</b>",
   "SUB_STATUS_DAILY_ACTIVE": "✅ <b>اشتراک فعال است</b>",
@@ -1522,7 +1522,7 @@
   "SUB_STATUS_DISABLED": "🚫 <b>اشتراک غیرفعال شده است</b>",
   "SUB_STATUS_PENDING": "⏳ در انتظار",
   "SUB_STATUS_NONE": "💎 <b>هنوز اشتراک ندارید</b>",
-  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>دوره آزمایشی تا {end_date}</b>",
+  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>دوره آزمایشی</b>",
   "SUB_STATUS_TRIAL_TODAY": "⚠️ <b>دوره آزمایشی امروز تمام می‌شود</b>",
   "SUB_STATUS_TRIAL_TOMORROW": "⚠️ <b>دوره آزمایشی فردا تمام می‌شود</b>",
   "SUCCESS": "✅ موفق",
@@ -1908,7 +1908,11 @@
   "TARIFF_PAY_DISCOUNT": "🎁 تخفیف {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> از موجودی کسر می‌شود، <b>{left}</b> باقی می‌ماند",
   "TARIFF_PAY_BUTTON": "پرداخت {amount}",
-  "MAIN_MENU_DAYS_LEFT": "{days} مانده",
-  "MAIN_MENU_UNTIL": "تا {date}",
-  "SUB_STATUS_LIMITED": "⚠️ <b>ترافیک تمام شد</b>"
+  "MAIN_MENU_UNTIL": "🗓 تا {date}",
+  "SUB_STATUS_LIMITED": "⚠️ <b>ترافیک تمام شد</b>",
+  "MAIN_MENU_PERIOD": "🗓 تا {date}، {days} مانده",
+  "MAIN_MENU_TARIFF": "{icon} تعرفه «{name}»",
+  "MAIN_MENU_TRAFFIC_BYPASS": "📈 دور زدن لیست سفید: {used} از {limit} گیگابایت",
+  "MAIN_MENU_TRAFFIC": "📈 ترافیک: {used} از {limit} گیگابایت",
+  "MAIN_MENU_TRIAL_HINT": "🎁 دوره آزمایشی: {days} رایگان"
 }

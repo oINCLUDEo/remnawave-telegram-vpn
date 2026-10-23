@@ -1514,7 +1514,7 @@
   "SUBSCRIPTION_WARNING_TODAY": ", истекает сегодня",
   "SUBSCRIPTION_WARNING_TOMORROW": ", истекает завтра",
   "SUB_STATUS_ACTIVE_FEW_DAYS": "⚠️ <b>Подписка закончится через {days}</b>",
-  "SUB_STATUS_ACTIVE_LONG": "✅ <b>Подписка активна до {end_date}</b>",
+  "SUB_STATUS_ACTIVE_LONG": "✅ <b>Подписка активна</b>",
   "SUB_STATUS_ACTIVE_TODAY": "⚠️ <b>Подписка закончится сегодня</b>",
   "SUB_STATUS_ACTIVE_TOMORROW": "⚠️ <b>Подписка закончится завтра</b>",
   "SUB_STATUS_DAILY_ACTIVE": "✅ <b>Подписка активна</b>",
@@ -1522,7 +1522,7 @@
   "SUB_STATUS_DISABLED": "🚫 <b>Подписка отключена</b>",
   "SUB_STATUS_PENDING": "⏳ Ожидает активации",
   "SUB_STATUS_NONE": "💎 <b>Подписки пока нет</b>",
-  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>Пробный период до {end_date}</b>",
+  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>Пробный период</b>",
   "SUB_STATUS_TRIAL_TODAY": "⚠️ <b>Пробный период закончится сегодня</b>",
   "SUB_STATUS_TRIAL_TOMORROW": "⚠️ <b>Пробный период закончится завтра</b>",
   "SUCCESS": "✅ Успешно",
@@ -1908,7 +1908,11 @@
   "TARIFF_PAY_DISCOUNT": "🎁 Скидка {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> спишем с баланса, останется <b>{left}</b>",
   "TARIFF_PAY_BUTTON": "Оплатить {amount}",
-  "MAIN_MENU_DAYS_LEFT": "осталось {days}",
-  "MAIN_MENU_UNTIL": "до {date}",
-  "SUB_STATUS_LIMITED": "⚠️ <b>Трафик закончился</b>"
+  "MAIN_MENU_UNTIL": "🗓 До {date}",
+  "SUB_STATUS_LIMITED": "⚠️ <b>Трафик закончился</b>",
+  "MAIN_MENU_PERIOD": "🗓 До {date}, осталось {days}",
+  "MAIN_MENU_TARIFF": "{icon} Тариф «{name}»",
+  "MAIN_MENU_TRAFFIC_BYPASS": "📈 Обход белых списков: {used} из {limit} ГБ",
+  "MAIN_MENU_TRAFFIC": "📈 Трафик: {used} из {limit} ГБ",
+  "MAIN_MENU_TRIAL_HINT": "🎁 Пробный период: {days} бесплатно"
 }

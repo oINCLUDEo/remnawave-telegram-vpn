@@ -1493,7 +1493,7 @@
   "SUBSCRIPTION_WARNING_TODAY": ", expires today",
   "SUBSCRIPTION_WARNING_TOMORROW": ", expires tomorrow",
   "SUB_STATUS_ACTIVE_FEW_DAYS": "⚠️ <b>Subscription ends in {days}</b>",
-  "SUB_STATUS_ACTIVE_LONG": "✅ <b>Subscription active until {end_date}</b>",
+  "SUB_STATUS_ACTIVE_LONG": "✅ <b>Subscription active</b>",
   "SUB_STATUS_ACTIVE_TODAY": "⚠️ <b>Subscription ends today</b>",
   "SUB_STATUS_ACTIVE_TOMORROW": "⚠️ <b>Subscription ends tomorrow</b>",
   "SUB_STATUS_DAILY_ACTIVE": "✅ <b>Subscription active</b>",
@@ -1501,7 +1501,7 @@
   "SUB_STATUS_DISABLED": "🚫 <b>Subscription turned off</b>",
   "SUB_STATUS_PENDING": "⏳ Pending activation",
   "SUB_STATUS_NONE": "💎 <b>No subscription yet</b>",
-  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>Free trial until {end_date}</b>",
+  "SUB_STATUS_TRIAL_ACTIVE": "🎁 <b>Free trial</b>",
   "SUB_STATUS_TRIAL_TODAY": "⚠️ <b>Free trial ends today</b>",
   "SUB_STATUS_TRIAL_TOMORROW": "⚠️ <b>Free trial ends tomorrow</b>",
   "SUCCESS": "✅ Success",
@@ -1887,7 +1887,11 @@
   "TARIFF_PAY_DISCOUNT": "🎁 Discount {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> from your balance, <b>{left}</b> will remain",
   "TARIFF_PAY_BUTTON": "Pay {amount}",
-  "MAIN_MENU_DAYS_LEFT": "{days} left",
-  "MAIN_MENU_UNTIL": "until {date}",
-  "SUB_STATUS_LIMITED": "⚠️ <b>Out of traffic</b>"
+  "MAIN_MENU_UNTIL": "🗓 Until {date}",
+  "SUB_STATUS_LIMITED": "⚠️ <b>Out of traffic</b>",
+  "MAIN_MENU_PERIOD": "🗓 Until {date}, {days} left",
+  "MAIN_MENU_TARIFF": "{icon} {name} plan",
+  "MAIN_MENU_TRAFFIC_BYPASS": "📈 Whitelist bypass: {used} of {limit} GB",
+  "MAIN_MENU_TRAFFIC": "📈 Traffic: {used} of {limit} GB",
+  "MAIN_MENU_TRIAL_HINT": "🎁 Free trial: {days}"
 }
