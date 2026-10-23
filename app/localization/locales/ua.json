@@ -1025,7 +1025,7 @@
   "LOADING": "⏳ Завантаження...",
   "MAINTENANCE_MODE_ACTIVE": "\n🔧 Технічні роботи!\n\nСервіс тимчасово недоступний. Ведуться технічні роботи для покращення якості обслуговування.\n\n⏰ Орієнтовний час завершення: невідомо\n🔄 Спробуйте пізніше\n\nПриносимо вибачення за тимчасові незручності.\n",
   "MAINTENANCE_MODE_API_ERROR": "\n🔧 Технічні роботи!\n\nСервіс тимчасово недоступний через проблеми з підключенням до серверів.\n\n⏰ Ми працюємо над відновленням. Спробуйте за декілька хвилин.\n\n🔄 Остання перевірка: {last_check}\n",
-  "MAIN_MENU": "<blockquote>{subscription_status}</blockquote>",
+  "MAIN_MENU": "{subscription_status}",
   "MAIN_MENU_BUTTON": "🏠 Головне меню",
   "MAIN_MENU_TEST_ACCESS_HEADER": "🧪 Тестові сервери активні: {servers}",
   "MAIN_MENU_TEST_ACCESS_TIMER": "⏳ Доступ діє ще: {time_left}\n<code>{bar}</code>",

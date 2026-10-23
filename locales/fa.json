@@ -1084,7 +1084,7 @@
   "LOADING": "⏳ بارگذاری...",
   "MAINTENANCE_MODE_ACTIVE": "\n🔧 تعمیرات فنی!\n\nسرویس موقتاً در دسترس نیست. در حال بهبود کیفیت خدمات هستیم.\n\n⏰ زمان تقریبی اتمام: نامشخص\n🔄 بعداً تلاش کنید\n\nبابت ناراحتی عذرخواهی می‌کنیم.\n",
   "MAINTENANCE_MODE_API_ERROR": "\n🔧 تعمیرات فنی!\n\nسرویس به دلیل مشکل اتصال به سرورها موقتاً در دسترس نیست.\n\n⏰ در حال رفع مشکل هستیم. چند دقیقه بعد تلاش کنید.\n\n🔄 آخرین بررسی: {last_check}\n",
-  "MAIN_MENU": "<blockquote>{subscription_status}</blockquote>",
+  "MAIN_MENU": "{subscription_status}",
   "MAIN_MENU_BUTTON": "🏠 منوی اصلی",
   "MAIN_MENU_TEST_ACCESS_HEADER": "🧪 سرورهای آزمایشی فعال: {servers}",
   "MAIN_MENU_TEST_ACCESS_TIMER": "⏳ اعتبار دسترسی: {time_left}\n<code>{bar}</code>",
