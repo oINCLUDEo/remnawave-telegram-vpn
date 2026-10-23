@@ -166,6 +166,19 @@ def _tariff_facts(texts, language: str | None, tariff: Tariff) -> str:
     return f'{_tariff_devices(texts, language, tariff.device_limit)} · {_tariff_bypass(texts, tariff)}'
 
 
+def _tariff_icon_and_name(tariff: Tariff) -> tuple[str, str]:
+    """The emoji the tariff's name starts with («📱 Стандарт» → «📱»), if any, and the name without it.
+
+    The emoji in front of a name set in the admin panel is the tariff's icon: a
+    title shows it in place of 📦, and a sentence quotes the bare name.
+    """
+    name = (tariff.name or '').strip()
+    head, _, rest = name.partition(' ')
+    if rest.strip() and not any(char.isalnum() for char in head):
+        return head, rest.strip()
+    return '', name
+
+
 def _tariff_servers_lines(texts, tariff: Tariff) -> list[str]:
     """The tariff's traffic in full, for its own screen."""
     if not tariff.traffic_limit_gb:
@@ -436,9 +449,10 @@ def _tariff_pay_text(
     discount_kopeks: int = 0,
 ) -> str:
     """The last screen before paying from the balance: what is bought, for how long, and the sum."""
+    icon, name = _tariff_icon_and_name(tariff)
     lines = [
-        texts.t('TARIFF_PAY_TITLE', '📦 <b>{tariff} на {period}</b>').format(
-            tariff=html.escape(tariff.name), period=_period_label(texts, language, period)
+        texts.t('TARIFF_PAY_TITLE', '{icon} <b>{tariff} на {period}</b>').format(
+            icon=html.escape(icon) or '📦', tariff=html.escape(name), period=_period_label(texts, language, period)
         ),
         '',
         _tariff_facts(texts, language, tariff),
@@ -620,7 +634,9 @@ def format_tariff_info_for_user(
     texts = get_texts(language)
     tagline, rest = _split_description(tariff.description)
 
-    lines = [screen_title('tariff', html.escape(tariff.name))]
+    icon, name = _tariff_icon_and_name(tariff)
+    title = f'{html.escape(icon)} <b>{html.escape(name)}</b>' if icon else screen_title('tariff', html.escape(name))
+    lines = [title]
     if tagline:
         lines.append(html.escape(tagline))
     facts = [_tariff_devices(texts, language, tariff.device_limit), *_tariff_servers_lines(texts, tariff)]
@@ -3566,7 +3582,7 @@ def format_instant_switch_list_text(
         screen_title('tariff', texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф')),
         '',
         texts.t('INSTANT_SWITCH_CURRENT', 'Сейчас: <b>{tariff}</b>, осталось <b>{days} дн.</b>').format(
-            tariff=html.escape(current_tariff.name), days=remaining_days
+            tariff=html.escape(_tariff_icon_and_name(current_tariff)[1]), days=remaining_days
         ),
         '',
     ]
@@ -3650,7 +3666,7 @@ def _instant_switch_preview_text(
     """What the switch gives and costs: the new tariff, its description, the days and the price."""
     lines = [
         texts.t('INSTANT_SWITCH_PREVIEW_TITLE', '📦 <b>Переход на тариф «{tariff}»</b>').format(
-            tariff=html.escape(new_tariff.name)
+            tariff=html.escape(_tariff_icon_and_name(new_tariff)[1])
         ),
         '',
         _tariff_facts(texts, language, new_tariff),
@@ -4195,7 +4211,7 @@ async def confirm_instant_switch(
                 texts.t('INSTANT_SWITCH_DONE_TITLE', '✅ <b>Тариф изменён</b>'),
                 '',
                 texts.t('INSTANT_SWITCH_DONE_TARIFF', '📦 Тариф: <b>{tariff}</b>').format(
-                    tariff=html.escape(new_tariff.name)
+                    tariff=html.escape(_tariff_icon_and_name(new_tariff)[1])
                 ),
                 _tariff_facts(texts, db_user.language, new_tariff),
                 texts.t('INSTANT_SWITCH_DONE_DAYS', '🗓 Осталось <b>{days} дн.</b>').format(days=remaining_days),

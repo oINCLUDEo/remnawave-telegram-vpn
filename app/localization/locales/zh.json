@@ -1815,7 +1815,7 @@
   "TARIFF_ALL_UNLIMITED_LINE": "所有服务器不限流量，包括绕过白名单的服务器",
   "TARIFF_YOUR_DISCOUNT": "🎁 <b>您的折扣：{percent}%</b>",
   "TARIFF_PICK_PERIOD": "请选择期限：",
-  "TARIFF_PAY_TITLE": "📦 <b>{tariff}，{period}</b>",
+  "TARIFF_PAY_TITLE": "{icon} <b>{tariff}，{period}</b>",
   "TARIFF_PAY_DISCOUNT": "🎁 折扣 {percent}%：−{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 将从余额扣除<b>{amount}</b>，剩余<b>{left}</b>",
   "TARIFF_PAY_BUTTON": "支付 {amount}"

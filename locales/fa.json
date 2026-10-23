@@ -1905,7 +1905,7 @@
   "TARIFF_ALL_UNLIMITED_LINE": "همه سرورها نامحدود، از جمله دور زدن لیست سفید",
   "TARIFF_YOUR_DISCOUNT": "🎁 <b>تخفیف شما: {percent}%</b>",
   "TARIFF_PICK_PERIOD": "مدت را انتخاب کنید:",
-  "TARIFF_PAY_TITLE": "📦 <b>{tariff} برای {period}</b>",
+  "TARIFF_PAY_TITLE": "{icon} <b>{tariff} برای {period}</b>",
   "TARIFF_PAY_DISCOUNT": "🎁 تخفیف {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> از موجودی کسر می‌شود، <b>{left}</b> باقی می‌ماند",
   "TARIFF_PAY_BUTTON": "پرداخت {amount}"

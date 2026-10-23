@@ -1817,7 +1817,7 @@
   "TARIFF_ALL_UNLIMITED_LINE": "Усі сервери без ліміту, включно з обходом білих списків",
   "TARIFF_YOUR_DISCOUNT": "🎁 <b>Ваша знижка: {percent}%</b>",
   "TARIFF_PICK_PERIOD": "Оберіть термін:",
-  "TARIFF_PAY_TITLE": "📦 <b>{tariff} на {period}</b>",
+  "TARIFF_PAY_TITLE": "{icon} <b>{tariff} на {period}</b>",
   "TARIFF_PAY_DISCOUNT": "🎁 Знижка {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> спишемо з балансу, залишиться <b>{left}</b>",
   "TARIFF_PAY_BUTTON": "Сплатити {amount}"

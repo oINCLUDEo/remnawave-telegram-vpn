@@ -1884,7 +1884,7 @@
   "TARIFF_ALL_UNLIMITED_LINE": "All servers unlimited, whitelist bypass included",
   "TARIFF_YOUR_DISCOUNT": "🎁 <b>Your discount: {percent}%</b>",
   "TARIFF_PICK_PERIOD": "Choose a period:",
-  "TARIFF_PAY_TITLE": "📦 <b>{tariff} for {period}</b>",
+  "TARIFF_PAY_TITLE": "{icon} <b>{tariff} for {period}</b>",
   "TARIFF_PAY_DISCOUNT": "🎁 Discount {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> from your balance, <b>{left}</b> will remain",
   "TARIFF_PAY_BUTTON": "Pay {amount}"
