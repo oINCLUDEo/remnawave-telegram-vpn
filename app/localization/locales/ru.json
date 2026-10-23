@@ -1945,7 +1945,7 @@
   "TARIFF_ALL_UNLIMITED_LINE": "Все серверы без лимита, включая обход белых списков",
   "TARIFF_YOUR_DISCOUNT": "🎁 <b>Ваша скидка: {percent}%</b>",
   "TARIFF_PICK_PERIOD": "Выберите срок:",
-  "TARIFF_PAY_TITLE": "📦 <b>{tariff} на {period}</b>",
+  "TARIFF_PAY_TITLE": "{icon} <b>{tariff} на {period}</b>",
   "TARIFF_PAY_DISCOUNT": "🎁 Скидка {percent}%: −{amount}",
   "TARIFF_PAY_FROM_BALANCE": "💰 <b>{amount}</b> спишем с баланса, останется <b>{left}</b>",
   "TARIFF_PAY_BUTTON": "Оплатить {amount}"
