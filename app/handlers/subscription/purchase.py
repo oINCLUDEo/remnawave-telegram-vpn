@@ -307,7 +307,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     if subscription.traffic_limit_gb == 0:
         traffic_used_display = texts.t(
             'SUBSCRIPTION_TRAFFIC_UNLIMITED',
-            '∞ (безлимит) | Использовано: {used} ГБ',
+            'безлимитный, использовано {used} ГБ',
         ).format(used=used_traffic)
     else:
         traffic_used_display = texts.t(
