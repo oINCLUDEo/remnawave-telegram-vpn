@@ -7,6 +7,7 @@ import structlog
 from aiogram import Dispatcher, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,7 +24,7 @@ from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.database import AsyncSessionLocal
-from app.database.models import Tariff, Transaction, TransactionType, User
+from app.database.models import Subscription, SubscriptionStatus, Tariff, Transaction, TransactionType, User
 from app.keyboards.common import back_button
 from app.keyboards.icons import STYLE_PAY, screen_title, tg_emoji
 from app.localization.texts import get_texts
@@ -117,67 +118,188 @@ def _get_user_period_discount(db_user: User, period_days: int) -> tuple[int, int
     return group_discount, personal_discount, display_combined
 
 
+_DEVICES_DEFAULTS = {'ONE': '{n} устройство', 'FEW': '{n} устройства', 'MANY': '{n} устройств'}
+_MONTHS_DEFAULTS = {'ONE': '{n} месяц', 'FEW': '{n} месяца', 'MANY': '{n} месяцев'}
+_DAYS_DEFAULTS = {'ONE': '{n} день', 'FEW': '{n} дня', 'MANY': '{n} дней'}
+# The first line of a description in the tariff list; longer ones are cut at a word.
+_TAGLINE_MAX = 80
+
+
+def _plural_form(language: str | None, count: int) -> str:
+    """ONE, FEW or MANY: Russian and Ukrainian have three plural forms, the other languages two."""
+    if (language or 'ru').split('-')[0] in {'ru', 'ua', 'uk'}:
+        if count % 10 == 1 and count % 100 != 11:
+            return 'ONE'
+        if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+            return 'FEW'
+        return 'MANY'
+    return 'ONE' if count == 1 else 'MANY'
+
+
+def _tariff_devices(texts, language: str | None, count: int) -> str:
+    form = _plural_form(language, count)
+    return texts.t(f'TARIFF_DEVICES_{form}', _DEVICES_DEFAULTS[form]).format(n=count)
+
+
+def _period_label(texts, language: str | None, days: int) -> str:
+    """«3 месяца» for whole months (a year of 360 or 365 days is «12 месяцев»), «7 дней» otherwise."""
+    if days in (360, 365):
+        months = 12
+    elif days % 30 == 0:
+        months = days // 30
+    else:
+        form = _plural_form(language, days)
+        return texts.t(f'TARIFF_PERIOD_DAYS_{form}', _DAYS_DEFAULTS[form]).format(n=days)
+    form = _plural_form(language, months)
+    return texts.t(f'TARIFF_PERIOD_MONTHS_{form}', _MONTHS_DEFAULTS[form]).format(n=months)
+
+
+def _tariff_bypass(texts, tariff: Tariff) -> str:
+    """«50 ГБ обхода»: the tariff's gigabytes count only on the servers that bypass whitelists."""
+    if not tariff.traffic_limit_gb:
+        return texts.t('TARIFF_BYPASS_UNLIMITED_SHORT', 'обход без лимита')
+    return texts.t('TARIFF_BYPASS_SHORT', '{gb} ГБ обхода').format(gb=tariff.traffic_limit_gb)
+
+
+def _tariff_facts(texts, language: str | None, tariff: Tariff) -> str:
+    """«2 устройства · 50 ГБ обхода»: what a tariff gives, in the same words on every screen."""
+    return f'{_tariff_devices(texts, language, tariff.device_limit)} · {_tariff_bypass(texts, tariff)}'
+
+
+def _tariff_servers_lines(texts, tariff: Tariff) -> list[str]:
+    """The tariff's traffic in full, for its own screen."""
+    if not tariff.traffic_limit_gb:
+        return [texts.t('TARIFF_ALL_UNLIMITED_LINE', 'Все серверы без лимита, включая обход белых списков')]
+    mode = (getattr(tariff, 'traffic_reset_mode', None) or settings.DEFAULT_TRAFFIC_RESET_STRATEGY or '').upper()
+    if mode in {'MONTH', 'MONTH_ROLLING'}:
+        bypass = texts.t('TARIFF_BYPASS_MONTHLY_LINE', 'Обход белых списков: {gb} ГБ в месяц')
+    else:
+        bypass = texts.t('TARIFF_BYPASS_LINE', 'Обход белых списков: {gb} ГБ')
+    return [
+        texts.t('TARIFF_REGULAR_LINE', 'Обычные серверы без лимита'),
+        bypass.format(gb=tariff.traffic_limit_gb),
+    ]
+
+
+def _split_description(description: str | None) -> tuple[str, str]:
+    """The first line of a tariff's description (who the tariff is for) and the rest."""
+    lines = (description or '').strip().splitlines()
+    if not lines:
+        return '', ''
+    return lines[0].strip(), '\n'.join(lines[1:]).strip()
+
+
+def _tagline(description: str | None) -> str:
+    first, _ = _split_description(description)
+    if len(first) <= _TAGLINE_MAX:
+        return first
+    return first[:_TAGLINE_MAX].rsplit(' ', 1)[0].rstrip(' ,.;:—-') + '…'
+
+
+def _list_price(texts, language: str | None, tariff: Tariff, db_user: User | None) -> str:
+    """«199 ₽/мес»: the price of one month, or of the shortest period when there is no month."""
+    if getattr(tariff, 'is_daily', False):
+        price = getattr(tariff, 'daily_price_kopeks', 0)
+        group_pct, offer_pct, discount = _get_user_period_discount(db_user, 1) if db_user else (0, 0, 0)
+        if discount > 0:
+            price = _apply_promo_discount(price, group_pct, offer_pct)
+        text = texts.t('TARIFF_PRICE_DAILY', '{price}/день').format(price=format_price_kopeks(price))
+    else:
+        prices = tariff.period_prices or {}
+        if not prices:
+            return ''
+        period = 30 if '30' in prices else int(min(prices, key=int))
+        price = prices[str(period)]
+        group_pct, offer_pct, discount = _get_user_period_discount(db_user, period) if db_user else (0, 0, 0)
+        if discount > 0:
+            price = _apply_promo_discount(price, group_pct, offer_pct)
+        if period == 30:
+            text = texts.t('TARIFF_PRICE_MONTHLY', '{price}/мес').format(price=format_price_kopeks(price))
+        else:
+            text = texts.t('TARIFF_PRICE_FOR', '{price} за {period}').format(
+                price=format_price_kopeks(price), period=_period_label(texts, language, period)
+            )
+    return f'{text} · −{discount}%' if discount > 0 else text
+
+
+async def get_recommended_tariff_id(db: AsyncSession, tariffs: list[Tariff]) -> int | None:
+    """The tariff the list marks «выбирают чаще всего» and paints green.
+
+    By default it is the tariff with the most active paid subscriptions, so the
+    mark is true. RECOMMENDED_TARIFF_ID pins another one, and a negative value
+    turns the mark off.
+    """
+    ids = [tariff.id for tariff in tariffs]
+    pinned = settings.RECOMMENDED_TARIFF_ID
+    if pinned < 0:
+        return None
+    if pinned:
+        return pinned if pinned in ids else None
+
+    result = await db.execute(
+        select(Subscription.tariff_id, func.count())
+        .where(
+            Subscription.tariff_id.in_(ids),
+            Subscription.is_trial.is_(False),
+            Subscription.status == SubscriptionStatus.ACTIVE.value,
+        )
+        .group_by(Subscription.tariff_id)
+    )
+    counts = dict(result.all())
+    if not counts:
+        return None
+    # On a tie the tariff higher in the list wins.
+    return max(ids, key=lambda tariff_id: counts.get(tariff_id, 0))
+
+
 def format_tariffs_list_text(
     tariffs: list[Tariff],
     db_user: User | None = None,
     has_period_discounts: bool = False,
     purchased_tariff_ids: set[int] | None = None,
+    recommended_id: int | None = None,
 ) -> str:
-    """Форматирует текст со списком тарифов для отображения."""
-    lines = ['📦 <b>Выберите тариф</b>']
+    """The tariffs side by side: one block each with the same facts and the price of a month.
+
+    Each block shows the first line of the tariff's description (who it is
+    for); the rest waits on the tariff's own screen (format_tariff_info_for_user).
+    """
+    language = getattr(db_user, 'language', None) or 'ru'
+    texts = get_texts(language)
     if purchased_tariff_ids is None:
         purchased_tariff_ids = set()
 
-    if has_period_discounts:
-        lines.append('🎁 <i>Скидки по периодам</i>')
+    lines = [screen_title('buy', texts.t('MAIN_MENU_BTN_BUY', 'Купить подписку'))]
+    if any(tariff.traffic_limit_gb for tariff in tariffs):
+        lines += [
+            '',
+            texts.t(
+                'TARIFF_LIST_NOTE',
+                'На всех тарифах обычные серверы без лимита. '
+                'Гигабайты считаются только на серверах обхода белых списков.',
+            ),
+        ]
 
-    lines.append('')
-
+    blocks = []
     for tariff in tariffs:
-        # Трафик компактно
-        traffic_gb = tariff.traffic_limit_gb
-        traffic = '∞' if traffic_gb == 0 else f'{traffic_gb} ГБ'
+        head = f'<b>{html.escape(tariff.name)}</b>'
+        if tariff.id in purchased_tariff_ids:
+            head += ' ✅'
+        elif tariff.id == recommended_id:
+            badge = texts.t('TARIFF_BADGE_POPULAR', 'выбирают чаще всего')
+            head += f' · <i>{badge}</i>'
+        block = [head]
+        tagline = _tagline(tariff.description)
+        if tagline:
+            block.append(html.escape(tagline))
+        facts = _tariff_facts(texts, language, tariff)
+        price = _list_price(texts, language, tariff, db_user)
+        block.append(f'{facts} · {price}' if price else facts)
+        blocks.append('\n'.join(block))
 
-        # Цена
-        is_daily = getattr(tariff, 'is_daily', False)
-        price_text = ''
-        discount_icon = ''
-
-        if is_daily:
-            # Для суточных тарифов показываем цену за день с учётом скидки промогруппы
-            daily_price = getattr(tariff, 'daily_price_kopeks', 0)
-            if db_user:
-                group_pct, offer_pct, daily_discount = _get_user_period_discount(db_user, 1)
-                if daily_discount > 0:
-                    daily_price = _apply_promo_discount(daily_price, group_pct, offer_pct)
-                    discount_icon = '🔥'
-            price_text = f'🔄 {format_price_kopeks(daily_price, compact=True)}/день{discount_icon}'
-        else:
-            # Для периодных тарифов показываем минимальную цену
-            prices = tariff.period_prices or {}
-            if prices:
-                min_period = min(prices.keys(), key=int)
-                min_price = prices[min_period]
-                group_pct, offer_pct, discount_percent = 0, 0, 0
-                if db_user:
-                    group_pct, offer_pct, discount_percent = _get_user_period_discount(db_user, int(min_period))
-                if discount_percent > 0:
-                    min_price = _apply_promo_discount(min_price, group_pct, offer_pct)
-                    discount_icon = '🔥'
-                price_text = f'от {format_price_kopeks(min_price, compact=True)}{discount_icon}'
-
-        # Компактный формат: Название — 250 ГБ / 10 📱 от 179₽🔥
-        purchased_mark = ' ✅' if tariff.id in purchased_tariff_ids else ''
-        lines.append(
-            f'<b>{html.escape(tariff.name)}</b>{purchased_mark} — {traffic} / {tariff.device_limit} 📱 {price_text}'
-        )
-
-        # Описание тарифа если есть
-        if tariff.description:
-            lines.append(f'<i>{html.escape(tariff.description)}</i>')
-
-        lines.append('')
-
+    lines += ['', '<blockquote>' + '\n\n'.join(blocks) + '</blockquote>']
+    if has_period_discounts:
+        lines.append(texts.t('TARIFF_LIST_PERIOD_DISCOUNTS', '<i>На длинные сроки у вас скидка.</i>'))
     return '\n'.join(lines)
 
 
@@ -185,8 +307,11 @@ def get_tariffs_keyboard(
     tariffs: list[Tariff],
     language: str,
     purchased_tariff_ids: set[int] | None = None,
+    *,
+    db_user: User | None = None,
+    recommended_id: int | None = None,
 ) -> InlineKeyboardMarkup:
-    """Создает компактную клавиатуру выбора тарифов (только названия)."""
+    """One button per tariff with the price of a month: «Стандарт · 199 ₽/мес». The recommended one is green."""
     texts = get_texts(language)
     if purchased_tariff_ids is None:
         purchased_tariff_ids = set()
@@ -195,12 +320,59 @@ def get_tariffs_keyboard(
     for tariff in tariffs:
         if tariff.id in purchased_tariff_ids:
             buttons.append([InlineKeyboardButton(text=f'✅ {tariff.name}', callback_data=f'tariff_select:{tariff.id}')])
-        else:
-            buttons.append([InlineKeyboardButton(text=tariff.name, callback_data=f'tariff_select:{tariff.id}')])
+            continue
+        price = _list_price(texts, language, tariff, db_user)
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f'{tariff.name} · {price}' if price else tariff.name,
+                    callback_data=f'tariff_select:{tariff.id}',
+                    style=STYLE_PAY if tariff.id == recommended_id else None,
+                )
+            ]
+        )
 
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _period_buttons(texts, language: str, offers: list[tuple[int, int, int]], callback) -> list:
+    """«3 месяца · 537 ₽ · −10%», one button per period, the best deal green.
+
+    *offers* are (days, price, full price) by days: what the user pays and the
+    price before any discount. The saving is counted against the full price of
+    a month (of the shortest period when there is no month), so a personal
+    discount and a cheaper long period add up to one number.
+    """
+    full_by_days = {days: full for days, _, full in offers}
+    reference = 30 if 30 in full_by_days else min(full_by_days)
+    per_day = full_by_days[reference] / reference
+    savings = {days: round((1 - price / (per_day * days)) * 100) if per_day else 0 for days, price, _ in offers}
+    best = max((days for days in savings if savings[days] > 0), key=lambda days: (savings[days], days), default=None)
+
+    rows = []
+    for days, price, _ in offers:
+        label = f'{_period_label(texts, language, days)} · {format_price_kopeks(price)}'
+        if savings[days] > 0:
+            label += f' · −{savings[days]}%'
+        rows.append(
+            [InlineKeyboardButton(text=label, callback_data=callback(days), style=STYLE_PAY if days == best else None)]
+        )
+    return rows
+
+
+def _tariff_period_offers(tariff: Tariff, db_user: User | None) -> list[tuple[int, int, int]]:
+    """(days, price with the user's discount, full price) for each period of *tariff*."""
+    offers = []
+    prices = tariff.period_prices or {}
+    for period_str in sorted(prices.keys(), key=int):
+        period = int(period_str)
+        full = prices[period_str]
+        group_pct, offer_pct, discount_percent = _get_user_period_discount(db_user, period) if db_user else (0, 0, 0)
+        price = _apply_promo_discount(full, group_pct, offer_pct) if discount_percent > 0 else full
+        offers.append((period, price, full))
+    return offers
 
 
 def get_tariff_periods_keyboard(
@@ -208,31 +380,13 @@ def get_tariff_periods_keyboard(
     language: str,
     db_user: User | None = None,
 ) -> InlineKeyboardMarkup:
-    """Создает клавиатуру выбора периода для тарифа с учетом скидок по периодам."""
+    """The tariff's periods with their price and saving."""
     texts = get_texts(language)
-    buttons = []
-
-    prices = tariff.period_prices or {}
-    for period_str in sorted(prices.keys(), key=int):
-        period = int(period_str)
-        price = prices[period_str]
-
-        # Получаем скидку для конкретного периода
-        group_pct, offer_pct, discount_percent = 0, 0, 0
-        if db_user:
-            group_pct, offer_pct, discount_percent = _get_user_period_discount(db_user, period)
-
-        if discount_percent > 0:
-            price = _apply_promo_discount(price, group_pct, offer_pct)
-            price_text = f'{format_price_kopeks(price)} 🔥−{discount_percent}%'
-        else:
-            price_text = format_price_kopeks(price)
-
-        button_text = f'{format_period(period)} — {price_text}'
-        buttons.append([InlineKeyboardButton(text=button_text, callback_data=f'tariff_period:{tariff.id}:{period}')])
-
+    offers = _tariff_period_offers(tariff, db_user)
+    buttons = (
+        _period_buttons(texts, language, offers, lambda days: f'tariff_period:{tariff.id}:{days}') if offers else []
+    )
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='tariff_list')])
-
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -241,34 +395,15 @@ def get_tariff_periods_keyboard_with_traffic(
     language: str,
     db_user: User | None = None,
 ) -> InlineKeyboardMarkup:
-    """Клавиатура выбора периода для тарифа с кастомным трафиком (переход к настройке трафика)."""
+    """The periods of a tariff with custom traffic: a period leads to the traffic picker."""
     texts = get_texts(language)
-    buttons = []
-
-    prices = tariff.period_prices or {}
-    for period_str in sorted(prices.keys(), key=int):
-        period = int(period_str)
-        price = prices[period_str]
-
-        # Получаем скидку для конкретного периода
-        group_pct, offer_pct, discount_percent = 0, 0, 0
-        if db_user:
-            group_pct, offer_pct, discount_percent = _get_user_period_discount(db_user, period)
-
-        if discount_percent > 0:
-            price = _apply_promo_discount(price, group_pct, offer_pct)
-            price_text = f'{format_price_kopeks(price)} 🔥−{discount_percent}%'
-        else:
-            price_text = format_price_kopeks(price)
-
-        button_text = f'{format_period(period)} — {price_text}'
-        # Используем другой callback для перехода к настройке трафика
-        buttons.append(
-            [InlineKeyboardButton(text=button_text, callback_data=f'tariff_period_traffic:{tariff.id}:{period}')]
-        )
-
+    offers = _tariff_period_offers(tariff, db_user)
+    buttons = (
+        _period_buttons(texts, language, offers, lambda days: f'tariff_period_traffic:{tariff.id}:{days}')
+        if offers
+        else []
+    )
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='tariff_list')])
-
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -276,15 +411,50 @@ def get_tariff_confirm_keyboard(
     tariff_id: int,
     period: int,
     language: str,
+    *,
+    price_kopeks: int,
 ) -> InlineKeyboardMarkup:
-    """Создает клавиатуру подтверждения покупки тарифа."""
+    """Pay for the tariff from the balance. The button names the sum: «Оплатить 537 ₽»."""
     texts = get_texts(language)
+    label = texts.t('TARIFF_PAY_BUTTON', 'Оплатить {amount}').format(amount=format_price_kopeks(price_kopeks))
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text='✅ Подтвердить покупку', callback_data=f'tariff_confirm:{tariff_id}:{period}')],
+            [InlineKeyboardButton(text=label, callback_data=f'tariff_confirm:{tariff_id}:{period}', style=STYLE_PAY)],
             [InlineKeyboardButton(text=texts.BACK, callback_data=f'tariff_select:{tariff_id}')],
         ]
     )
+
+
+def _tariff_pay_text(
+    texts,
+    language: str,
+    tariff: Tariff,
+    period: int,
+    price_kopeks: int,
+    balance_kopeks: int,
+    discount_percent: int = 0,
+    discount_kopeks: int = 0,
+) -> str:
+    """The last screen before paying from the balance: what is bought, for how long, and the sum."""
+    lines = [
+        texts.t('TARIFF_PAY_TITLE', '📦 <b>{tariff} на {period}</b>').format(
+            tariff=html.escape(tariff.name), period=_period_label(texts, language, period)
+        ),
+        '',
+        _tariff_facts(texts, language, tariff),
+    ]
+    if discount_percent > 0 and discount_kopeks > 0:
+        lines.append(
+            texts.t('TARIFF_PAY_DISCOUNT', '🎁 Скидка {percent}%: −{amount}').format(
+                percent=discount_percent, amount=format_price_kopeks(discount_kopeks)
+            )
+        )
+    lines.append(
+        texts.t('TARIFF_PAY_FROM_BALANCE', '💰 <b>{amount}</b> спишем с баланса, останется <b>{left}</b>').format(
+            amount=format_price_kopeks(price_kopeks), left=format_price_kopeks(balance_kopeks - price_kopeks)
+        )
+    )
+    return '\n'.join(lines)
 
 
 def get_purchase_success_keyboard(texts, subscription) -> InlineKeyboardMarkup:
@@ -446,30 +616,27 @@ def format_tariff_info_for_user(
     language: str,
     discount_percent: int = 0,
 ) -> str:
-    """Форматирует информацию о тарифе для пользователя."""
-    get_texts(language)
+    """The tariff's own screen: who it is for, what it gives, the rest of its description folded."""
+    texts = get_texts(language)
+    tagline, rest = _split_description(tariff.description)
 
-    traffic = format_traffic(tariff.traffic_limit_gb)
-
-    text = f"""{tg_emoji('tariff')} <b>{html.escape(tariff.name)}</b>
-
-<b>Параметры:</b>
-• Трафик: {traffic}
-• Устройств: {tariff.device_limit}
-"""
-
-    if tariff.description:
-        text += f'\n📝 {html.escape(tariff.description)}\n'
+    lines = [screen_title('tariff', html.escape(tariff.name))]
+    if tagline:
+        lines.append(html.escape(tagline))
+    facts = [_tariff_devices(texts, language, tariff.device_limit), *_tariff_servers_lines(texts, tariff)]
+    lines += ['', '<blockquote>' + '\n'.join(facts) + '</blockquote>']
+    if rest:
+        lines.append(f'<blockquote expandable>{html.escape(rest)}</blockquote>')
 
     if discount_percent > 0:
-        text += f'\n🎁 <b>Ваша скидка: {discount_percent}%</b>\n'
+        discount = texts.t('TARIFF_YOUR_DISCOUNT', '🎁 <b>Ваша скидка: {percent}%</b>').format(percent=discount_percent)
+        lines += ['', discount]
 
-    # Для суточных тарифов не показываем выбор периода
-    is_daily = getattr(tariff, 'is_daily', False)
-    if not is_daily:
-        text += '\nВыберите период подписки:'
+    # A daily tariff has no periods to pick.
+    if not getattr(tariff, 'is_daily', False):
+        lines += ['', texts.t('TARIFF_PICK_PERIOD', 'Выберите срок:')]
 
-    return text
+    return '\n'.join(lines)
 
 
 def get_daily_tariff_confirm_keyboard(
@@ -741,12 +908,16 @@ async def show_tariffs_list(
         await open_tariff(callback, db_user, db, state, tariffs[0].id)
         return
 
-    # Формируем текст со списком тарифов и их характеристиками
-    tariffs_text = format_tariffs_list_text(tariffs, db_user, has_period_discounts, purchased_tariff_ids)
+    recommended_id = await get_recommended_tariff_id(db, tariffs)
+    tariffs_text = format_tariffs_list_text(
+        tariffs, db_user, has_period_discounts, purchased_tariff_ids, recommended_id=recommended_id
+    )
 
     await callback.message.edit_text(
         tariffs_text,
-        reply_markup=get_tariffs_keyboard(tariffs, db_user.language, purchased_tariff_ids),
+        reply_markup=get_tariffs_keyboard(
+            tariffs, db_user.language, purchased_tariff_ids, db_user=db_user, recommended_id=recommended_id
+        ),
     )
 
     await callback.answer()
@@ -1388,25 +1559,19 @@ async def select_tariff_period(
     # Проверяем баланс
     user_balance = db_user.balance_kopeks or 0
 
-    traffic = format_traffic(tariff.traffic_limit_gb)
-
     if balance_covers_price(user_balance, final_price):
-        # Показываем подтверждение
-        discount_text = ''
-        if discount_percent > 0:
-            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{format_price_kopeks(base_price - final_price)})'
-
         await callback.message.edit_text(
-            f'✅ <b>Подтверждение покупки</b>\n\n'
-            f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-            f'📊 Трафик: {traffic}\n'
-            f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {format_period(period)}\n'
-            f'{discount_text}\n'
-            f'💰 <b>Итого: {format_price_kopeks(final_price)}</b>\n\n'
-            f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {format_price_kopeks(user_balance - final_price)}',
-            reply_markup=get_tariff_confirm_keyboard(tariff_id, period, db_user.language),
+            _tariff_pay_text(
+                get_texts(db_user.language),
+                db_user.language,
+                tariff,
+                period,
+                final_price,
+                user_balance,
+                discount_percent=discount_percent,
+                discount_kopeks=base_price - final_price,
+            ),
+            reply_markup=get_tariff_confirm_keyboard(tariff_id, period, db_user.language, price_kopeks=final_price),
             parse_mode='HTML',
         )
     else:
@@ -2078,11 +2243,11 @@ def get_tariff_extend_keyboard(
     db_user: User | None = None,
     subscription_device_limit: int | None = None,
 ) -> InlineKeyboardMarkup:
-    """Создает клавиатуру выбора периода для продления по тарифу с учетом скидок по периодам."""
+    """The renewal periods with their price and saving, the best deal green."""
     from app.services.pricing_engine import PricingEngine
 
     texts = get_texts(language)
-    buttons = []
+    offers = []
 
     promo_group = PricingEngine.resolve_promo_group(db_user) if db_user else None
 
@@ -2105,19 +2270,11 @@ def get_tariff_extend_keyboard(
         discounted_devices = PricingEngine.apply_discount(devices_cost, devices_pct)
         subtotal = discounted_base + discounted_devices
         price = PricingEngine.apply_discount(subtotal, offer_pct)
+        offers.append((period, price, base_price + devices_cost))
 
-        # Combined display discount
-        total_original = base_price + devices_cost
-        has_discount = price < total_original and total_original > 0
-        if has_discount:
-            combined_pct = round((1 - price / total_original) * 100)
-            price_text = f'{format_price_kopeks(price)} 🔥−{combined_pct}%'
-        else:
-            price_text = format_price_kopeks(price)
-
-        button_text = f'{format_period(period)} — {price_text}'
-        buttons.append([InlineKeyboardButton(text=button_text, callback_data=f'tariff_extend:{tariff.id}:{period}')])
-
+    buttons = (
+        _period_buttons(texts, language, offers, lambda days: f'tariff_extend:{tariff.id}:{days}') if offers else []
+    )
     buttons.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -3392,33 +3549,6 @@ def _calculate_instant_switch_cost(
     return result.upgrade_cost, result.is_upgrade
 
 
-def _switch_traffic(texts, traffic_gb: int) -> str:
-    if traffic_gb == 0:
-        return texts.t('INSTANT_SWITCH_TRAFFIC_UNLIMITED', 'безлимитный трафик')
-    return texts.t('INSTANT_SWITCH_TRAFFIC_LIMITED', '{gb} ГБ трафика').format(gb=traffic_gb)
-
-
-def _switch_devices(texts, language: str, count: int) -> str:
-    """«2 устройства»: Russian and Ukrainian have three plural forms, the other languages two."""
-    if (language or 'ru').split('-')[0] in {'ru', 'ua', 'uk'}:
-        if count % 10 == 1 and count % 100 != 11:
-            form = 'ONE'
-        elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-            form = 'FEW'
-        else:
-            form = 'MANY'
-    else:
-        form = 'ONE' if count == 1 else 'MANY'
-    defaults = {'ONE': '{n} устройство', 'FEW': '{n} устройства', 'MANY': '{n} устройств'}
-    return texts.t(f'INSTANT_SWITCH_DEVICES_{form}', defaults[form]).format(n=count)
-
-
-def _switch_facts(texts, language: str, tariff: Tariff) -> str:
-    """«50 ГБ трафика · 2 устройства»: what the tariff gives, in the same words on every switch screen."""
-    traffic = _switch_traffic(texts, tariff.traffic_limit_gb)
-    return f'{traffic} · {_switch_devices(texts, language, tariff.device_limit)}'
-
-
 def format_instant_switch_list_text(
     tariffs: list[Tariff],
     current_tariff: Tariff,
@@ -3450,7 +3580,7 @@ def format_instant_switch_list_text(
             price = texts.t('INSTANT_SWITCH_EXTRA', 'доплата {amount}').format(amount=format_price_kopeks(cost))
         else:
             price = texts.t('INSTANT_SWITCH_FREE', 'без доплаты')
-        blocks.append(f'<b>{html.escape(tariff.name)}</b>\n{_switch_facts(texts, language, tariff)} · <b>{price}</b>')
+        blocks.append(f'<b>{html.escape(tariff.name)}</b>\n{_tariff_facts(texts, language, tariff)} · <b>{price}</b>')
 
     lines.append('<blockquote>' + '\n\n'.join(blocks) + '</blockquote>')
     lines.append(
@@ -3523,7 +3653,7 @@ def _instant_switch_preview_text(
             tariff=html.escape(new_tariff.name)
         ),
         '',
-        _switch_facts(texts, language, new_tariff),
+        _tariff_facts(texts, language, new_tariff),
     ]
     if new_tariff.description:
         lines.append(f'<blockquote expandable>{html.escape(new_tariff.description)}</blockquote>')
@@ -4067,7 +4197,7 @@ async def confirm_instant_switch(
                 texts.t('INSTANT_SWITCH_DONE_TARIFF', '📦 Тариф: <b>{tariff}</b>').format(
                     tariff=html.escape(new_tariff.name)
                 ),
-                _switch_facts(texts, db_user.language, new_tariff),
+                _tariff_facts(texts, db_user.language, new_tariff),
                 texts.t('INSTANT_SWITCH_DONE_DAYS', '🗓 Осталось <b>{days} дн.</b>').format(days=remaining_days),
             ]
             if is_upgrade and upgrade_cost > 0:
@@ -4201,22 +4331,23 @@ async def return_to_saved_tariff_cart(
     else:  # tariff_purchase
         period = cart_data.get('period_days', 30)
 
-        discount_text = ''
+        discount_kopeks = 0
         if discount_percent > 0:
             original_price = int(total_price / (1 - discount_percent / 100))
-            discount_text = f'\n🎁 Скидка: {discount_percent}% (-{format_price_kopeks(original_price - total_price)})'
+            discount_kopeks = original_price - total_price
 
         await callback.message.edit_text(
-            f'✅ <b>Подтверждение покупки</b>\n\n'
-            f'📦 Тариф: <b>{html.escape(tariff.name)}</b>\n'
-            f'📊 Трафик: {traffic}\n'
-            f'📱 Устройств: {tariff.device_limit}\n'
-            f'📅 Период: {format_period(period)}\n'
-            f'{discount_text}\n'
-            f'💰 <b>Итого: {format_price_kopeks(total_price)}</b>\n\n'
-            f'💳 Ваш баланс: {format_price_kopeks(user_balance)}\n'
-            f'После оплаты: {format_price_kopeks(user_balance - total_price)}',
-            reply_markup=get_tariff_confirm_keyboard(tariff_id, period, db_user.language),
+            _tariff_pay_text(
+                texts,
+                db_user.language,
+                tariff,
+                period,
+                total_price,
+                user_balance,
+                discount_percent=discount_percent,
+                discount_kopeks=discount_kopeks,
+            ),
+            reply_markup=get_tariff_confirm_keyboard(tariff_id, period, db_user.language, price_kopeks=total_price),
             parse_mode='HTML',
         )
 
