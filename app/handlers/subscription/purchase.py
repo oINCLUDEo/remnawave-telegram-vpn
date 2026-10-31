@@ -3360,7 +3360,9 @@ def _trial_started_text(texts, subscription: Subscription, charged_amount: int =
     return '\n'.join(lines)
 
 
-def _build_trial_success_keyboard(texts, subscription: Subscription, *, link_ready: bool = True) -> InlineKeyboardMarkup:
+def _build_trial_success_keyboard(
+    texts, subscription: Subscription, *, link_ready: bool = True
+) -> InlineKeyboardMarkup:
     """One coloured button, «Подключиться», opening the same thing as in the main menu."""
     from app.keyboards.main_menu import connect_button
 
