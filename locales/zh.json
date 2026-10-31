@@ -1799,5 +1799,7 @@
   "TRIAL_EXPIRED": "{icon} <b>试用已结束</b>\nVPN 已关闭。选择套餐，付款后立即恢复。{keeps_setup}",
   "TRIAL_EXPIRED_SECOND_WAVE": "{icon} <b>首次订阅 {percent}% 折扣</b>\n试用结束了，折扣才刚开始。适用于所有套餐，有效期至{expires_at}。",
   "TRIAL_EXPIRED_THIRD_WAVE": "{icon} <b>首次订阅 {percent}% 折扣</b>\n试用结束已有 {days}。如果白名单又让您上不了网，欢迎回来：折扣适用于所有套餐，有效期至{expires_at}。这是最后一次此类优惠。",
-  "TRIAL_DISCOUNT_CLAIM_BUTTON": "领取 {percent}% 折扣"
+  "TRIAL_DISCOUNT_CLAIM_BUTTON": "领取 {percent}% 折扣",
+  "TRIAL_NOT_CONNECTED_FIRST": "{icon} <b>VPN 还没有连接</b>\n试用已经开始，有效期至{end_date}。连接通常只需几分钟：点击“连接”，按页面上的步骤操作。卡在某一步了？联系客服，我们一起解决。",
+  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>试用正在进行，但 VPN 仍未连接</b>\n免费天数到{end_date}为止，浪费了可惜。如果应用没装好，请联系我们：我们会告诉您手机或电脑上该装什么。"
 }

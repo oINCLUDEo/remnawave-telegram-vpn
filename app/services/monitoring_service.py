@@ -100,6 +100,12 @@ _RENEWAL_REMINDER_TTL_SECONDS: int = 86400 * 30
 # За сколько часов до конца пробного периода предупреждать и предлагать тариф.
 _TRIAL_WARNING_HOURS: int = 24
 
+# «VPN ещё не подключён»: окна от включения пробного периода, в часах.
+# Первое сообщение через час (окно 16 часов, чтобы пережить тихие часы),
+# второе через сутки. Каждое окно шире тихих часов, так что утром цикл его отправит.
+_NOT_CONNECTED_STAGES: tuple[tuple[int, int, int], ...] = ((1, 1, 17), (2, 24, 48))
+_NOT_CONNECTED_NOTIFICATION = 'trial_not_connected'
+
 
 logger = structlog.get_logger(__name__)
 
@@ -319,6 +325,7 @@ class MonitoringService:
                 await self._check_expired_subscriptions(db)
                 await self._check_expiring_subscriptions(db)
                 await self._check_trial_expiring_soon(db)
+                await self._check_trial_not_connected(db)
                 await self._check_trial_channel_subscriptions(db)
                 await self._check_expired_subscription_followups(db)
                 await self._retry_stuck_guest_purchases(db)
@@ -805,6 +812,156 @@ class MonitoringService:
 
         except Exception as e:
             logger.error('Ошибка проверки истекающих тестовых подписок', error=e)
+
+    async def _check_trial_not_connected(self, db: AsyncSession):
+        """«VPN ещё не подключён» an hour and a day after the trial started, if the panel saw no connection.
+
+        Only someone who has used the VPN buys it, and most who never connect
+        got stuck installing the app. The panel is asked directly, so this works
+        without its webhooks; with webhooks on, the panel sends its own
+        «not connected» event and this check stays off to avoid a double.
+        """
+        if not NotificationSettingsService.are_notifications_globally_enabled() or not self.bot:
+            return
+        if settings.is_remnawave_webhook_enabled() or not self.subscription_service.is_configured:
+            return
+        if is_quiet_hours():
+            return
+
+        try:
+            now = datetime.now(UTC)
+            oldest = now - timedelta(hours=max(end for _stage, _start, end in _NOT_CONNECTED_STAGES))
+            result = await db.execute(
+                select(Subscription)
+                .join(Subscription.user)
+                .options(selectinload(Subscription.user))
+                .where(
+                    and_(
+                        Subscription.status == SubscriptionStatus.ACTIVE.value,
+                        Subscription.is_trial == True,
+                        Subscription.end_date > now,
+                        Subscription.start_date >= oldest,
+                        User.status == UserStatus.ACTIVE.value,
+                    )
+                )
+            )
+            subscriptions = result.scalars().all()
+            sent_count = 0
+
+            for subscription in subscriptions:
+                user = subscription.user
+                if not user or not user.telegram_id or user.has_had_paid_subscription or not subscription.start_date:
+                    continue
+
+                age_hours = (now - subscription.start_date).total_seconds() / 3600
+                stage = next(
+                    (stage for stage, start, end in _NOT_CONNECTED_STAGES if start <= age_hours < end),
+                    None,
+                )
+                if stage is None:
+                    continue
+                if await notification_sent(db, user.id, subscription.id, _NOT_CONNECTED_NOTIFICATION, stage):
+                    continue
+
+                connected = await self._has_connected(user, subscription)
+                if connected is None:
+                    continue  # the panel did not answer: try again next cycle
+                if connected:
+                    # Connected: nothing to send now or later. Both stages are
+                    # marked so the panel is not asked again.
+                    for any_stage, _start, _end in _NOT_CONNECTED_STAGES:
+                        await record_notification(
+                            db, user.id, subscription.id, _NOT_CONNECTED_NOTIFICATION, any_stage
+                        )
+                    continue
+
+                if await self._send_trial_not_connected_notification(user, subscription, stage):
+                    await record_notification(db, user.id, subscription.id, _NOT_CONNECTED_NOTIFICATION, stage)
+                    sent_count += 1
+
+            if sent_count:
+                await self._log_monitoring_event(
+                    db,
+                    'trial_not_connected_sent',
+                    f'Отправлено {sent_count} напоминаний «VPN ещё не подключён»',
+                    {'count': sent_count},
+                )
+        except Exception as error:
+            logger.error('Ошибка проверки подключения на пробном периоде', error=error)
+
+    async def _has_connected(self, user: User, subscription: Subscription) -> bool | None:
+        """Whether the panel has seen this user connect at least once; None when it could not tell."""
+        remnawave_uuid = (
+            getattr(subscription, 'remnawave_uuid', None) if settings.is_multi_tariff_enabled() else None
+        ) or user.remnawave_uuid
+        if not remnawave_uuid:
+            return None
+        try:
+            async with self.subscription_service.get_api_client() as api:
+                panel_user = await api.get_user_by_uuid(remnawave_uuid)
+        except Exception as error:
+            logger.debug('Не удалось получить пользователя из панели', user_id=user.id, error=error)
+            return None
+        if panel_user is None:
+            return None
+        return bool(
+            panel_user.first_connected_at or panel_user.online_at or panel_user.lifetime_used_traffic_bytes
+        )
+
+    async def _send_trial_not_connected_notification(
+        self, user: User, subscription: Subscription, stage: int
+    ) -> bool:
+        """«VPN ещё не подключён» with «Подключиться» and «Поддержка»."""
+        try:
+            from aiogram.types import InlineKeyboardMarkup
+
+            from app.keyboards.main_menu import _is_support_enabled, _support_button, connect_button
+            from app.utils.formatters import format_human_date
+
+            texts = get_texts(user.language)
+            end_date = format_human_date(subscription.end_date, user.language)
+            if stage == 1:
+                message = texts.t(
+                    'TRIAL_NOT_CONNECTED_FIRST',
+                    '{icon} <b>VPN ещё не подключён</b>\n'
+                    'Пробный период уже идёт, до {end_date}. Обычно подключение занимает пару минут: '
+                    'нажмите «Подключиться» и следуйте шагам на странице. '
+                    'Застряли на каком-то шаге? Напишите в поддержку, разберёмся вместе.',
+                )
+            else:
+                message = texts.t(
+                    'TRIAL_NOT_CONNECTED_SECOND',
+                    '{icon} <b>Пробный период идёт, а VPN так и не подключён</b>\n'
+                    'Бесплатные дни идут до {end_date}, жалко их терять. '
+                    'Если не получилось с приложением, напишите нам: подскажем, что поставить '
+                    'на ваш телефон или компьютер.',
+                )
+            message = message.format(icon=tg_emoji('connect'), end_date=end_date)
+
+            rows = [[connect_button(texts, subscription)]]
+            if _is_support_enabled():
+                rows.append([_support_button(texts)])
+
+            await self._send_message_with_logo(
+                chat_id=user.telegram_id,
+                text=message,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                user=user,
+            )
+            return True
+
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            if await self._handle_unreachable_user(user, exc, 'напоминание о подключении'):
+                return True
+            logger.error('Ошибка Telegram API при отправке напоминания о подключении', exc=exc)
+            return False
+        except TelegramNetworkError as error:
+            logger.warning('Таймаут отправки напоминания о подключении', telegram_id=user.telegram_id, error=error)
+            return False
+        except Exception as error:
+            logger.error('Ошибка отправки напоминания о подключении', telegram_id=user.telegram_id, error=error)
+            return False
 
     async def _check_trial_channel_subscriptions(self, db: AsyncSession):
         """Background reconciliation of channel subscriptions (rate-limited).
