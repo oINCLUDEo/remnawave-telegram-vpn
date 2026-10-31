@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,50 @@ class TrialPaymentChargeFailed(TrialPaymentError):
 class TrialActivationReversionResult:
     refunded: bool = True
     subscription_rolled_back: bool = True
+
+
+@dataclass(slots=True)
+class TrialParams:
+    """What the trial gives: the trial tariff's limits when there is one, the settings otherwise."""
+
+    days: int
+    traffic_limit_gb: int
+    device_limit: int | None
+    tariff: Any = None
+
+
+async def get_trial_params(db: AsyncSession) -> TrialParams:
+    """The trial's days, traffic and devices as the user will actually get them.
+
+    The trial tariff (``is_trial_available`` or ``TRIAL_TARIFF_ID``) overrides
+    ``TRIAL_DURATION_DAYS`` and the other settings, so texts that promise the
+    trial must read them here, not from the settings.
+    """
+    params = TrialParams(
+        days=settings.TRIAL_DURATION_DAYS,
+        traffic_limit_gb=settings.TRIAL_TRAFFIC_LIMIT_GB,
+        device_limit=settings.TRIAL_DEVICE_LIMIT,
+    )
+    if not settings.is_tariffs_mode():
+        return params
+
+    try:
+        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
+
+        tariff = await get_trial_tariff(db)
+        if not tariff and settings.get_trial_tariff_id() > 0:
+            tariff = await get_tariff_by_id(db, settings.get_trial_tariff_id())
+    except Exception as error:
+        logger.warning('Не удалось получить триальный тариф', error=error)
+        return params
+
+    if tariff:
+        params.tariff = tariff
+        params.traffic_limit_gb = tariff.traffic_limit_gb
+        params.device_limit = tariff.device_limit
+        if getattr(tariff, 'trial_duration_days', None):
+            params.days = tariff.trial_duration_days
+    return params
 
 
 def get_trial_activation_charge_amount() -> int:
