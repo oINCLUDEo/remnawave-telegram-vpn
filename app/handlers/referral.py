@@ -31,25 +31,80 @@ from app.utils.user_utils import (
 logger = structlog.get_logger(__name__)
 
 
+def _referral_share_text(texts) -> str:
+    """The invite in the user's own voice: the brand, why it is worth it, the friend's bonus if there is one."""
+    if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
+        return texts.t(
+            'REFERRAL_SHARE_TEXT_BONUS',
+            'Пользуюсь Ulya VPN: работает, даже когда мобильный интернет режут белыми списками. '
+            'Можно попробовать бесплатно, а по моей ссылке тебе ещё {bonus} на баланс при первом пополнении.',
+        ).format(bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS))
+    return texts.t(
+        'REFERRAL_SHARE_TEXT',
+        'Пользуюсь Ulya VPN: работает, даже когда мобильный интернет режут белыми списками. '
+        'Можно попробовать бесплатно.',
+    )
+
+
 def build_referral_share_url(texts, referral_link: str | None) -> str | None:
     """A t.me/share link that opens Telegram's chat picker with the invite ready to send."""
     if not referral_link:
         return None
-    share_text = texts.t(
-        'REFERRAL_SHARE_TEXT',
-        '🚀 Попробуй VPN, которым пользуюсь сам: быстрое подключение и серверы по всему миру.',
-    )
+    share_text = _referral_share_text(texts)
     return 'https://t.me/share/url?' + urlencode({'url': referral_link, 'text': share_text}, quote_via=quote)
 
 
+def _referral_exchange_text(texts, db_user: User) -> str:
+    """What the friend gets and what the user gets, in two sentences, from the real settings."""
+    friend = ''
+    if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
+        friend = texts.t(
+            'REFERRAL_EXCHANGE_FRIEND',
+            'Друг получит {bonus} на баланс, когда впервые пополнит его от {minimum}.',
+        ).format(
+            bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
+            minimum=texts.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS),
+        )
+
+    rewards: list[str] = []
+    if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
+        rewards.append(
+            texts.t('REFERRAL_EXCHANGE_INVITER_BONUS', '{bonus} за его первое пополнение').format(
+                bonus=texts.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS)
+            )
+        )
+    percent = get_effective_referral_commission_percent(db_user)
+    if percent and percent > 0:
+        if settings.REFERRAL_MAX_COMMISSION_PAYMENTS > 0:
+            rewards.append(
+                texts.t('REFERRAL_EXCHANGE_COMMISSION_LIMITED', '{percent}% с первых {max_payments} его оплат').format(
+                    percent=percent, max_payments=settings.REFERRAL_MAX_COMMISSION_PAYMENTS
+                )
+            )
+        else:
+            rewards.append(
+                texts.t('REFERRAL_EXCHANGE_COMMISSION', '{percent}% со всех его оплат').format(percent=percent)
+            )
+
+    you = ''
+    if rewards:
+        you = texts.t(
+            'REFERRAL_EXCHANGE_YOU',
+            'Вы получите {rewards}. Деньги приходят на баланс, ими можно оплатить свою подписку.',
+        ).format(rewards=texts.t('REFERRAL_EXCHANGE_AND', ' и ').join(rewards))
+
+    exchange = ' '.join(part for part in (friend, you) if part)
+    return exchange or texts.t('REFERRAL_EXCHANGE_NONE', 'Поделитесь ссылкой с теми, кому тоже нужен рабочий VPN.')
+
+
 async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
-    # Проверяем, включена ли реферальная программа
-    if not settings.is_referral_program_enabled():
-        texts = get_texts(db_user.language)
-        await callback.answer(texts.t('REFERRAL_PROGRAM_DISABLED', 'Реферальная программа отключена'), show_alert=True)
-        return
+    """«Пригласить друга»: the exchange first, then the link. Statistics live behind «Доход»."""
+    from app.utils.formatters import format_friends_count
 
     texts = get_texts(db_user.language)
+    if not settings.is_referral_program_enabled():
+        await callback.answer(texts.t('REFERRAL_PROGRAM_DISABLED', 'Реферальная программа отключена'), show_alert=True)
+        return
 
     if not db_user.referral_code:
         await callback.answer(texts.t('REFERRAL_CODE_NOT_ASSIGNED', 'Реферальный код не назначен'), show_alert=True)
@@ -61,10 +116,49 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
     bot_referral_link = settings.get_bot_referral_link(db_user.referral_code, bot_username)
     cabinet_referral_link = settings.get_cabinet_referral_link(db_user.referral_code)
 
+    lines = [
+        texts.t('REFERRAL_PROGRAM_TITLE', '🤝 <b>Пригласить друга</b>'),
+        _referral_exchange_text(texts, db_user),
+    ]
+
+    invited = int(summary.get('invited_count') or 0)
+    if invited > 0:
+        earned = int(summary.get('total_earned_kopeks') or 0)
+        friends = format_friends_count(invited, texts.language)
+        if earned > 0:
+            progress = texts.t('REFERRAL_PROGRESS_EARNED', '👥 Вы уже привели {friends} и получили {amount}.').format(
+                friends=friends, amount=texts.format_price(earned)
+            )
+        else:
+            progress = texts.t('REFERRAL_PROGRESS', '👥 Вы уже привели {friends}.').format(friends=friends)
+        lines.append('\n' + progress)
+
+    link_block = texts.t('REFERRAL_LINK_TITLE', '🔗 Ваша ссылка, нажмите, чтобы скопировать:') + (
+        f'\n<code>{html_escape(bot_referral_link)}</code>'
+    )
+    if cabinet_referral_link:
+        link_block += (
+            '\n\n'
+            + texts.t('REFERRAL_CABINET_LINK_TITLE', '🌐 <b>Ссылка на кабинет:</b>')
+            + f'\n<code>{html_escape(cabinet_referral_link)}</code>'
+        )
+    lines.append('\n' + link_block)
+
+    await edit_or_answer_photo(
+        callback,
+        '\n'.join(lines),
+        get_referral_keyboard(
+            db_user.language,
+            share_url=build_referral_share_url(texts, bot_referral_link),
+        ),
+    )
+    await callback.answer()
+
+
+def _referral_details_text(texts, summary: dict) -> str:
+    """The full statistics that used to open «Пригласить друга»; now on the «Доход» screen."""
     referral_text = (
-        texts.t('REFERRAL_PROGRAM_TITLE', '🤝 <b>Пригласить друга</b>')
-        + '\n\n'
-        + texts.t('REFERRAL_STATS_HEADER', '📊 <b>Ваша статистика:</b>')
+        texts.t('REFERRAL_STATS_HEADER', '📊 <b>Ваша статистика:</b>')
         + '\n'
         + texts.t(
             'REFERRAL_STATS_INVITED',
@@ -95,60 +189,6 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
             'REFERRAL_STATS_MONTH_EARNED',
             '• За последний месяц: <b>{amount}</b>',
         ).format(amount=texts.format_price(summary['month_earned_kopeks']))
-        + '\n\n'
-        + texts.t('REFERRAL_REWARDS_HEADER', '🎁 <b>Как работают награды:</b>')
-    )
-
-    if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
-        referral_text += '\n' + texts.t(
-            'REFERRAL_REWARD_NEW_USER',
-            '• Новый пользователь получает: <b>{bonus}</b> при первом пополнении от <b>{minimum}</b>',
-        ).format(
-            bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
-            minimum=texts.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS),
-        )
-
-    if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
-        referral_text += '\n' + texts.t(
-            'REFERRAL_REWARD_INVITER',
-            '• Вы получаете при первом пополнении реферала: <b>{bonus}</b>',
-        ).format(bonus=texts.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS))
-
-    if settings.REFERRAL_MAX_COMMISSION_PAYMENTS > 0:
-        commission_line = texts.t(
-            'REFERRAL_REWARD_COMMISSION_LIMITED',
-            '• Комиссия с первых {max_payments} пополнений реферала: <b>{percent}%</b>',
-        ).format(
-            percent=get_effective_referral_commission_percent(db_user),
-            max_payments=settings.REFERRAL_MAX_COMMISSION_PAYMENTS,
-        )
-    else:
-        commission_line = texts.t(
-            'REFERRAL_REWARD_COMMISSION',
-            '• Комиссия с каждого пополнения реферала: <b>{percent}%</b>',
-        ).format(percent=get_effective_referral_commission_percent(db_user))
-
-    referral_text += '\n' + commission_line + '\n\n'
-
-    # Show bot link
-    referral_text += (
-        texts.t('REFERRAL_BOT_LINK_TITLE', '🤖 <b>Ссылка на бота:</b>')
-        + f'\n<code>{html_escape(bot_referral_link)}</code>\n'
-    )
-
-    # Show cabinet link if configured
-    if cabinet_referral_link:
-        referral_text += (
-            '\n'
-            + texts.t('REFERRAL_CABINET_LINK_TITLE', '🌐 <b>Ссылка на кабинет:</b>')
-            + f'\n<code>{html_escape(cabinet_referral_link)}</code>\n'
-        )
-
-    referral_text += (
-        '\n'
-        + texts.t('REFERRAL_CODE_TITLE', '🆔 <b>Ваш код:</b> <code>{code}</code>').format(
-            code=html_escape(str(db_user.referral_code or ''))
-        )
         + '\n\n'
     )
 
@@ -245,17 +285,7 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
 
         referral_text += '\n'
 
-    referral_text += texts.t(
-        'REFERRAL_INVITE_FOOTER',
-        '📢 Приглашайте друзей и зарабатывайте!',
-    )
-
-    await edit_or_answer_photo(
-        callback,
-        referral_text,
-        get_referral_keyboard(db_user.language, share_url=build_referral_share_url(texts, bot_referral_link)),
-    )
-    await callback.answer()
+    return referral_text
 
 
 async def show_referral_qr(
@@ -431,8 +461,10 @@ async def show_referral_analytics(callback: types.CallbackQuery, db_user: User, 
     texts = get_texts(db_user.language)
 
     analytics = await get_referral_analytics(db, db_user.id)
+    summary = await get_user_referral_summary(db, db_user.id)
 
-    text = texts.t('REFERRAL_ANALYTICS_TITLE', '📊 <b>Аналитика рефералов</b>') + '\n\n'
+    text = texts.t('REFERRAL_ANALYTICS_TITLE', '📊 <b>Доход от друзей</b>') + '\n\n'
+    text += _referral_details_text(texts, summary)
 
     text += (
         texts.t(
@@ -493,11 +525,6 @@ async def show_referral_analytics(callback: types.CallbackQuery, db_user: User, 
             )
         text += '\n'
 
-    text += texts.t(
-        'REFERRAL_ANALYTICS_FOOTER',
-        '📈 Продолжайте развивать свою реферальную сеть!',
-    )
-
     await edit_or_answer_photo(
         callback,
         text,
@@ -519,33 +546,11 @@ async def create_invite_message(callback: types.CallbackQuery, db_user: User):
     bot_referral_link = settings.get_bot_referral_link(db_user.referral_code, bot_username)
     cabinet_referral_link = settings.get_cabinet_referral_link(db_user.referral_code)
 
-    bonus_block = ''
-    if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
-        bonus_block = '\n\n' + texts.t(
-            'REFERRAL_INVITE_BONUS',
-            '💎 При первом пополнении от {minimum} ты получишь {bonus} бонусом на баланс!',
-        ).format(
-            minimum=texts.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS),
-            bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
-        )
-
     cabinet_block = ''
     if cabinet_referral_link:
         cabinet_block = f'\n\n🌐 {cabinet_referral_link}'
 
-    invite_text = texts.t(
-        'REFERRAL_INVITE_TEXT',
-        '🎉 Присоединяйся к VPN сервису!{bonus_block}\n\n'
-        '🚀 Быстрое подключение\n'
-        '🌍 Серверы по всему миру\n'
-        '🔒 Надежная защита\n\n'
-        '👇 Переходи по ссылке:\n'
-        '{link}{cabinet_block}',
-    ).format(
-        bonus_block=bonus_block,
-        link=bot_referral_link,
-        cabinet_block=cabinet_block,
-    )
+    invite_text = f'{_referral_share_text(texts)}\n\n{bot_referral_link}{cabinet_block}'
 
     keyboard = types.InlineKeyboardMarkup(
         inline_keyboard=[
@@ -556,11 +561,11 @@ async def create_invite_message(callback: types.CallbackQuery, db_user: User):
     await edit_or_answer_photo(
         callback,
         (
-            texts.t('REFERRAL_INVITE_CREATED_TITLE', '📝 <b>Приглашение создано!</b>')
-            + '\n\n'
+            texts.t('REFERRAL_INVITE_CREATED_TITLE', '📝 <b>Приглашение готово</b>')
+            + '\n'
             + texts.t(
                 'REFERRAL_INVITE_CREATED_INSTRUCTION',
-                'Нажмите на текст ниже, чтобы скопировать:',
+                'Нажмите на текст, чтобы скопировать, и отправьте другу.',
             )
             + '\n\n'
             f'<blockquote><code>{html_escape(invite_text)}</code></blockquote>'
