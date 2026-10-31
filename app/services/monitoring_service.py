@@ -780,9 +780,9 @@ class MonitoringService:
                     continue
 
                 # trial_2h — the old two-hour reminder: whoever got it must not get this one too.
-                if await notification_sent(db, user.id, subscription.id, 'trial_24h') or await notification_sent(
-                    db, user.id, subscription.id, 'trial_2h'
-                ):
+                if await notification_sent(db, user.id, subscription.id, 'trial_24h'):
+                    continue
+                if await notification_sent(db, user.id, subscription.id, 'trial_2h'):
                     continue
 
                 if self.bot:
@@ -1931,9 +1931,7 @@ class MonitoringService:
             logger.error('Ошибка Telegram API при отправке уведомления о конце пробного периода', exc=exc)
             return False
         except Exception as e:
-            logger.error(
-                'Ошибка отправки уведомления о конце пробного периода', telegram_id=user.telegram_id, e=e
-            )
+            logger.error('Ошибка отправки уведомления о конце пробного периода', telegram_id=user.telegram_id, e=e)
             return False
 
     async def _send_trial_channel_unsubscribed_notification(self, user: User) -> bool:
