@@ -896,16 +896,6 @@ async def show_language_menu(
 
     texts = get_texts(db_user.language)
 
-    if not settings.is_language_selection_enabled():
-        await callback.answer(
-            texts.t(
-                'LANGUAGE_SELECTION_DISABLED',
-                '⚙️ Выбор языка временно недоступен.',
-            ),
-            show_alert=True,
-        )
-        return
-
     await edit_or_answer_photo(
         callback=callback,
         caption=texts.t('LANGUAGE_PROMPT', '🔤 Выберите язык интерфейса:'),
@@ -938,16 +928,6 @@ async def process_language_change(
         return
 
     texts = get_texts(db_user.language)
-
-    if not settings.is_language_selection_enabled():
-        await callback.answer(
-            texts.t(
-                'LANGUAGE_SELECTION_DISABLED',
-                '⚙️ Выбор языка временно недоступен.',
-            ),
-            show_alert=True,
-        )
-        return
 
     selected_raw = (callback.data or '').split(':', 1)[-1]
     normalized_selected = selected_raw.strip().lower()
@@ -1060,7 +1040,9 @@ def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | N
         has_had_paid_subscription=user.has_had_paid_subscription,
         auth_type=getattr(user, 'auth_type', None),
     ):
-        trial_hint = texts.t('MAIN_MENU_TRIAL_HINT', '🎁 Пробный период: {days} бесплатно').format(
+        # A new person: say what Ulya gives, not what they lack.
+        no_subscription = texts.t('SUB_STATUS_NEW_USER', '🌐 <b>VPN, который работает даже при белых списках</b>')
+        trial_hint = texts.t('MAIN_MENU_TRIAL_HINT', '🎁 {days} бесплатно, оплата не нужна').format(
             days=format_days_declension(trial_days or settings.TRIAL_DURATION_DAYS, texts.language)
         )
     if not subscription:

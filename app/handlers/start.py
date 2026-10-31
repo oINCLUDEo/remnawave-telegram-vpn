@@ -27,13 +27,12 @@ from app.database.models import GuestPurchase, GuestPurchaseStatus, PinnedMessag
 from app.handlers.menu import build_main_menu
 from app.keyboards.inline import (
     get_back_keyboard,
-    get_language_selection_keyboard,
     get_post_registration_keyboard,
     get_privacy_policy_keyboard,
     get_rules_keyboard,
 )
 from app.localization.loader import DEFAULT_LANGUAGE
-from app.localization.texts import get_privacy_policy, get_rules, get_texts
+from app.localization.texts import get_privacy_policy, get_texts
 from app.middlewares.channel_checker import (
     delete_pending_payload_from_redis,
     get_pending_payload_from_redis,
@@ -404,6 +403,16 @@ async def _apply_campaign_bonus_if_needed(
     return None
 
 
+async def _complete_registration_after_code(
+    message: types.Message, state: FSMContext, db: AsyncSession, data: dict
+) -> None:
+    """A code typed before registration finished: register right away, there is no rules screen any more."""
+    if not data.get('language'):
+        data['language'] = _telegram_language(message.from_user)
+        await state.set_data(data)
+    await complete_registration(message, state, db)
+
+
 async def handle_potential_referral_code(message: types.Message, state: FSMContext, db: AsyncSession):
     current_state = await state.get_state()
     logger.info(
@@ -466,16 +475,7 @@ async def handle_potential_referral_code(message: types.Message, state: FSMConte
             from_user_id=message.from_user.id,
         )
 
-        if current_state != RegistrationStates.waiting_for_referral_code.state:
-            language = data.get('language', DEFAULT_LANGUAGE)
-            texts = get_texts(language)
-
-            rules_text = await get_rules(language)
-            await message.answer(rules_text, reply_markup=get_rules_keyboard(language))
-            await state.set_state(RegistrationStates.waiting_for_rules_accept)
-            logger.info('📋 Правила отправлены после ввода реферального кода')
-        else:
-            await complete_registration(message, state, db)
+        await _complete_registration_after_code(message, state, db, data)
 
         return True
 
@@ -501,16 +501,7 @@ async def handle_potential_referral_code(message: types.Message, state: FSMConte
             from_user_id=message.from_user.id,
         )
 
-        if current_state != RegistrationStates.waiting_for_referral_code.state:
-            language = data.get('language', DEFAULT_LANGUAGE)
-            texts = get_texts(language)
-
-            rules_text = await get_rules(language)
-            await message.answer(rules_text, reply_markup=get_rules_keyboard(language))
-            await state.set_state(RegistrationStates.waiting_for_rules_accept)
-            logger.info('📋 Правила отправлены после принятия промокода')
-        else:
-            await complete_registration(message, state, db)
+        await _complete_registration_after_code(message, state, db, data)
 
         return True
 
@@ -529,18 +520,18 @@ async def handle_potential_referral_code(message: types.Message, state: FSMConte
     return True
 
 
-def _get_language_prompt_text() -> str:
-    return '🌐 Выберите язык / Choose your language:'
+def _telegram_language(tg_user: types.User | None) -> str:
+    """The bot language for a new user: their Telegram app's language when the bot has it, otherwise the default.
 
-
-async def _prompt_language_selection(message: types.Message, state: FSMContext) -> None:
-    logger.info('🌐 LANGUAGE: Запрос выбора языка для пользователя', from_user_id=message.from_user.id)
-
-    await state.set_state(RegistrationStates.waiting_for_language)
-    await message.answer(
-        _get_language_prompt_text(),
-        reply_markup=get_language_selection_keyboard(),
-    )
+    Registration no longer asks for the language: one question less before
+    the trial. The language can still be changed in «Инфо».
+    """
+    default = (settings.DEFAULT_LANGUAGE or DEFAULT_LANGUAGE).split('-')[0].lower()
+    code = (getattr(tg_user, 'language_code', None) or '').split('-')[0].lower()
+    if code == 'uk':
+        code = 'ua'
+    available = {lang.strip().lower() for lang in settings.get_available_languages() if isinstance(lang, str)}
+    return code if code in available else default
 
 
 async def _continue_registration_after_language(
@@ -551,59 +542,26 @@ async def _continue_registration_after_language(
     db: AsyncSession,
 ) -> None:
     data = await state.get_data() or {}
-    language = data.get('language', DEFAULT_LANGUAGE)
-    texts = get_texts(language)
 
     target_message = callback.message if callback else message
     if not target_message:
         logger.warning('⚠️ LANGUAGE: Нет доступного сообщения для продолжения регистрации')
         return
 
-    async def _complete_registration_wrapper():
-        if callback:
-            await complete_registration_from_callback(callback, state, db)
-        else:
-            await complete_registration(message, state, db)
+    # No rules screen and no «У вас есть реферальный код?»: the welcome message
+    # carries a consent line instead (_with_consent_line), and a friend's code
+    # arrives with the invite link.
+    if data.get('referral_code'):
+        referrer = await get_user_by_referral_code(db, data['referral_code'])
+        if referrer:
+            data['referrer_id'] = referrer.id
+            await state.set_data(data)
+            logger.info('✅ LANGUAGE: Реферер найден', referrer_id=referrer.id)
 
-    if settings.SKIP_RULES_ACCEPT:
-        logger.info('⚙️ LANGUAGE: SKIP_RULES_ACCEPT включен - пропускаем правила')
-
-        if data.get('referral_code'):
-            referrer = await get_user_by_referral_code(db, data['referral_code'])
-            if referrer:
-                data['referrer_id'] = referrer.id
-                await state.set_data(data)
-                logger.info('✅ LANGUAGE: Реферер найден', referrer_id=referrer.id)
-
-        if settings.SKIP_REFERRAL_CODE or data.get('referral_code') or data.get('referrer_id'):
-            await _complete_registration_wrapper()
-        else:
-            try:
-                await target_message.answer(
-                    texts.t(
-                        'REFERRAL_CODE_QUESTION',
-                        "У вас есть реферальный код? Введите его или нажмите 'Пропустить'",
-                    ),
-                    reply_markup=get_referral_code_keyboard(language),
-                )
-                await state.set_state(RegistrationStates.waiting_for_referral_code)
-                logger.info('🔍 LANGUAGE: Ожидание ввода реферального кода')
-            except Exception as error:
-                logger.error('Ошибка при показе вопроса о реферальном коде после выбора языка', error=error)
-                await _complete_registration_wrapper()
-        return
-
-    rules_text = await get_rules(language)
-    try:
-        await target_message.answer(rules_text, reply_markup=get_rules_keyboard(language))
-    except TelegramForbiddenError:
-        logger.warning(
-            '⚠️ Пользователь заблокировал бота, пропускаем отправку правил',
-            from_user_id=callback.from_user.id if callback else message.from_user.id,
-        )
-        return
-    await state.set_state(RegistrationStates.waiting_for_rules_accept)
-    logger.info('📋 LANGUAGE: Правила отправлены после выбора языка')
+    if callback:
+        await complete_registration_from_callback(callback, state, db)
+    else:
+        await complete_registration(message, state, db)
 
 
 async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession, db_user=None):
@@ -968,22 +926,9 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
 
     data = await state.get_data() or {}
     if not data.get('language'):
-        if settings.is_language_selection_enabled():
-            await _prompt_language_selection(message, state)
-            return
-
-        default_language = (
-            (settings.DEFAULT_LANGUAGE or DEFAULT_LANGUAGE)
-            if isinstance(settings.DEFAULT_LANGUAGE, str)
-            else DEFAULT_LANGUAGE
-        )
-        normalized_default = default_language.split('-')[0].lower()
-        data['language'] = normalized_default
+        data['language'] = _telegram_language(message.from_user)
         await state.set_data(data)
-        logger.info(
-            "🌐 LANGUAGE: выбор языка отключен, устанавливаем язык по умолчанию ''",
-            normalized_default=normalized_default,
-        )
+        logger.info('🌐 LANGUAGE: язык из Telegram', language=data['language'])
 
     await _continue_registration_after_language(
         message=message,
@@ -1001,44 +946,6 @@ async def process_language_selection(
     logger.info(
         '🌐 LANGUAGE: Пользователь выбрал язык', from_user_id=callback.from_user.id, callback_data=callback.data
     )
-
-    if not settings.is_language_selection_enabled():
-        data = await state.get_data() or {}
-        default_language = (
-            (settings.DEFAULT_LANGUAGE or DEFAULT_LANGUAGE)
-            if isinstance(settings.DEFAULT_LANGUAGE, str)
-            else DEFAULT_LANGUAGE
-        )
-        normalized_default = default_language.split('-')[0].lower()
-        data['language'] = normalized_default
-        await state.set_data(data)
-
-        texts = get_texts(normalized_default)
-
-        try:
-            await callback.message.edit_text(
-                texts.t(
-                    'LANGUAGE_SELECTION_DISABLED',
-                    '⚙️ Выбор языка временно недоступен. Используем язык по умолчанию.',
-                )
-            )
-        except Exception:
-            await callback.message.answer(
-                texts.t(
-                    'LANGUAGE_SELECTION_DISABLED',
-                    '⚙️ Выбор языка временно недоступен. Используем язык по умолчанию.',
-                )
-            )
-
-        await callback.answer()
-
-        await _continue_registration_after_language(
-            message=None,
-            callback=callback,
-            state=state,
-            db=db,
-        )
-        return
 
     selected_raw = (callback.data or '').split(':', 1)[-1]
     normalized_selected = selected_raw.strip().lower()
@@ -1141,10 +1048,9 @@ async def _continue_registration_after_rules(
     language: str,
 ) -> None:
     """
-    Продолжает регистрацию после принятия правил (реферальный код или завершение).
+    Завершает регистрацию тех, у кого ещё открыт старый экран правил: вопроса о реферальном коде больше нет.
     """
     data = await state.get_data() or {}
-    texts = get_texts(language)
 
     if data.get('referral_code'):
         logger.info('🎫 Найден реферальный код из deep link', data=data['referral_code'])
@@ -1155,24 +1061,7 @@ async def _continue_registration_after_rules(
             await state.set_data(data)
             logger.info('✅ Реферер найден', referrer_id=referrer.id)
 
-        await complete_registration_from_callback(callback, state, db)
-    elif settings.SKIP_REFERRAL_CODE or data.get('referrer_id'):
-        logger.info('⚙️ Пропускаем запрос реферального кода')
-        await complete_registration_from_callback(callback, state, db)
-    else:
-        try:
-            await callback.message.edit_text(
-                texts.t(
-                    'REFERRAL_CODE_QUESTION',
-                    "У вас есть реферальный код? Введите его или нажмите 'Пропустить'",
-                ),
-                reply_markup=get_referral_code_keyboard(language),
-            )
-            await state.set_state(RegistrationStates.waiting_for_referral_code)
-            logger.info('🔍 Ожидание ввода реферального кода')
-        except Exception as e:
-            logger.error('Ошибка при показе вопроса о реферальном коде', error=e)
-            await complete_registration_from_callback(callback, state, db)
+    await complete_registration_from_callback(callback, state, db)
 
 
 async def process_rules_accept(callback: types.CallbackQuery, state: FSMContext, db: AsyncSession):
@@ -1293,27 +1182,7 @@ async def process_privacy_policy_accept(callback: types.CallbackQuery, state: FS
                     await state.set_data(data)
                     logger.info('✅ Реферер найден', referrer_id=referrer.id)
 
-                await complete_registration_from_callback(callback, state, db)
-            elif settings.SKIP_REFERRAL_CODE or data.get('referrer_id'):
-                logger.info('⚙️ Пропускаем запрос реферального кода')
-                await complete_registration_from_callback(callback, state, db)
-            else:
-                try:
-                    await state.set_data(data)
-                    await state.set_state(RegistrationStates.waiting_for_referral_code)
-
-                    await callback.bot.send_message(
-                        chat_id=callback.from_user.id,
-                        text=texts.t(
-                            'REFERRAL_CODE_QUESTION',
-                            "У вас есть реферальный код? Введите его или нажмите 'Пропустить'",
-                        ),
-                        reply_markup=get_referral_code_keyboard(language),
-                    )
-                    logger.info('🔍 Ожидание ввода реферального кода')
-                except Exception as e:
-                    logger.error('Ошибка при показе вопроса о реферальном коде', error=e)
-                    await complete_registration_from_callback(callback, state, db)
+            await complete_registration_from_callback(callback, state, db)
 
         else:
             logger.info('❌ Политика конфиденциальности отклонена пользователем', from_user_id=callback.from_user.id)
@@ -1654,6 +1523,7 @@ async def complete_registration_from_callback(callback: types.CallbackQuery, sta
     offer_text = await get_welcome_text_for_user(db, callback.from_user)
     if offer_text:
         offer_text = _with_consent_line(offer_text, user.language)
+        welcome_keyboard = await _welcome_keyboard(db, user.language)
     pinned_message = await get_active_pinned_message(db)
 
     if offer_text:
@@ -1662,7 +1532,7 @@ async def complete_registration_from_callback(callback: types.CallbackQuery, sta
                 await _send_pinned_message(callback.bot, db, user, pinned_message)
             await callback.message.answer(
                 offer_text,
-                reply_markup=get_post_registration_keyboard(user.language),
+                reply_markup=welcome_keyboard,
             )
             logger.info('✅ Приветственное сообщение отправлено пользователю', telegram_id=user.telegram_id)
             if pinned_message and not pinned_message.send_before_menu:
@@ -1673,7 +1543,7 @@ async def complete_registration_from_callback(callback: types.CallbackQuery, sta
                 try:
                     await callback.message.answer(
                         offer_text,
-                        reply_markup=get_post_registration_keyboard(user.language),
+                        reply_markup=welcome_keyboard,
                         parse_mode=None,
                     )
                     if pinned_message and not pinned_message.send_before_menu:
@@ -1953,7 +1823,7 @@ async def complete_registration(message: types.Message, state: FSMContext, db: A
             if user_has_subscription:
                 keyboard = get_back_keyboard(user.language, callback_data='back_to_menu')
             else:
-                keyboard = get_post_registration_keyboard(user.language)
+                keyboard = await _welcome_keyboard(db, user.language)
 
             if pinned_message and pinned_message.send_before_menu:
                 await _send_pinned_message(message.bot, db, user, pinned_message)
@@ -2009,16 +1879,26 @@ async def complete_registration(message: types.Message, state: FSMContext, db: A
     logger.info('✅ Регистрация завершена для пользователя', telegram_id=user.telegram_id)
 
 
+async def _welcome_keyboard(db: AsyncSession, language: str):
+    """Welcome buttons with the real trial length in the trial button."""
+    from app.services.trial_activation_service import get_trial_params
+
+    try:
+        trial_days = (await get_trial_params(db)).days
+    except Exception as error:
+        logger.warning('Не удалось получить длительность пробного периода', error=error)
+        trial_days = None
+    return get_post_registration_keyboard(language, trial_days=trial_days)
+
+
 def _with_consent_line(text: str, language: str) -> str:
     """Add the rules/privacy notice that replaces the separate accept screens.
 
-    With ``SKIP_RULES_ACCEPT`` the user no longer taps "Принимаю" on the rules
-    and the privacy policy, so the first message after registration says that
-    using the bot means accepting them and where to read them. Plain text on
-    purpose: the welcome message is re-sent without parse mode on HTML errors.
+    The user never taps "Принимаю" on the rules and the privacy policy, so
+    the first message after registration says that using the bot means
+    accepting them and where to read them. Plain text on purpose: the welcome
+    message is re-sent without parse mode on HTML errors.
     """
-    if not settings.SKIP_RULES_ACCEPT:
-        return text
     notice = get_texts(language).t(
         'REGISTRATION_CONSENT_LINE',
         'ℹ️ Пользуясь ботом, вы принимаете правила сервиса и политику конфиденциальности. '
@@ -2074,6 +1954,8 @@ async def required_sub_channel_check(
             language = user.language
         elif state_data.get('language'):
             language = state_data['language']
+        else:
+            language = _telegram_language(query.from_user)
 
         texts = get_texts(language)
 
@@ -2209,176 +2091,144 @@ async def required_sub_channel_check(
             if pinned_message and not pinned_message.send_before_menu:
                 await _send_pinned_message(bot, db, user, pinned_message)
         else:
-            from app.keyboards.inline import get_rules_keyboard
-
             state_data['language'] = language
             await state.set_data(state_data)
 
-            if settings.SKIP_RULES_ACCEPT:
-                if settings.SKIP_REFERRAL_CODE or state_data.get('referral_code') or state_data.get('referrer_id'):
-                    from app.utils.user_utils import generate_unique_referral_code
+            from app.utils.user_utils import generate_unique_referral_code
 
-                    # Проверяем реферальный код из ссылки или партнёра кампании
-                    referrer_id = state_data.get('referrer_id')
-                    if not referrer_id:
-                        ref_code_from_link = state_data.get('referral_code')
-                        if ref_code_from_link:
-                            referrer = await get_user_by_referral_code(db, ref_code_from_link)
-                            if referrer:
-                                referrer_id = referrer.id
-                                logger.info('✅ CHANNEL CHECK: Реферер найден из ссылки', referrer_id=referrer.id)
+            # Проверяем реферальный код из ссылки или партнёра кампании
+            referrer_id = state_data.get('referrer_id')
+            if not referrer_id:
+                ref_code_from_link = state_data.get('referral_code')
+                if ref_code_from_link:
+                    referrer = await get_user_by_referral_code(db, ref_code_from_link)
+                    if referrer:
+                        referrer_id = referrer.id
+                        logger.info('✅ CHANNEL CHECK: Реферер найден из ссылки', referrer_id=referrer.id)
 
-                    # Check for phantom user created by guest purchase (gift by @username)
-                    phantom = (
-                        await find_phantom_user_by_username(db, query.from_user.username)
-                        if query.from_user.username
-                        else None
+            # Check for phantom user created by guest purchase (gift by @username)
+            phantom = (
+                await find_phantom_user_by_username(db, query.from_user.username)
+                if query.from_user.username
+                else None
+            )
+            if phantom:
+                claimed, user = await claim_phantom(
+                    db,
+                    phantom,
+                    telegram_id=query.from_user.id,
+                    username=query.from_user.username,
+                    first_name=query.from_user.first_name,
+                    last_name=query.from_user.last_name,
+                    language=language,
+                    referrer_id=referrer_id,
+                )
+                if not claimed and user:
+                    # Phantom claim failed (IntegrityError — user with this telegram_id already exists).
+                    # Merge phantom's data into the existing user via full account merge service.
+                    if phantom.id != user.id:
+                        try:
+                            await db.refresh(phantom, ['subscriptions'])
+                            await _merge_phantom_into_active_user(db, phantom, user)
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
+                            logger.exception(
+                                'Failed to merge phantom into existing user during registration',
+                                phantom_id=phantom.id,
+                                active_user_id=user.id,
+                            )
+                    await db.refresh(user, ['subscriptions'])
+                elif not claimed:
+                    logger.critical(
+                        'Phantom claim failed with no fallback user, proceeding to normal registration',
+                        telegram_id=query.from_user.id,
+                        phantom_user_id=phantom.id,
                     )
-                    if phantom:
-                        claimed, user = await claim_phantom(
-                            db,
-                            phantom,
-                            telegram_id=query.from_user.id,
-                            username=query.from_user.username,
-                            first_name=query.from_user.first_name,
-                            last_name=query.from_user.last_name,
-                            language=language,
-                            referrer_id=referrer_id,
-                        )
-                        if not claimed and user:
-                            # Phantom claim failed (IntegrityError — user with this telegram_id already exists).
-                            # Merge phantom's data into the existing user via full account merge service.
-                            if phantom.id != user.id:
-                                try:
-                                    await db.refresh(phantom, ['subscriptions'])
-                                    await _merge_phantom_into_active_user(db, phantom, user)
-                                    await db.commit()
-                                except Exception:
-                                    await db.rollback()
-                                    logger.exception(
-                                        'Failed to merge phantom into existing user during registration',
-                                        phantom_id=phantom.id,
-                                        active_user_id=user.id,
-                                    )
-                            await db.refresh(user, ['subscriptions'])
-                        elif not claimed:
-                            logger.critical(
-                                'Phantom claim failed with no fallback user, proceeding to normal registration',
-                                telegram_id=query.from_user.id,
-                                phantom_user_id=phantom.id,
-                            )
-                            phantom = None
+                    phantom = None
 
-                    if not phantom:
-                        referral_code = await generate_unique_referral_code(db, query.from_user.id)
+            if not phantom:
+                referral_code = await generate_unique_referral_code(db, query.from_user.id)
 
-                        user = await create_user(
-                            db=db,
-                            telegram_id=query.from_user.id,
-                            username=query.from_user.username,
-                            first_name=query.from_user.first_name,
-                            last_name=query.from_user.last_name,
-                            language=language,
-                            referral_code=referral_code,
-                            referred_by_id=referrer_id,
-                        )
-                        await db.refresh(user, ['subscriptions'])
+                user = await create_user(
+                    db=db,
+                    telegram_id=query.from_user.id,
+                    username=query.from_user.username,
+                    first_name=query.from_user.first_name,
+                    last_name=query.from_user.last_name,
+                    language=language,
+                    referral_code=referral_code,
+                    referred_by_id=referrer_id,
+                )
+                await db.refresh(user, ['subscriptions'])
 
-                    # ИСПРАВЛЕНИЕ БАГА: Очищаем pending_start_payload из state после создания пользователя
-                    state_data.pop('pending_start_payload', None)
-                    await state.set_data(state_data)
-                    logger.info('✅ CHANNEL CHECK: pending_start_payload удален из state после создания пользователя')
+            # ИСПРАВЛЕНИЕ БАГА: Очищаем pending_start_payload из state после создания пользователя
+            state_data.pop('pending_start_payload', None)
+            await state.set_data(state_data)
+            logger.info('✅ CHANNEL CHECK: pending_start_payload удален из state после создания пользователя')
 
-                    # Обрабатываем реферальную регистрацию
-                    if referrer_id and referrer_id != user.id:
-                        try:
-                            await process_referral_registration(db, user.id, referrer_id, bot)
-                            logger.info('✅ CHANNEL CHECK: Реферальная регистрация обработана для', user_id=user.id)
-                        except Exception as e:
-                            logger.error('Ошибка при обработке реферальной регистрации', error=e)
+            # Обрабатываем реферальную регистрацию
+            if referrer_id and referrer_id != user.id:
+                try:
+                    await process_referral_registration(db, user.id, referrer_id, bot)
+                    logger.info('✅ CHANNEL CHECK: Реферальная регистрация обработана для', user_id=user.id)
+                except Exception as e:
+                    logger.error('Ошибка при обработке реферальной регистрации', error=e)
 
-                    # Применяем бонус рекламной кампании (record_campaign_registration)
-                    campaign_message = await _apply_campaign_bonus_if_needed(db, user, state_data, texts)
-                    try:
-                        await db.refresh(user)
-                    except Exception as refresh_error:
-                        logger.error(
-                            'Ошибка обновления данных пользователя после бонуса кампании',
-                            telegram_id=user.telegram_id,
-                            refresh_error=refresh_error,
-                        )
-                    try:
-                        await db.refresh(user, ['subscriptions'])
-                    except Exception as refresh_sub_error:
-                        logger.error(
-                            'Ошибка обновления подписки после бонуса кампании',
-                            telegram_id=user.telegram_id,
-                            refresh_sub_error=refresh_sub_error,
-                        )
-                    if campaign_message:
-                        try:
-                            await bot.send_message(
-                                chat_id=query.from_user.id,
-                                text=campaign_message,
-                            )
-                        except Exception as e:
-                            logger.error('Ошибка отправки сообщения о бонусе кампании', error=e)
-
-                    # Показываем главное меню после создания пользователя
-                    # Uses primary subscription (multi-tariff compatible via property)
-
-                    menu_text, keyboard = await build_main_menu(db, user)
-
-                    pinned_message = await get_active_pinned_message(db)
-                    if pinned_message and pinned_message.send_before_menu:
-                        await _send_pinned_message(bot, db, user, pinned_message)
-
-                    if settings.ENABLE_LOGO_MODE and not caption_exceeds_telegram_limit(menu_text):
-                        _result = await bot.send_photo(
-                            chat_id=query.from_user.id,
-                            photo=get_logo_media(),
-                            caption=menu_text,
-                            reply_markup=keyboard,
-                            parse_mode='HTML',
-                        )
-                        _cache_logo_file_id(_result)
-                    else:
-                        await bot.send_message(
-                            chat_id=query.from_user.id,
-                            text=menu_text,
-                            reply_markup=keyboard,
-                            parse_mode='HTML',
-                        )
-                    if pinned_message and not pinned_message.send_before_menu:
-                        await _send_pinned_message(bot, db, user, pinned_message)
-                else:
+            # Применяем бонус рекламной кампании (record_campaign_registration)
+            campaign_message = await _apply_campaign_bonus_if_needed(db, user, state_data, texts)
+            try:
+                await db.refresh(user)
+            except Exception as refresh_error:
+                logger.error(
+                    'Ошибка обновления данных пользователя после бонуса кампании',
+                    telegram_id=user.telegram_id,
+                    refresh_error=refresh_error,
+                )
+            try:
+                await db.refresh(user, ['subscriptions'])
+            except Exception as refresh_sub_error:
+                logger.error(
+                    'Ошибка обновления подписки после бонуса кампании',
+                    telegram_id=user.telegram_id,
+                    refresh_sub_error=refresh_sub_error,
+                )
+            if campaign_message:
+                try:
                     await bot.send_message(
                         chat_id=query.from_user.id,
-                        text=texts.t(
-                            'REFERRAL_CODE_QUESTION',
-                            "У вас есть реферальный код? Введите его или нажмите 'Пропустить'",
-                        ),
-                        reply_markup=get_referral_code_keyboard(language),
+                        text=campaign_message,
                     )
-                    await state.set_state(RegistrationStates.waiting_for_referral_code)
+                except Exception as e:
+                    logger.error('Ошибка отправки сообщения о бонусе кампании', error=e)
+
+            # Показываем главное меню после создания пользователя
+            # Uses primary subscription (multi-tariff compatible via property)
+
+            menu_text, keyboard = await build_main_menu(db, user)
+
+            pinned_message = await get_active_pinned_message(db)
+            if pinned_message and pinned_message.send_before_menu:
+                await _send_pinned_message(bot, db, user, pinned_message)
+
+            if settings.ENABLE_LOGO_MODE and not caption_exceeds_telegram_limit(menu_text):
+                _result = await bot.send_photo(
+                    chat_id=query.from_user.id,
+                    photo=get_logo_media(),
+                    caption=menu_text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML',
+                )
+                _cache_logo_file_id(_result)
             else:
-                rules_text = await get_rules(language)
-
-                if settings.ENABLE_LOGO_MODE and not caption_exceeds_telegram_limit(rules_text):
-                    _result = await bot.send_photo(
-                        chat_id=query.from_user.id,
-                        photo=get_logo_media(),
-                        caption=rules_text,
-                        reply_markup=get_rules_keyboard(language),
-                    )
-                    _cache_logo_file_id(_result)
-                else:
-                    await bot.send_message(
-                        chat_id=query.from_user.id,
-                        text=rules_text,
-                        reply_markup=get_rules_keyboard(language),
-                    )
-                await state.set_state(RegistrationStates.waiting_for_rules_accept)
+                await bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=menu_text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML',
+                )
+            if pinned_message and not pinned_message.send_before_menu:
+                await _send_pinned_message(bot, db, user, pinned_message)
 
     except TelegramBadRequest as e:
         error_msg = str(e).lower()

@@ -1103,7 +1103,6 @@
   "INVALID_AMOUNT": "❌ مبلغ نامعتبر",
   "LANGUAGE_PROMPT": "🔤 زبان رابط را انتخاب کنید:",
   "LANGUAGE_SELECTED": "🔤 زبان رابط انتخاب شد: <b>فارسی</b>",
-  "LANGUAGE_SELECTION_DISABLED": "⚙️ انتخاب زبان موقتاً در دسترس نیست. زبان پیش‌فرض استفاده می‌شود.",
   "LOADING": "⏳ بارگذاری...",
   "MAINTENANCE_MODE_ACTIVE": "\n🔧 تعمیرات فنی!\n\nسرویس موقتاً در دسترس نیست. در حال بهبود کیفیت خدمات هستیم.\n\n⏰ زمان تقریبی اتمام: نامشخص\n🔄 بعداً تلاش کنید\n\nبابت ناراحتی عذرخواهی می‌کنیم.\n",
   "MAINTENANCE_MODE_API_ERROR": "\n🔧 تعمیرات فنی!\n\nسرویس به دلیل مشکل اتصال به سرورها موقتاً در دسترس نیست.\n\n⏰ در حال رفع مشکل هستیم. چند دقیقه بعد تلاش کنید.\n\n🔄 آخرین بررسی: {last_check}\n",
@@ -1294,7 +1293,6 @@
   "PERIOD_360_DAYS": "📅 ۳۶۰ روز - {settings.format_price(settings.PRICE_360_DAYS)}",
   "PERIOD_60_DAYS": "📅 ۶۰ روز - {settings.format_price(settings.PRICE_60_DAYS)}",
   "PERIOD_90_DAYS": "📅 ۹۰ روز - {settings.format_price(settings.PRICE_90_DAYS)}",
-  "POST_REGISTRATION_TRIAL_BUTTON": "🎁 اتصال رایگان",
   "PRIVACY_POLICY_EMPTY_ALERT": "سیاست حریم خصوصی هنوز تکمیل نشده.",
   "PRIVACY_POLICY_HEADER": "🛡️ <b>سیاست حریم خصوصی</b>",
   "PRIVACY_POLICY_NOT_AVAILABLE": "سیاست حریم خصوصی موقتاً در دسترس نیست.",
@@ -1954,7 +1952,7 @@
   "MAIN_MENU_TARIFF": "{icon} تعرفه «{name}»",
   "MAIN_MENU_TRAFFIC_BYPASS": "📈 دور زدن لیست سفید: {used} از {limit} گیگابایت",
   "MAIN_MENU_TRAFFIC": "📈 ترافیک: {used} از {limit} گیگابایت",
-  "MAIN_MENU_TRIAL_HINT": "🎁 دوره آزمایشی: {days} رایگان",
+  "MAIN_MENU_TRIAL_HINT": "🎁 {days} رایگان، بدون نیاز به پرداخت",
   "MAIN_MENU_BTN_CHOOSE_TARIFF": "انتخاب تعرفه",
   "SUB_STATUS_TRIAL_EXPIRED": "🚫 <b>دوره آزمایشی در {end_date} تمام شد</b>",
   "TRIAL_STARTED_TITLE": "{icon} <b>دوره آزمایشی تا {end_date} فعال شد</b>",
@@ -1973,5 +1971,8 @@
   "TRIAL_EXPIRED_THIRD_WAVE": "{icon} <b>{percent}٪ تخفیف برای اولین اشتراک</b>\n{days} از پایان دوره آزمایشی گذشته است. اگر لیست‌های سفید دوباره مزاحم شده‌اند، برگردید: تخفیف برای همه تعرفه‌ها تا {expires_at} معتبر است. این آخرین پیشنهاد از این نوع است.",
   "TRIAL_DISCOUNT_CLAIM_BUTTON": "دریافت {percent}٪ تخفیف",
   "TRIAL_NOT_CONNECTED_FIRST": "{icon} <b>VPN هنوز وصل نشده است</b>\nدوره آزمایشی از همین حالا شروع شده و تا {end_date} ادامه دارد. اتصال معمولاً چند دقیقه طول می‌کشد: «اتصال» را بزنید و مراحل صفحه را دنبال کنید. در مرحله‌ای گیر کرده‌اید؟ به پشتیبانی پیام دهید، با هم حلش می‌کنیم.",
-  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>دوره آزمایشی در جریان است، اما VPN هنوز وصل نشده</b>\nروزهای رایگان تا {end_date} ادامه دارد، حیف است هدر بروند. اگر با برنامه مشکل داشتید، به ما پیام دهید: می‌گوییم روی گوشی یا کامپیوترتان چه نصب کنید."
+  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>دوره آزمایشی در جریان است، اما VPN هنوز وصل نشده</b>\nروزهای رایگان تا {end_date} ادامه دارد، حیف است هدر بروند. اگر با برنامه مشکل داشتید، به ما پیام دهید: می‌گوییم روی گوشی یا کامپیوترتان چه نصب کنید.",
+  "SUB_STATUS_NEW_USER": "🌐 <b>VPNی که حتی با محدودیت لیست سفید هم کار می‌کند</b>",
+  "POST_REGISTRATION_TRIAL_DAYS_BUTTON": "{days} رایگان امتحان کنید",
+  "POST_REGISTRATION_TARIFFS_BUTTON": "اول تعرفه‌ها را ببینم"
 }

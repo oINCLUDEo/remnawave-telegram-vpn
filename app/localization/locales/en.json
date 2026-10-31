@@ -1082,7 +1082,6 @@
   "INVALID_AMOUNT": "❌ Invalid amount",
   "LANGUAGE_PROMPT": "🔤 Choose the interface language:",
   "LANGUAGE_SELECTED": "🔤 Interface language set: <b>English</b>",
-  "LANGUAGE_SELECTION_DISABLED": "⚙️ Language selection is temporarily unavailable. Using the default language.",
   "LOADING": "⏳ Loading...",
   "MAINTENANCE_MODE_ACTIVE": "\n🔧 Maintenance in progress!\n\nThe service is temporarily unavailable while we improve performance.\n\n⏰ Estimated completion time: unknown\n🔄 Please try again later\n\nWe apologize for the inconvenience.\n",
   "MAINTENANCE_MODE_API_ERROR": "\n🔧 Maintenance in progress!\n\nThe service is temporarily unavailable due to connection issues with the servers.\n\n⏰ We're working on it. Please try again in a few minutes.\n\n🔄 Last check: {last_check}\n",
@@ -1273,7 +1272,6 @@
   "PERIOD_360_DAYS": "📅 360 days - {settings.format_price(settings.PRICE_360_DAYS)}",
   "PERIOD_60_DAYS": "📅 60 days - {settings.format_price(settings.PRICE_60_DAYS)}",
   "PERIOD_90_DAYS": "📅 90 days - {settings.format_price(settings.PRICE_90_DAYS)}",
-  "POST_REGISTRATION_TRIAL_BUTTON": "🎁 Activate free trial",
   "PRIVACY_POLICY_EMPTY_ALERT": "The privacy policy text has not been provided yet.",
   "PRIVACY_POLICY_HEADER": "🛡️ <b>Privacy policy</b>",
   "PRIVACY_POLICY_NOT_AVAILABLE": "The privacy policy is temporarily unavailable.",
@@ -1933,7 +1931,7 @@
   "MAIN_MENU_TARIFF": "{icon} {name} plan",
   "MAIN_MENU_TRAFFIC_BYPASS": "📈 Whitelist bypass: {used} of {limit} GB",
   "MAIN_MENU_TRAFFIC": "📈 Traffic: {used} of {limit} GB",
-  "MAIN_MENU_TRIAL_HINT": "🎁 Free trial: {days}",
+  "MAIN_MENU_TRIAL_HINT": "🎁 {days} free, no payment needed",
   "MAIN_MENU_BTN_CHOOSE_TARIFF": "Choose a plan",
   "SUB_STATUS_TRIAL_EXPIRED": "🚫 <b>Free trial ended on {end_date}</b>",
   "TRIAL_STARTED_TITLE": "{icon} <b>Your free trial is on until {end_date}</b>",
@@ -1952,5 +1950,8 @@
   "TRIAL_EXPIRED_THIRD_WAVE": "{icon} <b>{percent}% off your first subscription</b>\nIt has been {days} since your trial ended. If whitelists are getting in the way again, come back: the discount applies to any plan until {expires_at}. This is the last offer like this.",
   "TRIAL_DISCOUNT_CLAIM_BUTTON": "Get {percent}% off",
   "TRIAL_NOT_CONNECTED_FIRST": "{icon} <b>Your VPN is not connected yet</b>\nYour free trial is already running, until {end_date}. Connecting usually takes a couple of minutes: tap “Connect” and follow the steps on the page. Stuck on a step? Message support and we will sort it out together.",
-  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>Your trial is running, but the VPN is still not connected</b>\nThe free days last until {end_date}, it would be a shame to waste them. If the app did not work out, message us: we will tell you what to install on your phone or computer."
+  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>Your trial is running, but the VPN is still not connected</b>\nThe free days last until {end_date}, it would be a shame to waste them. If the app did not work out, message us: we will tell you what to install on your phone or computer.",
+  "SUB_STATUS_NEW_USER": "🌐 <b>A VPN that works even under whitelist restrictions</b>",
+  "POST_REGISTRATION_TRIAL_DAYS_BUTTON": "Try {days} free",
+  "POST_REGISTRATION_TARIFFS_BUTTON": "See the plans first"
 }

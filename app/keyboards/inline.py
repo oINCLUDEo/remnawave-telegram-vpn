@@ -176,17 +176,34 @@ def get_channel_sub_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_post_registration_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
+def get_post_registration_keyboard(
+    language: str = DEFAULT_LANGUAGE,
+    trial_days: int | None = None,
+) -> InlineKeyboardMarkup:
+    """The welcome message's buttons: the free trial, or the tariffs for those who want to look first.
+
+    *trial_days* is the real trial length (``get_trial_params``); without it
+    the button does not name the days.
+    """
+    from app.keyboards.icons import STYLE_PAY, icon_button
+    from app.utils.formatters import format_days_declension
+
     texts = get_texts(language)
+    if trial_days:
+        trial_text = texts.t('POST_REGISTRATION_TRIAL_DAYS_BUTTON', 'Попробовать {days} бесплатно').format(
+            days=format_days_declension(trial_days, language)
+        )
+    else:
+        trial_text = texts.t('MAIN_MENU_BTN_TRIAL', 'Попробовать бесплатно')
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [icon_button('trial', trial_text, callback_data='trial_activate', style=STYLE_PAY)],
             [
                 InlineKeyboardButton(
-                    text=texts.t('POST_REGISTRATION_TRIAL_BUTTON', '🚀 Подключиться бесплатно 🚀'),
-                    callback_data='trial_activate',
+                    text=texts.t('POST_REGISTRATION_TARIFFS_BUTTON', 'Сначала посмотреть тарифы'),
+                    callback_data='menu_buy',
                 )
             ],
-            [InlineKeyboardButton(text=texts.t('SKIP_BUTTON', 'Пропустить ➡️'), callback_data='back_to_menu')],
         ]
     )
 
@@ -283,7 +300,7 @@ def get_info_menu_keyboard(
     personal_row = [
         icon_button('promocode', texts.t('INFO_MENU_BTN_PROMOCODE', 'Промокод'), callback_data='menu_promocode')
     ]
-    if settings.is_language_selection_enabled():
+    if len(settings.get_available_languages()) > 1:
         personal_row.append(
             icon_button('language', texts.t('INFO_MENU_BTN_LANGUAGE', 'Язык'), callback_data='menu_language')
         )
