@@ -1050,7 +1050,8 @@ def _menu_facts(texts, subscription, tariff) -> tuple[str, str]:
     return plan_line, traffic.format(used=used, limit=limit)
 
 
-def _get_subscription_status(user: User, texts, tariff=None) -> str:
+def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | None = None) -> str:
+    """The status card. *trial_days* is the real trial length (the trial tariff may override the setting)."""
     subscription = getattr(user, 'subscription', None)
     no_subscription = texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>')
     trial_hint = ''
@@ -1060,7 +1061,7 @@ def _get_subscription_status(user: User, texts, tariff=None) -> str:
         auth_type=getattr(user, 'auth_type', None),
     ):
         trial_hint = texts.t('MAIN_MENU_TRIAL_HINT', '🎁 Пробный период: {days} бесплатно').format(
-            days=format_days_declension(settings.TRIAL_DURATION_DAYS, texts.language)
+            days=format_days_declension(trial_days or settings.TRIAL_DURATION_DAYS, texts.language)
         )
     if not subscription:
         return _status_card(no_subscription, trial_hint)
@@ -1106,6 +1107,12 @@ def _get_subscription_status(user: User, texts, tariff=None) -> str:
         return _status_card(headline, plan_line, traffic_line)
 
     if actual_status == 'expired':
+        if getattr(subscription, 'is_trial', False):
+            headline = texts.t(
+                'SUB_STATUS_TRIAL_EXPIRED',
+                '🚫 <b>Пробный период закончился {end_date}</b>',
+            ).format(end_date=end_date_text or '—')
+            return _status_card(headline)
         headline = texts.t(
             'SUB_STATUS_EXPIRED',
             '🚫 <b>Подписка закончилась {end_date}</b>',
@@ -1217,9 +1224,19 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
             except Exception as e:
                 logger.debug('Не удалось загрузить тариф для главного меню', error=e)
 
+        trial_days = None
+        if is_trial_available(
+            subscription,
+            has_had_paid_subscription=user.has_had_paid_subscription,
+            auth_type=getattr(user, 'auth_type', None),
+        ):
+            from app.services.trial_activation_service import get_trial_params
+
+            trial_days = (await get_trial_params(db)).days
+
         base_text = texts.MAIN_MENU.format(
             user_name=html.escape(user.full_name or ''),
-            subscription_status=_get_subscription_status(user, texts, tariff),
+            subscription_status=_get_subscription_status(user, texts, tariff, trial_days=trial_days),
         )
 
     info_sections: list[str] = []

@@ -97,6 +97,9 @@ _CHANNEL_CHECK_BATCH_SIZE: int = 100
 _RENEWAL_REMINDER_KEY = 'renewal_reminder:{user_id}:{subscription_id}'
 _RENEWAL_REMINDER_TTL_SECONDS: int = 86400 * 30
 
+# За сколько часов до конца пробного периода предупреждать и предлагать тариф.
+_TRIAL_WARNING_HOURS: int = 24
+
 
 logger = structlog.get_logger(__name__)
 
@@ -461,7 +464,12 @@ class MonitoringService:
                 # получил "🔌 Временный доступ" — не дублируем его сообщением о том, что
                 # доступ заблокирован, это противоречит только что показанному уведомлению.
                 if user and self.bot and not reserve_grace_granted:
-                    await self._send_subscription_expired_notification(user, subscription, tariff_name=_tariff_name)
+                    if subscription.is_trial and not user.has_had_paid_subscription:
+                        await self._send_trial_expired_notification(user, subscription)
+                    else:
+                        await self._send_subscription_expired_notification(
+                            user, subscription, tariff_name=_tariff_name
+                        )
 
                 logger.info(
                     "🔴 Подписка пользователя истекла и статус изменен на 'expired'", user_id=subscription.user_id
@@ -727,8 +735,20 @@ class MonitoringService:
             logger.error('Ошибка проверки истекающих подписок', error=e)
 
     async def _check_trial_expiring_soon(self, db: AsyncSession):
+        """A day before the trial ends: when the VPN stops and what to buy, with the price.
+
+        A day leaves time to decide and pay; two hours did not, and arrived at
+        night. A trial started less than 12 hours ago is left alone, so a short
+        trial does not get «закончится завтра» right after it began.
+        """
+        # Это продажа, ночью не шлём. Тихие часы короче суток, так что у каждого
+        # пробного периода в окне есть дневное время, и утром цикл его отправит.
+        if is_quiet_hours():
+            return
+
         try:
-            threshold_time = datetime.now(UTC) + timedelta(hours=2)
+            now = datetime.now(UTC)
+            threshold_time = now + timedelta(hours=_TRIAL_WARNING_HOURS)
 
             result = await db.execute(
                 select(Subscription)
@@ -745,36 +765,42 @@ class MonitoringService:
                         Subscription.status == SubscriptionStatus.ACTIVE.value,
                         Subscription.is_trial == True,
                         Subscription.end_date <= threshold_time,
-                        Subscription.end_date > datetime.now(UTC),
+                        Subscription.end_date > now,
+                        Subscription.start_date <= now - timedelta(hours=12),
                         User.status == UserStatus.ACTIVE.value,
                     )
                 )
             )
             trial_expiring = result.scalars().all()
+            sent_count = 0
 
             for subscription in trial_expiring:
                 user = subscription.user
-                if not user:
+                if not user or user.has_had_paid_subscription:
                     continue
 
-                if await notification_sent(db, user.id, subscription.id, 'trial_2h'):
+                # trial_2h — the old two-hour reminder: whoever got it must not get this one too.
+                if await notification_sent(db, user.id, subscription.id, 'trial_24h') or await notification_sent(
+                    db, user.id, subscription.id, 'trial_2h'
+                ):
                     continue
 
                 if self.bot:
-                    success = await self._send_trial_ending_notification(user, subscription)
+                    success = await self._send_trial_ending_notification(db, user, subscription)
                     if success:
-                        await record_notification(db, user.id, subscription.id, 'trial_2h')
+                        await record_notification(db, user.id, subscription.id, 'trial_24h')
+                        sent_count += 1
                         logger.info(
-                            '🎁 Пользователю отправлено уведомление об окончании тестовой подписки через 2 часа',
+                            '🎁 Пользователю отправлено предупреждение о конце пробного периода',
                             telegram_id=user.telegram_id,
                         )
 
-            if trial_expiring:
+            if sent_count:
                 await self._log_monitoring_event(
                     db,
                     'trial_expiring_notifications_sent',
-                    f'Отправлено {len(trial_expiring)} уведомлений об окончании тестовых подписок',
-                    {'count': len(trial_expiring)},
+                    f'Отправлено {sent_count} предупреждений о конце пробного периода',
+                    {'count': sent_count},
                 )
 
         except Exception as e:
@@ -1068,6 +1094,10 @@ class MonitoringService:
 
         try:
             now = datetime.now(UTC)
+            # Пробные периоды получают те же скидочные волны, что и платные подписки:
+            # это самые тёплые люди. Старые пробные (их тысячи) не грузим: волны
+            # всё равно только в первые дни после конца.
+            trial_window_days = max(4, NotificationSettingsService.get_third_wave_trigger_days() + 1)
 
             result = await db.execute(
                 select(Subscription)
@@ -1077,8 +1107,11 @@ class MonitoringService:
                 )
                 .where(
                     and_(
-                        Subscription.is_trial == False,
                         Subscription.end_date <= now,
+                        or_(
+                            Subscription.is_trial == False,
+                            Subscription.end_date >= now - timedelta(days=trial_window_days),
+                        ),
                     )
                 )
             )
@@ -1102,14 +1135,20 @@ class MonitoringService:
                 if subscription.end_date is None:
                     continue
 
+                is_trial = bool(subscription.is_trial)
+                if is_trial and user.has_had_paid_subscription:
+                    # Пробный период, после которого человек уже что-то купил.
+                    continue
+
                 time_since_end = now - subscription.end_date
                 if time_since_end.total_seconds() < 0:
                     continue
 
                 days_since = time_since_end.total_seconds() / 86400
 
-                # Day 1 reminder
-                if NotificationSettingsService.is_expired_1d_enabled() and 1 <= days_since < 2:
+                # Day 1 reminder. После пробного его нет: «Пробный период закончился»
+                # пришёл в момент окончания, а повтор без скидки ничего не добавляет.
+                if not is_trial and NotificationSettingsService.is_expired_1d_enabled() and 1 <= days_since < 2:
                     if not await notification_sent(db, user.id, subscription.id, 'expired_1d'):
                         success = await self._send_expired_day1_notification(user, subscription)
                         if success:
@@ -1138,6 +1177,7 @@ class MonitoringService:
                             offer.expires_at,
                             offer.id,
                             'second',
+                            is_trial=is_trial,
                         )
                         if success:
                             await record_notification(db, user.id, subscription.id, 'expired_discount_wave2')
@@ -1168,6 +1208,7 @@ class MonitoringService:
                                 offer.id,
                                 'third',
                                 trigger_days=trigger_days,
+                                is_trial=is_trial,
                             )
                             if success:
                                 await record_notification(db, user.id, subscription.id, 'expired_discount_wave3')
@@ -1691,40 +1732,133 @@ class MonitoringService:
             )
             return False
 
-    async def _send_trial_ending_notification(self, user: User, subscription: Subscription) -> bool:
+    @staticmethod
+    def _trial_keeps_setup_note(texts) -> str:
+        """« Переподключаться не придётся.»: a purchase turns the trial into the paid subscription, same link.
+
+        With several subscriptions a purchase opens a new one with its own
+        link, so the promise is left out there.
+        """
+        if settings.is_multi_tariff_enabled():
+            return ''
+        return ' ' + texts.t('TRIAL_KEEPS_SETUP_NOTE', 'Переподключаться не придётся.')
+
+    async def _trial_offer(self, db: AsyncSession, user: User, texts):
+        """The tariff to offer when the trial ends: the one most people buy, with the user's price.
+
+        Returns (offer line, keyboard rows). Without a recommended tariff the
+        line is empty and the only button is «Выбрать тариф».
+        """
+        from aiogram.types import InlineKeyboardButton
+
+        from app.database.crud.tariff import get_tariffs_for_user
+        from app.handlers.subscription.tariff_purchase import (
+            _period_label,
+            _tariff_bypass,
+            _tariff_devices,
+            _tariff_icon_and_name,
+            get_recommended_tariff_id,
+            tariff_list_price,
+        )
+        from app.keyboards.icons import icon_button
+
+        choose_button = [
+            icon_button(
+                'buy',
+                texts.t('MAIN_MENU_BTN_CHOOSE_TARIFF', 'Выбрать тариф'),
+                callback_data='menu_buy',
+                style=STYLE_PAY,
+            )
+        ]
+        if not settings.is_tariffs_mode():
+            return '', [choose_button]
+
         try:
-            get_texts(user.language)
+            tariffs = [
+                tariff
+                for tariff in await get_tariffs_for_user(db, getattr(user, 'promo_group_id', None))
+                if not getattr(tariff, 'is_daily', False)
+            ]
+            recommended_id = await get_recommended_tariff_id(db, tariffs)
+            tariff = next((tariff for tariff in tariffs if tariff.id == recommended_id), None)
+            list_price = tariff_list_price(tariff, user) if tariff else None
+        except Exception as error:
+            logger.warning('Не удалось подобрать тариф для конца пробного периода', user_id=user.id, error=error)
+            return '', [choose_button]
+        if not tariff or not list_price:
+            return '', [choose_button]
 
-            tariff_label = ''
-            if settings.is_multi_tariff_enabled() and hasattr(subscription, 'tariff') and subscription.tariff:
-                tariff_label = f' «{subscription.tariff.name}»'
-            message = f"""
-🎁 <b>Тестовая подписка{tariff_label} скоро закончится!</b>
-
-Ваша тестовая подписка истекает через 2 часа.
-
-💎 <b>Не хотите остаться без VPN?</b>
-Переходите на полную подписку!
-
-⚡️ Успейте оформить до окончания тестового периода!
-"""
-
-            from aiogram.types import InlineKeyboardMarkup
-
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [build_miniapp_or_callback_button(text='💎 Купить подписку', callback_data='menu_buy')],
-                    [build_miniapp_or_callback_button(text='💰 Пополнить баланс', callback_data='balance_topup')],
+        language = user.language
+        price, period, _discount = list_price
+        price_text = settings.format_price(price)
+        if period == 30:
+            price_line = texts.t('TRIAL_OFFER_PRICE_MONTH', '{price} в месяц').format(price=price_text)
+        else:
+            price_line = texts.t('TARIFF_PRICE_FOR', '{price} за {period}').format(
+                price=price_text, period=_period_label(texts, language, period)
+            )
+        _icon, name = _tariff_icon_and_name(tariff)
+        offer = texts.t(
+            'TRIAL_OFFER_LINE',
+            'Чаще всего берут «{name}»: {devices}, {traffic}, {price}.',
+        ).format(
+            name=html.escape(name),
+            devices=_tariff_devices(texts, language, tariff.device_limit),
+            traffic=_tariff_bypass(texts, tariff),
+            price=price_line,
+        )
+        rows = [
+            [
+                icon_button(
+                    'buy',
+                    texts.t('TRIAL_OFFER_BUY_BUTTON', 'Оформить за {price}').format(price=price_text),
+                    callback_data=f'tariff_select:{tariff.id}',
+                    style=STYLE_PAY,
+                )
+            ]
+        ]
+        if len(tariffs) > 1:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=texts.t('TRIAL_OFFER_ALL_TARIFFS', 'Все тарифы'),
+                        callback_data='menu_buy',
+                    )
                 ]
             )
+        return offer, rows
 
-            await self._send_message_with_logo(
+    async def _send_trial_ending_notification(self, db: AsyncSession, user: User, subscription: Subscription) -> bool:
+        """«Пробный период закончится завтра в 18:40», what happens then, and the tariff to buy with its price."""
+        try:
+            from aiogram.types import InlineKeyboardMarkup
+
+            from app.utils.formatters import format_deadline
+
+            texts = get_texts(user.language)
+            offer, rows = await self._trial_offer(db, user, texts)
+
+            message = texts.t(
+                'TRIAL_ENDS_SOON',
+                '{icon} <b>Пробный период закончится {end_date}</b>\n'
+                'Дальше VPN выключится. Если он вам пригодился, оформите подписку сейчас, '
+                'и он продолжит работать без перерыва.{keeps_setup}',
+            ).format(
+                icon=tg_emoji('warning'),
+                end_date=format_deadline(subscription.end_date, user.language),
+                keeps_setup=self._trial_keeps_setup_note(texts),
+            )
+            if offer:
+                message += '\n\n' + offer
+
+            sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
-                reply_markup=keyboard,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
                 user=user,
             )
+            await self._replace_renewal_reminder(user, subscription, sent)
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
@@ -1748,6 +1882,57 @@ class MonitoringService:
                 'Ошибка отправки уведомления об окончании тестовой подписки пользователю',
                 telegram_id=user.telegram_id,
                 e=e,
+            )
+            return False
+
+    async def _send_trial_expired_notification(self, user: User, subscription: Subscription) -> bool:
+        """«Пробный период закончился» and «Выбрать тариф»: nothing was bought, so no «Продлить».
+
+        Quiet at night: the VPN is already off, and the message can wait for
+        the morning without waking anyone.
+        """
+        try:
+            from aiogram.types import InlineKeyboardMarkup
+
+            from app.keyboards.icons import icon_button
+
+            texts = get_texts(user.language)
+            message = texts.t(
+                'TRIAL_EXPIRED',
+                '{icon} <b>Пробный период закончился</b>\n'
+                'VPN выключен. Выберите тариф, и он заработает сразу после оплаты.{keeps_setup}',
+            ).format(icon=tg_emoji('expired'), keeps_setup=self._trial_keeps_setup_note(texts))
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        icon_button(
+                            'buy',
+                            texts.t('MAIN_MENU_BTN_CHOOSE_TARIFF', 'Выбрать тариф'),
+                            callback_data='menu_buy',
+                            style=STYLE_PAY,
+                        )
+                    ]
+                ]
+            )
+            sent = await self._send_message_with_logo(
+                chat_id=user.telegram_id,
+                text=message,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+                user=user,
+                disable_notification=is_quiet_hours(),
+            )
+            await self._replace_renewal_reminder(user, subscription, sent)
+            return True
+
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            if await self._handle_unreachable_user(user, exc, 'уведомление о конце пробного периода'):
+                return True
+            logger.error('Ошибка Telegram API при отправке уведомления о конце пробного периода', exc=exc)
+            return False
+        except Exception as e:
+            logger.error(
+                'Ошибка отправки уведомления о конце пробного периода', telegram_id=user.telegram_id, e=e
             )
             return False
 
@@ -1909,7 +2094,13 @@ class MonitoringService:
         offer_id: int,
         wave: str,
         trigger_days: int = None,
+        *,
+        is_trial: bool = False,
     ) -> bool:
+        if is_trial:
+            return await self._send_trial_discount_notification(
+                user, subscription, percent, expires_at, offer_id, wave, trigger_days
+            )
         try:
             texts = get_texts(user.language)
 
@@ -2001,6 +2192,80 @@ class MonitoringService:
             return False
         except Exception as e:
             logger.error('Ошибка отправки скидочного уведомления пользователю', telegram_id=user.telegram_id, e=e)
+            return False
+
+    async def _send_trial_discount_notification(
+        self,
+        user: User,
+        subscription: Subscription,
+        percent: int,
+        expires_at: datetime,
+        offer_id: int,
+        wave: str,
+        trigger_days: int | None = None,
+    ) -> bool:
+        """The same discount waves after a trial: «на первую подписку», not «на продление»."""
+        try:
+            from aiogram.types import InlineKeyboardMarkup
+
+            from app.keyboards.icons import icon_button
+            from app.utils.formatters import format_days_declension, format_deadline
+
+            texts = get_texts(user.language)
+            if wave == 'second':
+                template = texts.t(
+                    'TRIAL_EXPIRED_SECOND_WAVE',
+                    '{icon} <b>Скидка {percent}% на первую подписку</b>\n'
+                    'Пробный период закончился, а скидка только началась. Она действует до {expires_at}: '
+                    'нажмите «Получить скидку», и она применится при оплате.',
+                )
+            else:
+                template = texts.t(
+                    'TRIAL_EXPIRED_THIRD_WAVE',
+                    '{icon} <b>Скидка {percent}% на первую подписку</b>\n'
+                    'Прошло {days} без VPN. Если белые списки снова мешают, возвращайтесь: '
+                    'скидка действует до {expires_at}, больше таких предложений не будет.',
+                )
+            message = template.format(
+                icon=tg_emoji('trial'),
+                percent=percent,
+                expires_at=format_deadline(expires_at, user.language),
+                days=format_days_declension(trigger_days or 0, user.language),
+            )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        icon_button(
+                            'trial',
+                            texts.t('TRIAL_DISCOUNT_CLAIM_BUTTON', 'Получить скидку {percent}%').format(
+                                percent=percent
+                            ),
+                            callback_data=f'claim_discount_{offer_id}',
+                            style=STYLE_PAY,
+                        )
+                    ]
+                ]
+            )
+            sent = await self._send_message_with_logo(
+                chat_id=user.telegram_id,
+                text=message,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+                user=user,
+            )
+            await self._replace_renewal_reminder(user, subscription, sent)
+            return True
+
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            if await self._handle_unreachable_user(user, exc, 'скидка после пробного периода'):
+                return True
+            logger.error('Ошибка Telegram API при отправке скидки после пробного периода', exc=exc)
+            return False
+        except TelegramNetworkError as e:
+            logger.warning('Таймаут отправки скидки после пробного периода', telegram_id=user.telegram_id, e=e)
+            return False
+        except Exception as e:
+            logger.error('Ошибка отправки скидки после пробного периода', telegram_id=user.telegram_id, e=e)
             return False
 
     @staticmethod

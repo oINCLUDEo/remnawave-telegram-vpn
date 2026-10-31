@@ -116,6 +116,7 @@ from app.utils.subscription_utils import (
     get_display_subscription_link,
     resolve_simple_subscription_device_limit,
 )
+from app.utils.formatters import format_human_date
 from app.utils.timezone import format_local_datetime
 
 from .autopay import (
@@ -255,7 +256,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     elif subscription.status == 'active' and subscription.end_date > current_time:
         if subscription.is_trial:
             actual_status = 'trial_active'
-            status_display = texts.t('SUBSCRIPTION_STATUS_TRIAL', 'Тестовая')
+            status_display = texts.t('SUBSCRIPTION_STATUS_TRIAL', 'Пробный период')
             status_emoji = tg_emoji('trial')
         else:
             actual_status = 'paid_active'
@@ -298,7 +299,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
         status_emoji = '⚠️'
 
     subscription_type = (
-        texts.t('SUBSCRIPTION_TYPE_TRIAL', 'Триал')
+        texts.t('SUBSCRIPTION_TYPE_TRIAL', 'Пробный период')
         if subscription.is_trial
         else texts.t('SUBSCRIPTION_TYPE_PAID', 'Платная')
     )
@@ -629,10 +630,37 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     await callback.answer()
 
 
+def _trial_used_keyboard(texts) -> InlineKeyboardMarkup:
+    """After «пробный период уже был»: the way forward is a tariff, not «Назад»."""
+    from app.keyboards.icons import STYLE_PAY, icon_button
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                icon_button(
+                    'buy',
+                    texts.t('MAIN_MENU_BTN_CHOOSE_TARIFF', 'Выбрать тариф'),
+                    callback_data='menu_buy',
+                    style=STYLE_PAY,
+                )
+            ],
+            [InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
+        ]
+    )
+
+
 async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     # Проверяем, доступно ли сообщение для редактирования
     if isinstance(callback.message, InaccessibleMessage):
         await callback.answer()
+        return
+
+    from app.services.trial_activation_service import get_trial_activation_charge_amount
+
+    if get_trial_activation_charge_amount() <= 0:
+        # A free trial needs no «Активировать?»: the tap on «Попробовать бесплатно»
+        # is the yes. Only a paid trial keeps this screen with its price.
+        await activate_trial(callback, db_user, db)
         return
 
     texts = get_texts(db_user.language)
@@ -661,7 +689,7 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
             trial_blocked = True
 
     if trial_blocked:
-        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=get_back_keyboard(db_user.language))
+        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=_trial_used_keyboard(texts))
         await callback.answer()
         return
 
@@ -862,7 +890,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
             trial_blocked = True
 
     if trial_blocked:
-        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=get_back_keyboard(db_user.language))
+        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=_trial_used_keyboard(texts))
         await callback.answer()
         return
 
@@ -1140,175 +1168,12 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
         except Exception as e:
             logger.error('Ошибка отправки уведомления о триале', error=e)
 
-        subscription_link = get_display_subscription_link(subscription)
-        hide_subscription_link = settings.should_hide_subscription_link()
-
-        payment_note = ''
-        if charged_amount > 0:
-            payment_note = '\n\n' + texts.t(
-                'TRIAL_PAYMENT_CHARGED_NOTE',
-                '💳 С вашего баланса списано {amount}.',
-            ).format(amount=settings.format_price(charged_amount))
-
-        if remnawave_user and subscription_link:
-            if settings.is_happ_cryptolink_mode():
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_HAPP_LINK_PROMPT',
-                        '🔒 Ссылка на подписку создана. Нажмите кнопку "Подключиться" ниже, чтобы открыть её в Happ.',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            elif hide_subscription_link:
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_LINK_HIDDEN_NOTICE',
-                        'ℹ️ Ссылка подписки доступна по кнопкам ниже или в разделе "Моя подписка".',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            else:
-                subscription_import_link = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
-
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    f'{subscription_import_link}\n\n'
-                    f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
-                )
-
-            trial_success_text += payment_note
-
-            connect_mode = settings.CONNECT_BUTTON_MODE
-
-            if connect_mode == 'miniapp_subscription':
-                connect_keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                                web_app=types.WebAppInfo(url=subscription_link),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                                callback_data='back_to_menu',
-                            )
-                        ],
-                    ]
-                )
-            elif connect_mode == 'miniapp_custom':
-                if not settings.MINIAPP_CUSTOM_URL:
-                    await callback.answer(
-                        texts.t(
-                            'CUSTOM_MINIAPP_URL_NOT_SET',
-                            '⚠ Кастомная ссылка для мини-приложения не настроена',
-                        ),
-                        show_alert=True,
-                    )
-                    return
-
-                connect_keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                                web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                                callback_data='back_to_menu',
-                            )
-                        ],
-                    ]
-                )
-            elif connect_mode == 'link':
-                rows = [
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                            url=subscription_link,
-                        )
-                    ]
-                ]
-                happ_row = get_happ_download_button_row(texts)
-                if happ_row:
-                    rows.append(happ_row)
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                            callback_data='back_to_menu',
-                        )
-                    ]
-                )
-                connect_keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
-            elif connect_mode == 'happ_cryptolink':
-                rows = [
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                            callback_data='open_subscription_link',
-                        )
-                    ]
-                ]
-                happ_row = get_happ_download_button_row(texts)
-                if happ_row:
-                    rows.append(happ_row)
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                            callback_data='back_to_menu',
-                        )
-                    ]
-                )
-                connect_keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
-            else:
-                connect_keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                                callback_data='subscription_connect',
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                                callback_data='back_to_menu',
-                            )
-                        ],
-                    ]
-                )
-
-            await callback.message.edit_text(
-                trial_success_text,
-                reply_markup=connect_keyboard,
-                parse_mode='HTML',
-            )
-        else:
-            trial_success_text = f"{texts.TRIAL_ACTIVATED}\n\n⚠️ Ссылка генерируется, попробуйте перейти в раздел 'Моя подписка' через несколько секунд."
-            trial_success_text += payment_note
-            await callback.message.edit_text(
-                trial_success_text,
-                reply_markup=get_back_keyboard(db_user.language),
-            )
+        link_ready = bool(remnawave_user and get_display_subscription_link(subscription))
+        await callback.message.edit_text(
+            _trial_started_text(texts, subscription, charged_amount, link_ready=link_ready),
+            reply_markup=_build_trial_success_keyboard(texts, subscription, link_ready=link_ready),
+            parse_mode='HTML',
+        )
 
         logger.info('✅ Активирована тестовая подписка для пользователя', telegram_id=db_user.telegram_id)
 
@@ -1673,49 +1538,10 @@ async def handle_extend_subscription(
     else:
         subscription = db_user.subscription
 
-    if not subscription:
-        await callback.message.edit_text(
-            '🎯 <b>Пробный период заканчивается</b>\n\nЧтобы продолжить пользоваться VPN, выберите подходящий тариф.',
-            reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text=texts.MENU_BUY_SUBSCRIPTION, callback_data='menu_buy')],
-                    [
-                        types.InlineKeyboardButton(
-                            text=texts.t('WEBHOOK_CLOSE_BUTTON', '✖️ Закрыть'),
-                            callback_data='webhook:close',
-                        )
-                    ],
-                ]
-            ),
-            parse_mode='HTML',
-        )
-        await callback.answer()
-        return
-
-    # Триальная подписка с тарифом — направляем на покупку этого тарифа
-    if subscription.is_trial:
-        if subscription.tariff_id and settings.is_tariffs_mode():
-            from .tariff_purchase import show_tariff_extend
-
-            await show_tariff_extend(callback, db_user, db)
-            return
-        # Триал без тарифа — предлагаем выбрать
-        await callback.message.edit_text(
-            '🎯 <b>Пробный период заканчивается</b>\n\nЧтобы продолжить пользоваться VPN, выберите подходящий тариф.',
-            reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text=texts.MENU_BUY_SUBSCRIPTION, callback_data='menu_buy')],
-                    [
-                        types.InlineKeyboardButton(
-                            text=texts.t('WEBHOOK_CLOSE_BUTTON', '✖️ Закрыть'),
-                            callback_data='webhook:close',
-                        )
-                    ],
-                ]
-            ),
-            parse_mode='HTML',
-        )
-        await callback.answer()
+    if not subscription or subscription.is_trial:
+        # Nothing was bought yet, so there is nothing to renew: the trial tariff
+        # is not for sale. Open the tariffs, as «Купить подписку» does.
+        await start_subscription_purchase(callback, state, db_user, db)
         return
 
     # Подписка с тарифом — всегда используем тарифный flow,
@@ -3266,7 +3092,7 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
             trial_blocked = True
 
     if trial_blocked:
-        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=get_back_keyboard(db_user.language))
+        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=_trial_used_keyboard(texts))
         await callback.answer()
         return
 
@@ -3434,73 +3260,12 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о триале', error=e)
 
-        # Показываем успешное сообщение с ссылкой
-        subscription_link = get_display_subscription_link(subscription)
-        hide_subscription_link = settings.should_hide_subscription_link()
-
-        payment_note = '\n\n' + texts.t(
-            'TRIAL_PAYMENT_CHARGED_NOTE',
-            '💳 С вашего баланса списано {amount}.',
-        ).format(amount=settings.format_price(trial_price_kopeks))
-
-        if remnawave_user and subscription_link:
-            if settings.is_happ_cryptolink_mode():
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_HAPP_LINK_PROMPT',
-                        '🔒 Ссылка на подписку создана. Нажмите кнопку "Подключиться" ниже, чтобы открыть её в Happ.',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            elif hide_subscription_link:
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_LINK_HIDDEN_NOTICE',
-                        'ℹ️ Ссылка подписки доступна по кнопкам ниже или в разделе "Моя подписка".',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            else:
-                subscription_import_link = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
-
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    f'{subscription_import_link}\n\n'
-                    f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
-                )
-
-            trial_success_text += payment_note
-
-            connect_mode = settings.CONNECT_BUTTON_MODE
-            connect_keyboard = _build_trial_success_keyboard(texts, subscription_link, connect_mode)
-
-            await callback.message.edit_text(
-                trial_success_text,
-                reply_markup=connect_keyboard,
-                parse_mode='HTML',
-            )
-        else:
-            trial_success_text = f"{texts.TRIAL_ACTIVATED}\n\n⚠️ Ссылка генерируется, попробуйте перейти в раздел 'Моя подписка' через несколько секунд."
-            trial_success_text += payment_note
-
-            await callback.message.edit_text(
-                trial_success_text,
-                reply_markup=get_back_keyboard(db_user.language),
-                parse_mode='HTML',
-            )
+        link_ready = bool(remnawave_user and get_display_subscription_link(subscription))
+        await callback.message.edit_text(
+            _trial_started_text(texts, subscription, trial_price_kopeks, link_ready=link_ready),
+            reply_markup=_build_trial_success_keyboard(texts, subscription, link_ready=link_ready),
+            parse_mode='HTML',
+        )
 
         await callback.answer()
 
@@ -3541,104 +3306,91 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
         await callback.answer()
 
 
-def _build_trial_success_keyboard(texts, subscription_link: str, connect_mode: str) -> InlineKeyboardMarkup:
-    """Создает клавиатуру успешной активации триала."""
+def _trial_started_text(texts, subscription: Subscription, charged_amount: int = 0, *, link_ready: bool = True) -> str:
+    """«Пробный период включён до 5 ноября», what it gives, and the one step left: connecting."""
+    from .tariff_purchase import _tariff_devices
 
-    if connect_mode == 'miniapp_subscription':
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                        web_app=types.WebAppInfo(url=subscription_link),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                        callback_data='back_to_menu',
-                    )
-                ],
-            ]
-        )
-    if connect_mode == 'miniapp_custom':
-        if not settings.MINIAPP_CUSTOM_URL:
-            return get_back_keyboard(texts.language if hasattr(texts, 'language') else 'ru')
+    language = texts.language
+    title = texts.t('TRIAL_STARTED_TITLE', '{icon} <b>Пробный период включён до {end_date}</b>').format(
+        icon=tg_emoji('trial'),
+        end_date=format_human_date(subscription.end_date, language),
+    )
+    lines = [title]
 
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                        web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                        callback_data='back_to_menu',
-                    )
-                ],
-            ]
-        )
-    if connect_mode == 'link':
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                    url=subscription_link,
-                )
-            ]
+    devices = _tariff_devices(texts, language, subscription.device_limit) if subscription.device_limit else ''
+    if subscription.traffic_limit_gb:
+        facts = texts.t(
+            'TRIAL_STARTED_FACTS_LIMITED',
+            '{devices} и {gb} ГБ на серверах обхода белых списков, на обычных безлимитный трафик. '
+            'Серверы те же, что в платных тарифах.',
+        ).format(devices=devices, gb=subscription.traffic_limit_gb)
+    else:
+        facts = texts.t(
+            'TRIAL_STARTED_FACTS_UNLIMITED',
+            '{devices} и безлимитный трафик. Серверы те же, что в платных тарифах.',
+        ).format(devices=devices)
+    if devices:
+        lines.append(facts[0].upper() + facts[1:])
+
+    if link_ready:
+        lines += [
+            '',
+            texts.t(
+                'TRIAL_STARTED_NEXT_STEP',
+                'Осталось подключиться. Нажмите «Подключиться», и страница по шагам покажет, что установить. '
+                'Пара минут, и VPN работает.',
+            ),
         ]
-        happ_row = get_happ_download_button_row(texts)
-        if happ_row:
-            rows.append(happ_row)
+    else:
+        lines += [
+            '',
+            texts.t(
+                'TRIAL_STARTED_LINK_PENDING',
+                'Ссылка для подключения ещё готовится. Через полминуты откройте «Моя подписка», она будет там.',
+            ),
+        ]
+
+    if charged_amount > 0:
+        lines += [
+            '',
+            texts.t('TRIAL_PAYMENT_CHARGED_NOTE', '💳 С вашего баланса списано {amount}.').format(
+                amount=settings.format_price(charged_amount)
+            ),
+        ]
+    return '\n'.join(lines)
+
+
+def _build_trial_success_keyboard(texts, subscription: Subscription, *, link_ready: bool = True) -> InlineKeyboardMarkup:
+    """One coloured button, «Подключиться», opening the same thing as in the main menu."""
+    from app.keyboards.main_menu import connect_button
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if link_ready:
+        rows.append([connect_button(texts, subscription)])
+        if settings.CONNECT_BUTTON_MODE in ('link', 'happ_cryptolink'):
+            happ_row = get_happ_download_button_row(texts)
+            if happ_row:
+                rows.append(happ_row)
+    else:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                    callback_data='back_to_menu',
+                    text=texts.t('MAIN_MENU_BTN_SUBSCRIPTION', 'Моя подписка'),
+                    callback_data='menu_subscription',
                 )
             ]
         )
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-    if connect_mode == 'happ_cryptolink':
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                    callback_data='open_subscription_link',
-                )
-            ]
-        ]
-        happ_row = get_happ_download_button_row(texts)
-        if happ_row:
-            rows.append(happ_row)
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                    callback_data='back_to_menu',
-                )
-            ]
-        )
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                    callback_data='subscription_connect',
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                    callback_data='back_to_menu',
-                )
-            ],
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
+                callback_data='back_to_menu',
+            )
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 
 
 @error_handler
@@ -3663,7 +3415,7 @@ async def handle_trial_payment_method(callback: types.CallbackQuery, db_user: Us
             trial_blocked = True
 
     if trial_blocked:
-        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=get_back_keyboard(db_user.language))
+        await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=_trial_used_keyboard(texts))
         await callback.answer()
         return
 

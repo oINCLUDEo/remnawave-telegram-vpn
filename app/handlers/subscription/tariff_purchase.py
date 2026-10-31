@@ -211,6 +211,23 @@ def _tagline(description: str | None) -> str:
     return first[:_TAGLINE_MAX].rsplit(' ', 1)[0].rstrip(' ,.;:—-') + '…'
 
 
+def tariff_list_price(tariff: Tariff, db_user: User | None) -> tuple[int, int, int] | None:
+    """(price in kopeks with the user's discounts, period in days, discount %) of a month, or of the shortest period.
+
+    None for a tariff with no periods (a daily one). The tariff list and the
+    trial's end-of-period offer quote the same price this way.
+    """
+    prices = tariff.period_prices or {}
+    if not prices:
+        return None
+    period = 30 if '30' in prices else int(min(prices, key=int))
+    price = prices[str(period)]
+    group_pct, offer_pct, discount = _get_user_period_discount(db_user, period) if db_user else (0, 0, 0)
+    if discount > 0:
+        price = _apply_promo_discount(price, group_pct, offer_pct)
+    return price, period, discount
+
+
 def _list_price(texts, language: str | None, tariff: Tariff, db_user: User | None) -> str:
     """«199 ₽/мес»: the price of one month, or of the shortest period when there is no month."""
     if getattr(tariff, 'is_daily', False):
@@ -220,14 +237,10 @@ def _list_price(texts, language: str | None, tariff: Tariff, db_user: User | Non
             price = _apply_promo_discount(price, group_pct, offer_pct)
         text = texts.t('TARIFF_PRICE_DAILY', '{price}/день').format(price=format_price_kopeks(price))
     else:
-        prices = tariff.period_prices or {}
-        if not prices:
+        list_price = tariff_list_price(tariff, db_user)
+        if list_price is None:
             return ''
-        period = 30 if '30' in prices else int(min(prices, key=int))
-        price = prices[str(period)]
-        group_pct, offer_pct, discount = _get_user_period_discount(db_user, period) if db_user else (0, 0, 0)
-        if discount > 0:
-            price = _apply_promo_discount(price, group_pct, offer_pct)
+        price, period, discount = list_price
         if period == 30:
             text = texts.t('TARIFF_PRICE_MONTHLY', '{price}/мес').format(price=format_price_kopeks(price))
         else:

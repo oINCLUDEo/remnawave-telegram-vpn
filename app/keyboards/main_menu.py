@@ -15,7 +15,7 @@ most for the user's current state, so the state decides the rows:
 ====  ========================  ========================  ========================
 Row   NEW (no subscription)     TRIAL / ACTIVE            RENEW (expiring or ended)
 ====  ========================  ========================  ========================
-1     Попробовать (1)           Подключиться              Продлить
+1     Попробовать (1)           Подключиться              Продлить (4)
 2     Купить подписку           Моя подписка (2)          Подключиться (3)
 3     Баланс                    Баланс                    Моя подписка
 4     Пригласить друга          Пригласить друга          Баланс
@@ -25,6 +25,8 @@ Row   NEW (no subscription)     TRIAL / ACTIVE            RENEW (expiring or end
 
 (1) Left out when the trial is not available; "Купить" is then first.
 (2) "Купить подписку" while on a trial. (3) Only while access still works.
+(4) "Выбрать тариф" when it is the trial that ended or ran out of traffic:
+nothing was bought, so there is nothing to renew.
 
 Only the first coloured button keeps its colour; see the colour rules in
 :mod:`app.keyboards.icons`.
@@ -218,6 +220,23 @@ def build_main_menu_keyboard(
     elif state in (MenuState.TRIAL, MenuState.ACTIVE):
         rows.append([connect_button(texts, subscription)])
         rows.append([buy() if state == MenuState.TRIAL else my_subscription])
+
+    elif getattr(subscription, 'is_trial', False):  # MenuState.RENEW after the trial
+        # Nothing was bought, so there is nothing to renew: the trial tariff
+        # is not for sale, and the user picks a tariff for the first time.
+        rows.append(
+            [
+                icon_button(
+                    'buy',
+                    t('MAIN_MENU_BTN_CHOOSE_TARIFF', 'Выбрать тариф'),
+                    callback_data='menu_buy',
+                    style=STYLE_PAY,
+                )
+            ]
+        )
+        if getattr(subscription, 'is_active', False):
+            rows.append([connect_button(texts, subscription)])
+        rows.append([my_subscription])
 
     else:  # MenuState.RENEW
         rows.append(
