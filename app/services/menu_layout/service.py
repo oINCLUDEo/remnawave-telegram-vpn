@@ -771,7 +771,7 @@ class MenuLayoutService:
 
         # language_selection_enabled
         if conditions.get('language_selection_enabled') is True:
-            if not settings.is_language_selection_enabled():
+            if len(settings.get_available_languages()) < 2:
                 return False
 
         # happ_enabled

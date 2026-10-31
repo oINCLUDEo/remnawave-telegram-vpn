@@ -642,12 +642,9 @@ class Settings(BaseSettings):
     HIDE_SUBSCRIPTION_LINK: bool = False
     ENABLE_LOGO_MODE: bool = True
     LOGO_FILE: str = 'vpn_logo.png'
-    SKIP_RULES_ACCEPT: bool = False
-    SKIP_REFERRAL_CODE: bool = False
 
     DEFAULT_LANGUAGE: str = 'ru'
     AVAILABLE_LANGUAGES: str = 'ru,en,ua,zh,fa'
-    LANGUAGE_SELECTION_ENABLED: bool = True
 
     # Округление цен при отображении (≤50 коп вниз, >50 коп вверх)
     PRICE_ROUNDING_ENABLED: bool = True
@@ -1425,9 +1422,6 @@ class Settings(BaseSettings):
             cleaned.append(code)
 
         return cleaned or defaults
-
-    def is_language_selection_enabled(self) -> bool:
-        return bool(getattr(self, 'LANGUAGE_SELECTION_ENABLED', True))
 
     def format_price(self, price_kopeks: int, round_kopeks: bool | None = None) -> str:
         """

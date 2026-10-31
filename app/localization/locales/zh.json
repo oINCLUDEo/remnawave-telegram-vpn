@@ -1019,7 +1019,6 @@
   "INVALID_AMOUNT": "❌金额无效",
   "LANGUAGE_PROMPT": "🔤请选择界面语言：",
   "LANGUAGE_SELECTED": "🔤界面语言已设置为：<b>中文（简体）</b>",
-  "LANGUAGE_SELECTION_DISABLED": "⚙️语言选择暂时不可用。将使用默认语言。",
   "LOADING": "⏳加载中...",
   "MAINTENANCE_MODE_ACTIVE": "\n🔧正在进行技术维护！\n\n服务暂时不可用。我们正在进行技术工作以提高服务质量。\n\n⏰预计完成时间：未知\n🔄请稍后再试\n\n对于暂时的不便，我们深表歉意。\n",
   "MAINTENANCE_MODE_API_ERROR": "\n🔧正在进行技术维护！\n\n由于连接服务器出现问题，服务暂时不可用。\n\n⏰我们正在努力恢复。请几分钟后再试。\n\n🔄最后检查时间：{last_check}\n",
@@ -1209,7 +1208,6 @@
   "PERIOD_360_DAYS": "📅360天-{settings.format_price(settings.PRICE_360_DAYS)}",
   "PERIOD_60_DAYS": "📅60天-{settings.format_price(settings.PRICE_60_DAYS)}",
   "PERIOD_90_DAYS": "📅90天-{settings.format_price(settings.PRICE_90_DAYS)}",
-  "POST_REGISTRATION_TRIAL_BUTTON": "🎁 免费连接",
   "PRIVACY_POLICY_EMPTY_ALERT": "隐私政策尚未填写。",
   "PRIVACY_POLICY_HEADER": "🛡️<b>隐私政策</b>",
   "PRIVACY_POLICY_NOT_AVAILABLE": "隐私政策暂时不可用。",
@@ -1824,7 +1822,7 @@
   "MAIN_MENU_TARIFF": "{icon} 「{name}」套餐",
   "MAIN_MENU_TRAFFIC_BYPASS": "📈 绕过白名单：已用 {used} / {limit} GB",
   "MAIN_MENU_TRAFFIC": "📈 流量：已用 {used} / {limit} GB",
-  "MAIN_MENU_TRIAL_HINT": "🎁 免费试用 {days}",
+  "MAIN_MENU_TRIAL_HINT": "🎁 免费 {days}，无需付款",
   "MAIN_MENU_BTN_CHOOSE_TARIFF": "选择套餐",
   "SUB_STATUS_TRIAL_EXPIRED": "🚫 <b>试用已于{end_date}结束</b>",
   "TRIAL_STARTED_TITLE": "{icon} <b>试用已开通，有效期至{end_date}</b>",
@@ -1843,5 +1841,8 @@
   "TRIAL_EXPIRED_THIRD_WAVE": "{icon} <b>首次订阅 {percent}% 折扣</b>\n试用结束已有 {days}。如果白名单又让您上不了网，欢迎回来：折扣适用于所有套餐，有效期至{expires_at}。这是最后一次此类优惠。",
   "TRIAL_DISCOUNT_CLAIM_BUTTON": "领取 {percent}% 折扣",
   "TRIAL_NOT_CONNECTED_FIRST": "{icon} <b>VPN 还没有连接</b>\n试用已经开始，有效期至{end_date}。连接通常只需几分钟：点击“连接”，按页面上的步骤操作。卡在某一步了？联系客服，我们一起解决。",
-  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>试用正在进行，但 VPN 仍未连接</b>\n免费天数到{end_date}为止，浪费了可惜。如果应用没装好，请联系我们：我们会告诉您手机或电脑上该装什么。"
+  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>试用正在进行，但 VPN 仍未连接</b>\n免费天数到{end_date}为止，浪费了可惜。如果应用没装好，请联系我们：我们会告诉您手机或电脑上该装什么。",
+  "SUB_STATUS_NEW_USER": "🌐 <b>即使在白名单限制下也能用的 VPN</b>",
+  "POST_REGISTRATION_TRIAL_DAYS_BUTTON": "免费试用 {days}",
+  "POST_REGISTRATION_TARIFFS_BUTTON": "先看看套餐"
 }

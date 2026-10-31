@@ -175,13 +175,9 @@ def test_icon_without_custom_emoji_prefixes_unicode():
     assert button.text == '🎫 Промокод'
 
 
-def test_consent_line_replaces_the_accept_screens(monkeypatch):
+def test_consent_line_replaces_the_accept_screens():
     from app.handlers.start import _with_consent_line
 
-    monkeypatch.setattr(settings, 'SKIP_RULES_ACCEPT', False)
-    assert _with_consent_line('Привет', 'ru') == 'Привет'
-
-    monkeypatch.setattr(settings, 'SKIP_RULES_ACCEPT', True)
     text = _with_consent_line('Привет', 'ru')
     assert text.startswith('Привет\n\n')
     assert 'правила' in text
