@@ -1910,5 +1910,7 @@
   "TRIAL_EXPIRED": "{icon} <b>Your free trial has ended</b>\nThe VPN is off. Choose a plan and it will work again right after payment.{keeps_setup}",
   "TRIAL_EXPIRED_SECOND_WAVE": "{icon} <b>{percent}% off your first subscription</b>\nThe trial is over, but the discount is just starting. It applies to any plan until {expires_at}.",
   "TRIAL_EXPIRED_THIRD_WAVE": "{icon} <b>{percent}% off your first subscription</b>\nIt has been {days} since your trial ended. If whitelists are getting in the way again, come back: the discount applies to any plan until {expires_at}. This is the last offer like this.",
-  "TRIAL_DISCOUNT_CLAIM_BUTTON": "Get {percent}% off"
+  "TRIAL_DISCOUNT_CLAIM_BUTTON": "Get {percent}% off",
+  "TRIAL_NOT_CONNECTED_FIRST": "{icon} <b>Your VPN is not connected yet</b>\nYour free trial is already running, until {end_date}. Connecting usually takes a couple of minutes: tap “Connect” and follow the steps on the page. Stuck on a step? Message support and we will sort it out together.",
+  "TRIAL_NOT_CONNECTED_SECOND": "{icon} <b>Your trial is running, but the VPN is still not connected</b>\nThe free days last until {end_date}, it would be a shame to waste them. If the app did not work out, message us: we will tell you what to install on your phone or computer."
 }
