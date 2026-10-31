@@ -277,9 +277,7 @@ async def show_info_menu(
 
     texts = get_texts(db_user.language)
 
-    header = texts.t('MENU_INFO_HEADER', 'ℹ️ <b>Инфо</b>')
-    prompt = texts.t('MENU_INFO_PROMPT', 'Выберите раздел:')
-    caption = f'{header}\n\n{prompt}' if prompt else header
+    caption = texts.t('MENU_INFO_HEADER', 'ℹ️ <b>Инфо</b>')
 
     privacy_enabled = await PrivacyPolicyService.is_policy_enabled(db, db_user.language)
     public_offer_enabled = await PublicOfferService.is_offer_enabled(db, db_user.language)

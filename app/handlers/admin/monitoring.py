@@ -148,8 +148,11 @@ async def _build_notification_preview_message(language: str, notification_type: 
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+    from app.keyboards.icons import STYLE_PAY, icon_button, tg_emoji
     from app.keyboards.inline import get_channel_sub_keyboard
+    from app.keyboards.main_menu import _support_button
     from app.services.channel_subscription_service import channel_subscription_service
+    from app.utils.formatters import format_human_date
 
     header = '🧪 <b>Тестовое уведомление мониторинга</b>\n\n'
 
@@ -168,41 +171,29 @@ async def _build_notification_preview_message(language: str, notification_type: 
         required_channels = await channel_subscription_service.get_required_channels()
         keyboard = get_channel_sub_keyboard(required_channels, language=language)
     elif notification_type == 'expired_1d':
-        template = texts.get(
-            'SUBSCRIPTION_EXPIRED_1D',
-            (
-                '⛔ <b>Подписка закончилась</b>\n\n'
-                'Доступ был отключён {end_date}. Продлите подписку, чтобы вернуться в сервис.'
-            ),
-        )
-        message = template.format(
-            end_date=(now - timedelta(days=1)).strftime('%d.%m.%Y %H:%M'),
-            price=price_30_days,
+        message = texts.t(
+            'SUBSCRIPTION_EXPIRED_DAY1',
+            '{icon} <b>Подписка{tariff_label} закончилась {end_date}</b>\n'
+            'VPN всё ещё выключен. Продлите, и он заработает сразу после оплаты, без новой настройки.{price_line}\n'
+            'Если что-то не устроило, напишите нам, разберёмся.',
+        ).format(
+            icon=tg_emoji('expired'),
+            tariff_label='',
+            end_date=format_human_date(now - timedelta(days=1), language),
+            price_line=' '
+            + texts.t('SUBSCRIPTION_RENEW_PRICE_LINE', 'Продление стоит {price}.').format(price=price_30_days),
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(
-                        text=strip_leading_emoji_if_custom_icon(
-                            texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
-                        ),
+                    icon_button(
+                        'renew',
+                        texts.t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
                         callback_data='subscription_extend',
-                        style='success',
-                        icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
+                        style=STYLE_PAY,
                     )
                 ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('BALANCE_TOPUP', '💳 Пополнить баланс'),
-                        callback_data='balance_topup',
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('SUPPORT_BUTTON', '🆘 Поддержка'),
-                        callback_data='menu_support',
-                    )
-                ],
+                [_support_button(texts)],
             ]
         )
     elif notification_type == 'expired_2d':

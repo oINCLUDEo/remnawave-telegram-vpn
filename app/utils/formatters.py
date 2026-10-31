@@ -232,6 +232,20 @@ def format_devices_count(count: int, language: str = 'ru') -> str:
     return f'{count} {_slavic_plural(count, "устройство", "устройства", "устройств")}'
 
 
+def format_friends_count(count: int, language: str = 'ru') -> str:
+    """Friends as the object of «привели»: «1 друга», «3 друга», «5 друзей»; "2 friends"."""
+    language_code = (language or 'ru').split('-')[0].lower()
+    if language_code in {'ua', 'uk'}:
+        return f'{count} {_slavic_plural(count, "друга", "друзів", "друзів")}'
+    if language_code == 'zh':
+        return f'{count} 位朋友'
+    if language_code == 'fa':
+        return f'{count} دوست'
+    if language_code != 'ru':
+        return f'{count} friend{"s" if count != 1 else ""}'
+    return f'{count} {_slavic_plural(count, "друга", "друга", "друзей")}'
+
+
 def format_duration(seconds: int) -> str:
     if seconds < 60:
         return f'{seconds} сек.'

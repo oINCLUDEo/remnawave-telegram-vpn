@@ -475,7 +475,7 @@ class MonitoringService:
                         await self._send_trial_expired_notification(user, subscription)
                     else:
                         await self._send_subscription_expired_notification(
-                            user, subscription, tariff_name=_tariff_name
+                            user, subscription, tariff_name=_tariff_name, db=db
                         )
 
                 logger.info(
@@ -1307,7 +1307,7 @@ class MonitoringService:
                 # пришёл в момент окончания, а повтор без скидки ничего не добавляет.
                 if not is_trial and NotificationSettingsService.is_expired_1d_enabled() and 1 <= days_since < 2:
                     if not await notification_sent(db, user.id, subscription.id, 'expired_1d'):
-                        success = await self._send_expired_day1_notification(user, subscription)
+                        success = await self._send_expired_day1_notification(db, user, subscription)
                         if success:
                             await record_notification(db, user.id, subscription.id, 'expired_1d')
                             sent_day1 += 1
@@ -1690,46 +1690,81 @@ class MonitoringService:
         except Exception as e:
             logger.error('Ошибка обработки автоплатежей', error=e)
 
-    async def _send_subscription_expired_notification(
-        self, user: User, subscription: Subscription, *, tariff_name: str | None = None
-    ) -> bool:
+    async def _renewal_price_line(self, db: AsyncSession | None, user: User, subscription: Subscription, texts) -> str:
+        """« Продление стоит 149 ₽.» with the user's own tariff and discounts; empty when unknown."""
+        if db is None:
+            return ''
         try:
+            from app.utils.subscription_utils import get_renewal_price
+
+            fresh_user = await get_user_by_id(db, user.id) or user
+            price = await get_renewal_price(db, subscription, fresh_user)
+        except Exception as error:
+            logger.warning('Не удалось узнать цену продления', subscription_id=subscription.id, error=error)
+            return ''
+        if not price:
+            return ''
+        return ' ' + texts.t('SUBSCRIPTION_RENEW_PRICE_LINE', 'Продление стоит {price}.').format(
+            price=settings.format_price(price)
+        )
+
+    def _renew_keyboard(self, texts, subscription: Subscription, *, with_support: bool = False):
+        """«Продлить подписку» (and «Поддержка»): the renewal flow itself offers payment methods if money is short."""
+        from aiogram.types import InlineKeyboardMarkup
+
+        from app.keyboards.icons import icon_button
+
+        extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+        rows = [
+            [
+                icon_button(
+                    'renew',
+                    texts.t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
+                    callback_data=extend_callback,
+                    style=STYLE_PAY,
+                )
+            ]
+        ]
+        if with_support:
+            from app.keyboards.main_menu import _is_support_enabled, _support_button
+
+            if _is_support_enabled():
+                rows.append([_support_button(texts)])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    async def _send_subscription_expired_notification(
+        self,
+        user: User,
+        subscription: Subscription,
+        *,
+        tariff_name: str | None = None,
+        db: AsyncSession | None = None,
+    ) -> bool:
+        """«Подписка закончилась»: what happened, what renewal costs, one button. Quiet at night."""
+        try:
+            texts = get_texts(user.language)
             tariff_label = ''
             if settings.is_multi_tariff_enabled():
-                if tariff_name:
-                    tariff_label = f' «{tariff_name}»'
-                elif hasattr(subscription, 'tariff') and subscription.tariff:
-                    tariff_label = f' «{subscription.tariff.name}»'
-            message = f"""
-⛔ <b>Подписка{tariff_label} истекла</b>
-
-Ваша подписка истекла. Для восстановления доступа продлите подписку.
-
-🔧 Доступ к серверам заблокирован до продления.
-"""
-
-            from aiogram.types import InlineKeyboardMarkup
-
-            extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        build_miniapp_or_callback_button(
-                            text='Продлить подписку',
-                            callback_data=extend_callback,
-                            style='success',
-                            icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
-                        )
-                    ],
-                    [build_miniapp_or_callback_button(text='💳 Пополнить баланс', callback_data='balance_topup')],
-                ]
+                name = tariff_name or (subscription.tariff.name if getattr(subscription, 'tariff', None) else None)
+                if name:
+                    tariff_label = f' «{html.escape(name)}»'
+            message = texts.t(
+                'SUBSCRIPTION_ENDED',
+                '{icon} <b>Подписка{tariff_label} закончилась</b>\n'
+                'VPN выключен. Продлите, и он заработает сразу после оплаты, переподключаться не придётся.'
+                '{price_line}',
+            ).format(
+                icon=tg_emoji('expired'),
+                tariff_label=tariff_label,
+                price_line=await self._renewal_price_line(db, user, subscription, texts),
             )
 
             sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
-                reply_markup=keyboard,
+                reply_markup=self._renew_keyboard(texts, subscription),
+                disable_notification=is_quiet_hours(),
             )
             await self._replace_renewal_reminder(user, subscription, sent)
             return True
@@ -2162,60 +2197,28 @@ class MonitoringService:
             )
             return False
 
-    async def _send_expired_day1_notification(self, user: User, subscription: Subscription) -> bool:
+    async def _send_expired_day1_notification(self, db: AsyncSession, user: User, subscription: Subscription) -> bool:
+        """A day after a paid subscription ended: the price of the user's own tariff and a way to ask for help."""
         try:
             texts = get_texts(user.language)
-            tariff_label = ''
-            if settings.is_multi_tariff_enabled() and hasattr(subscription, 'tariff') and subscription.tariff:
-                tariff_label = f' «{subscription.tariff.name}»'
-            template = texts.get(
-                'SUBSCRIPTION_EXPIRED_1D',
-                (
-                    '⛔ <b>Подписка{tariff_label} закончилась</b>\n\n'
-                    'Доступ был отключён {end_date}. Продлите подписку, чтобы вернуться в сервис.'
-                ),
-            )
-            message = template.format(
-                end_date=format_local_datetime(subscription.end_date, '%d.%m.%Y %H:%M'),
-                price=settings.format_price(settings.PRICE_30_DAYS),
-                tariff_label=tariff_label,
-            )
-
-            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-            extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        build_miniapp_or_callback_button(
-                            text=strip_leading_emoji_if_custom_icon(
-                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
-                            ),
-                            callback_data=extend_callback,
-                            style='success',
-                            icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
-                        )
-                    ],
-                    [
-                        build_miniapp_or_callback_button(
-                            text=texts.t('BALANCE_TOPUP', '💳 Пополнить баланс'),
-                            callback_data='balance_topup',
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('SUPPORT_BUTTON', '🆘 Поддержка'), callback_data='menu_support'
-                        )
-                    ],
-                ]
+            message = texts.t(
+                'SUBSCRIPTION_EXPIRED_DAY1',
+                '{icon} <b>Подписка{tariff_label} закончилась {end_date}</b>\n'
+                'VPN всё ещё выключен. Продлите, и он заработает сразу после оплаты, без новой настройки.{price_line}\n'
+                'Если что-то не устроило, напишите нам, разберёмся.',
+            ).format(
+                icon=tg_emoji('expired'),
+                tariff_label=self._tariff_suffix(subscription),
+                end_date=format_human_date(subscription.end_date, user.language),
+                price_line=await self._renewal_price_line(db, user, subscription, texts),
             )
 
             sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
-                reply_markup=keyboard,
+                reply_markup=self._renew_keyboard(texts, subscription, with_support=True),
+                disable_notification=is_quiet_hours(),
             )
             await self._replace_renewal_reminder(user, subscription, sent)
             return True
