@@ -256,7 +256,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     elif subscription.status == 'active' and subscription.end_date > current_time:
         if subscription.is_trial:
             actual_status = 'trial_active'
-            status_display = texts.t('SUBSCRIPTION_STATUS_TRIAL', 'Пробный период')
+            status_display = texts.t('SUBSCRIPTION_STATUS_TRIAL', 'Бесплатная подписка')
             status_emoji = tg_emoji('trial')
         else:
             actual_status = 'paid_active'
@@ -299,7 +299,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
         status_emoji = '⚠️'
 
     subscription_type = (
-        texts.t('SUBSCRIPTION_TYPE_TRIAL', 'Пробный период')
+        texts.t('SUBSCRIPTION_TYPE_TRIAL', 'Бесплатная')
         if subscription.is_trial
         else texts.t('SUBSCRIPTION_TYPE_PAID', 'Платная')
     )
@@ -668,7 +668,7 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
     # Проверяем, отключён ли триал для этого типа пользователя
     if settings.is_trial_disabled_for_user(getattr(db_user, 'auth_type', 'telegram')):
         await callback.message.edit_text(
-            texts.t('TRIAL_DISABLED_FOR_USER_TYPE', 'Пробный период недоступен'),
+            texts.t('TRIAL_DISABLED_FOR_USER_TYPE', 'Бесплатная подписка недоступна'),
             reply_markup=get_back_keyboard(db_user.language),
         )
         await callback.answer()
@@ -870,7 +870,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
     # Проверяем, отключён ли триал для этого типа пользователя
     if settings.is_trial_disabled_for_user(getattr(db_user, 'auth_type', 'telegram')):
         await callback.message.edit_text(
-            texts.t('TRIAL_DISABLED_FOR_USER_TYPE', 'Пробный период недоступен'),
+            texts.t('TRIAL_DISABLED_FOR_USER_TYPE', 'Бесплатная подписка недоступна'),
             reply_markup=get_back_keyboard(db_user.language),
         )
         await callback.answer()
@@ -3311,7 +3311,7 @@ def _trial_started_text(texts, subscription: Subscription, charged_amount: int =
     from .tariff_purchase import _tariff_devices
 
     language = texts.language
-    title = texts.t('TRIAL_STARTED_TITLE', '{icon} <b>Пробный период включён до {end_date}</b>').format(
+    title = texts.t('TRIAL_STARTED_TITLE', '{icon} <b>Бесплатная подписка включена до {end_date}</b>').format(
         icon=tg_emoji('trial'),
         end_date=format_human_date(subscription.end_date, language),
     )

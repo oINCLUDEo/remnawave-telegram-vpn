@@ -55,12 +55,12 @@ def build_referral_share_url(texts, referral_link: str | None) -> str | None:
 
 
 def _referral_exchange_text(texts, db_user: User) -> str:
-    """What the friend gets and what the user gets, in two sentences, from the real settings."""
+    """What the friend gets and what the user gets, one short line each, from the real settings."""
     friend = ''
     if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
         friend = texts.t(
             'REFERRAL_EXCHANGE_FRIEND',
-            'Друг получит {bonus} на баланс, когда впервые пополнит его от {minimum}.',
+            '🎁 Другу: {bonus} к первому пополнению от {minimum}',
         ).format(
             bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
             minimum=texts.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS),
@@ -86,15 +86,17 @@ def _referral_exchange_text(texts, db_user: User) -> str:
                 texts.t('REFERRAL_EXCHANGE_COMMISSION', '{percent}% со всех его оплат').format(percent=percent)
             )
 
-    you = ''
+    lines = [friend] if friend else []
     if rewards:
-        you = texts.t(
-            'REFERRAL_EXCHANGE_YOU',
-            'Вы получите {rewards}. Деньги приходят на баланс, ими можно оплатить свою подписку.',
-        ).format(rewards=texts.t('REFERRAL_EXCHANGE_AND', ' и ').join(rewards))
-
-    exchange = ' '.join(part for part in (friend, you) if part)
-    return exchange or texts.t('REFERRAL_EXCHANGE_NONE', 'Поделитесь ссылкой с теми, кому тоже нужен рабочий VPN.')
+        lines.append(
+            texts.t('REFERRAL_EXCHANGE_YOU', '💰 Вам: {rewards}').format(
+                rewards=texts.t('REFERRAL_EXCHANGE_AND', ' и ').join(rewards)
+            )
+        )
+        lines.append(texts.t('REFERRAL_EXCHANGE_SPEND', '🪙 Бонусами можно оплатить свою подписку'))
+    if not lines:
+        return texts.t('REFERRAL_EXCHANGE_NONE', 'Поделитесь ссылкой с теми, кому тоже нужен рабочий VPN.')
+    return '\n'.join(lines)
 
 
 async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
@@ -116,8 +118,10 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
     bot_referral_link = settings.get_bot_referral_link(db_user.referral_code, bot_username)
     cabinet_referral_link = settings.get_cabinet_referral_link(db_user.referral_code)
 
+    # Short blocks with air between them: what you get, your progress, your links.
     lines = [
         texts.t('REFERRAL_PROGRAM_TITLE', '🤝 <b>Пригласить друга</b>'),
+        '',
         _referral_exchange_text(texts, db_user),
     ]
 
@@ -133,13 +137,13 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
             progress = texts.t('REFERRAL_PROGRESS', '👥 Вы уже привели {friends}.').format(friends=friends)
         lines.append('\n' + progress)
 
-    link_block = texts.t('REFERRAL_LINK_TITLE', '🔗 Ваша ссылка, нажмите, чтобы скопировать:') + (
+    link_block = texts.t('REFERRAL_LINK_TITLE', '🔗 <b>Ссылка в бот</b>, нажмите, чтобы скопировать') + (
         f'\n<code>{html_escape(bot_referral_link)}</code>'
     )
     if cabinet_referral_link:
         link_block += (
             '\n\n'
-            + texts.t('REFERRAL_CABINET_LINK_TITLE', '🌐 <b>Ссылка на кабинет:</b>')
+            + texts.t('REFERRAL_CABINET_LINK_TITLE', '🌐 <b>Ссылка на сайт</b>')
             + f'\n<code>{html_escape(cabinet_referral_link)}</code>'
         )
     lines.append('\n' + link_block)
