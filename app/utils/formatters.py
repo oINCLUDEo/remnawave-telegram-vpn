@@ -161,31 +161,91 @@ def format_human_date(dt: datetime | None, language: str = 'ru') -> str:
     return f'{text} {local.year}' if show_year else text
 
 
-_TODAY_TOMORROW = {
-    'ru': ('сегодня в {time}', 'завтра в {time}'),
-    'ua': ('сьогодні о {time}', 'завтра о {time}'),
-    'en': ('today at {time}', 'tomorrow at {time}'),
-    'zh': ('今天 {time}', '明天 {time}'),
-    'fa': ('امروز ساعت {time}', 'فردا ساعت {time}'),
-}
+def _hours_phrase(hours: int, language: str, *, valid: bool) -> str:
+    """«через 5 часов» / «ещё 5 часов» in the person's language; *hours* < 1 means «less than an hour»."""
+    if language in {'ua', 'uk'}:
+        if hours < 1:
+            return 'ще менше години' if valid else 'менш ніж за годину'
+        if hours == 1:
+            return 'ще годину' if valid else 'через годину'
+        word = _slavic_plural(hours, 'годину', 'години', 'годин')
+        return f'ще {hours} {word}' if valid else f'через {hours} {word}'
+    if language == 'zh':
+        if hours < 1:
+            return '还剩不到 1 小时' if valid else '不到 1 小时后'
+        return f'还剩 {hours} 小时' if valid else f'{hours} 小时后'
+    if language == 'fa':
+        if hours < 1:
+            return 'تا کمتر از یک ساعت دیگر' if valid else 'کمتر از یک ساعت دیگر'
+        return f'تا {hours} ساعت دیگر' if valid else f'{hours} ساعت دیگر'
+    if language == 'en':
+        if hours < 1:
+            return 'for less than an hour' if valid else 'in less than an hour'
+        unit = 'hour' if hours == 1 else 'hours'
+        return f'for {hours} more {unit}' if valid else f'in {hours} {unit}'
+    if hours < 1:
+        return 'ещё меньше часа' if valid else 'меньше чем через час'
+    if hours == 1:
+        return 'ещё час' if valid else 'через час'
+    word = _slavic_plural(hours, 'час', 'часа', 'часов')
+    return f'ещё {hours} {word}' if valid else f'через {hours} {word}'
 
 
-def format_deadline(dt: datetime | None, language: str = 'ru') -> str:
-    """«сегодня в 18:00» or «завтра в 18:00» when that close, otherwise «20 ноября»."""
-    from app.utils.timezone import to_local_datetime
+def _days_phrase(days: int, language: str, *, valid: bool) -> str:
+    """«через 3 дня» / «ещё 3 дня»."""
+    count = format_days_declension(days, language)
+    if language in {'ua', 'uk'}:
+        return f'ще {count}' if valid else f'через {count}'
+    if language == 'zh':
+        return f'还剩 {count}' if valid else f'{count}后'
+    if language == 'fa':
+        return f'تا {count} دیگر' if valid else f'{count} دیگر'
+    if language == 'en':
+        return f'for {days} more day{"s" if days != 1 else ""}' if valid else f'in {count}'
+    return f'ещё {count}' if valid else f'через {count}'
 
-    local = to_local_datetime(dt)
-    if local is None:
+
+def _relative_deadline(dt: datetime | None, language: str, *, valid: bool) -> str:
+    if dt is None:
         return ''
     language_code = (language or 'ru').split('-')[0].lower()
     if language_code == 'uk':
         language_code = 'ua'
-    today = to_local_datetime(datetime.now(UTC)).date()
-    days_ahead = (local.date() - today).days
-    if days_ahead in (0, 1):
-        template = _TODAY_TOMORROW.get(language_code, _TODAY_TOMORROW['ru'])[days_ahead]
-        return template.format(time=local.strftime('%H:%M'))
-    return format_human_date(dt, language)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    seconds = (dt - datetime.now(UTC)).total_seconds()
+    hours = int(round(seconds / 3600))
+    if hours < 48:
+        return _hours_phrase(max(hours, 0), language_code, valid=valid)
+    days = int(round(seconds / 86400))
+    if days < 7:
+        return _days_phrase(days, language_code, valid=valid)
+    date = format_human_date(dt, language_code)
+    if not valid:
+        return {'en': f'on {date}'}.get(language_code, date)
+    return {
+        'en': f'until {date}',
+        'zh': f'至{date}',
+        'fa': f'تا {date}',
+    }.get(language_code, f'до {date}')
+
+
+def format_time_left(dt: datetime | None, language: str = 'ru') -> str:
+    """When something ends, without clock time: «через 5 часов», «через 3 дня», «20 ноября».
+
+    The bot does not know the person's time zone, so «завтра в 18:00» can be
+    wrong by hours, while a count of hours is right everywhere. Fits
+    «закончится {…}».
+    """
+    return _relative_deadline(dt, language, valid=False)
+
+
+def format_valid_for(dt: datetime | None, language: str = 'ru') -> str:
+    """How long something lasts, without clock time: «ещё 5 часов», «ещё 3 дня», «до 20 ноября».
+
+    Fits «скидка действует {…}».
+    """
+    return _relative_deadline(dt, language, valid=True)
 
 
 def format_days_declension(days: int, language: str = 'ru') -> str:

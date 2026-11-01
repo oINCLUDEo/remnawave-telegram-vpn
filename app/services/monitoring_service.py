@@ -70,7 +70,7 @@ from app.utils.subscription_utils import (
     autopay_days_before,
     resolve_hwid_device_limit_for_payload,
 )
-from app.utils.timezone import format_local_datetime, is_quiet_hours, quiet_hours_end
+from app.utils.timezone import is_quiet_hours, quiet_hours_end
 
 
 # Сообщение о неудачном автопродлении приходит не больше трёх раз за одно продление:
@@ -916,27 +916,30 @@ class MonitoringService:
             from aiogram.types import InlineKeyboardMarkup
 
             from app.keyboards.main_menu import _is_support_enabled, _support_button, connect_button
-            from app.utils.formatters import format_human_date
+            from app.utils.formatters import format_human_date, format_valid_for
 
             texts = get_texts(user.language)
-            end_date = format_human_date(subscription.end_date, user.language)
             if stage == 1:
                 message = texts.t(
                     'TRIAL_NOT_CONNECTED_FIRST',
                     '{icon} <b>VPN ещё не подключён</b>\n'
-                    'Пробный период уже идёт, до {end_date}. Обычно подключение занимает пару минут: '
+                    'Бесплатная подписка уже включена и действует {left}. Обычно подключение занимает пару минут: '
                     'нажмите «Подключиться» и следуйте шагам на странице. '
                     'Застряли на каком-то шаге? Напишите в поддержку, разберёмся вместе.',
                 )
             else:
                 message = texts.t(
                     'TRIAL_NOT_CONNECTED_SECOND',
-                    '{icon} <b>Пробный период идёт, а VPN так и не подключён</b>\n'
-                    'Бесплатные дни идут до {end_date}, жалко их терять. '
+                    '{icon} <b>VPN так и не подключён</b>\n'
+                    'Бесплатная подписка действует {left}, жалко терять эти дни. '
                     'Если не получилось с приложением, напишите нам: подскажем, что поставить '
                     'на ваш телефон или компьютер.',
                 )
-            message = message.format(icon=tg_emoji('connect'), end_date=end_date)
+            message = message.format(
+                icon=tg_emoji('connect'),
+                left=format_valid_for(subscription.end_date, user.language),
+                end_date=format_human_date(subscription.end_date, user.language),
+            )
 
             rows = [[connect_button(texts, subscription)]]
             if _is_support_enabled():
@@ -1808,7 +1811,7 @@ class MonitoringService:
             from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
             from app.keyboards.icons import icon_button
-            from app.utils.formatters import format_deadline
+            from app.utils.formatters import format_time_left
             from app.utils.subscription_utils import autopay_renewal_date, get_renewal_price
 
             texts = get_texts(user.language)
@@ -1868,7 +1871,7 @@ class MonitoringService:
                 ).format(
                     icon=tg_emoji('warning'),
                     tariff_label=tariff_label,
-                    end_date=format_deadline(subscription.end_date, user.language),
+                    end_date=format_time_left(subscription.end_date, user.language),
                 )
                 extend_callback = (
                     f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
@@ -2021,23 +2024,23 @@ class MonitoringService:
         return offer, rows
 
     async def _send_trial_ending_notification(self, db: AsyncSession, user: User, subscription: Subscription) -> bool:
-        """«Пробный период закончится завтра в 18:40», what happens then, and the tariff to buy with its price."""
+        """«Бесплатная подписка закончится через 23 часа», what happens then, and the tariff to buy with its price."""
         try:
             from aiogram.types import InlineKeyboardMarkup
 
-            from app.utils.formatters import format_deadline
+            from app.utils.formatters import format_time_left
 
             texts = get_texts(user.language)
             offer, rows = await self._trial_offer(db, user, texts)
 
             message = texts.t(
                 'TRIAL_ENDS_SOON',
-                '{icon} <b>Пробный период закончится {end_date}</b>\n'
-                'Дальше VPN выключится. Если он вам пригодился, оформите подписку сейчас, '
-                'и он продолжит работать без перерыва.{keeps_setup}',
+                '{icon} <b>Бесплатная подписка закончится {end_date}</b>\n'
+                'Потом VPN выключится. Если он пригодился, оформите подписку сейчас, '
+                'и всё продолжит работать без перерыва.{keeps_setup}',
             ).format(
                 icon=tg_emoji('warning'),
-                end_date=format_deadline(subscription.end_date, user.language),
+                end_date=format_time_left(subscription.end_date, user.language),
                 keeps_setup=self._trial_keeps_setup_note(texts),
             )
             if offer:
@@ -2091,7 +2094,7 @@ class MonitoringService:
             texts = get_texts(user.language)
             message = texts.t(
                 'TRIAL_EXPIRED',
-                '{icon} <b>Пробный период закончился</b>\n'
+                '{icon} <b>Бесплатная подписка закончилась</b>\n'
                 'VPN выключен. Выберите тариф, и он заработает сразу после оплаты.{keeps_setup}',
             ).format(icon=tg_emoji('expired'), keeps_setup=self._trial_keeps_setup_note(texts))
             keyboard = InlineKeyboardMarkup(
@@ -2259,6 +2262,8 @@ class MonitoringService:
             return await self._send_trial_discount_notification(
                 user, subscription, percent, expires_at, offer_id, wave, trigger_days
             )
+        from app.utils.formatters import format_days_declension, format_valid_for
+
         try:
             texts = get_texts(user.language)
 
@@ -2270,25 +2275,26 @@ class MonitoringService:
                 template = texts.get(
                     'SUBSCRIPTION_EXPIRED_SECOND_WAVE',
                     (
-                        '🔥 <b>Скидка {percent}% на продление{tariff_label}</b>\n\n'
-                        'Активируйте предложение, чтобы получить дополнительную скидку. '
-                        'Она суммируется с вашей промогруппой и действует до {expires_at}.'
+                        '🔥 <b>Скидка {percent}% на продление{tariff_label}</b>\n'
+                        'Добавляется к вашей обычной скидке и действует {expires_at}. '
+                        'Нажмите кнопку, чтобы её получить.'
                     ),
                 )
             else:
                 template = texts.get(
                     'SUBSCRIPTION_EXPIRED_THIRD_WAVE',
                     (
-                        '🎁 <b>Индивидуальная скидка {percent}%{tariff_label}</b>\n\n'
-                        'Прошло {trigger_days} дней без подписки — возвращайтесь и активируйте дополнительную скидку. '
-                        'Она суммируется с промогруппой и действует до {expires_at}.'
+                        '🎁 <b>Скидка {percent}% на продление{tariff_label}</b>\n'
+                        'VPN не работает уже {days}. Если хотите вернуться, скидка добавится к вашей обычной '
+                        'и действует {expires_at}. Это последнее такое предложение.'
                     ),
                 )
 
             message = template.format(
                 percent=percent,
-                expires_at=format_local_datetime(expires_at, '%d.%m.%Y %H:%M'),
+                expires_at=format_valid_for(expires_at, user.language),
                 trigger_days=trigger_days or '',
+                days=format_days_declension(trigger_days or 0, user.language),
                 tariff_label=tariff_label,
             )
 
@@ -2367,27 +2373,27 @@ class MonitoringService:
             from aiogram.types import InlineKeyboardMarkup
 
             from app.keyboards.icons import icon_button
-            from app.utils.formatters import format_days_declension, format_deadline
+            from app.utils.formatters import format_days_declension, format_valid_for
 
             texts = get_texts(user.language)
             if wave == 'second':
                 template = texts.t(
                     'TRIAL_EXPIRED_SECOND_WAVE',
-                    '{icon} <b>Скидка {percent}% на первую подписку</b>\n'
-                    'Пробный период закончился, а скидка только началась. Она действует до {expires_at}: '
-                    'нажмите «Получить скидку», и она применится при оплате.',
+                    '{icon} <b>Скидка {percent}% на первую оплату</b>\n'
+                    'Бесплатная подписка закончилась, а скидка только началась. '
+                    'Действует на любой тариф {expires_at}.',
                 )
             else:
                 template = texts.t(
                     'TRIAL_EXPIRED_THIRD_WAVE',
-                    '{icon} <b>Скидка {percent}% на первую подписку</b>\n'
-                    'Прошло {days} без VPN. Если белые списки снова мешают, возвращайтесь: '
-                    'скидка действует до {expires_at}, больше таких предложений не будет.',
+                    '{icon} <b>Скидка {percent}% на первую оплату</b>\n'
+                    'С конца бесплатной подписки прошло {days}. Если белые списки снова мешают, возвращайтесь: '
+                    'скидка действует на любой тариф {expires_at}. Это последнее такое предложение.',
                 )
             message = template.format(
                 icon=tg_emoji('trial'),
                 percent=percent,
-                expires_at=format_deadline(expires_at, user.language),
+                expires_at=format_valid_for(expires_at, user.language),
                 days=format_days_declension(trigger_days or 0, user.language),
             )
             keyboard = InlineKeyboardMarkup(

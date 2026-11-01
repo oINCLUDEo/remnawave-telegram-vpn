@@ -30,7 +30,13 @@ from app.services.main_menu_button_service import MainMenuButtonService
 from app.services.privacy_policy_service import PrivacyPolicyService
 from app.services.public_offer_service import PublicOfferService
 from app.services.support_settings_service import SupportSettingsService
-from app.utils.formatters import format_days_declension, format_devices_count, format_human_date
+from app.utils.formatters import (
+    format_days_declension,
+    format_devices_count,
+    format_human_date,
+    format_time_left,
+    format_valid_for,
+)
 from app.utils.photo_message import edit_or_answer_photo
 from app.utils.pricing_utils import format_period_description
 from app.utils.promo_offer import (
@@ -1053,11 +1059,10 @@ def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | N
     granted_at = getattr(subscription, 'reserve_access_granted_at', None)
     if granted_at:
         grace_expire_at = granted_at + timedelta(days=settings.RESERVE_GRACE_DAYS)
-        end_date_text = format_local_datetime(grace_expire_at, '%d.%m.%Y %H:%M')
         return texts.t(
             'SUB_STATUS_RESERVE_GRACE',
-            '⚠️ <b>Подписка закончилась</b>\nВременный доступ до {end_date}',
-        ).format(end_date=end_date_text or '—')
+            '⚠️ <b>Подписка закончилась</b>\nВременный доступ действует {left}',
+        ).format(left=format_valid_for(grace_expire_at, texts.language) or '—')
 
     current_time = datetime.now(UTC)
     actual_status = (subscription.actual_status or '').lower()
@@ -1090,7 +1095,7 @@ def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | N
         if getattr(subscription, 'is_trial', False):
             headline = texts.t(
                 'SUB_STATUS_TRIAL_EXPIRED',
-                '🚫 <b>Пробный период закончился {end_date}</b>',
+                '🚫 <b>Бесплатная подписка закончилась {end_date}</b>',
             ).format(end_date=end_date_text or '—')
             return _status_card(headline)
         headline = texts.t(
@@ -1105,12 +1110,12 @@ def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | N
 
     if is_trial_like_status:
         if days_left > 1 and end_date_text:
-            headline = texts.t('SUB_STATUS_TRIAL_ACTIVE', '🎁 <b>Пробный период</b>')
+            headline = texts.t('SUB_STATUS_TRIAL_ACTIVE', '🎁 <b>Бесплатная подписка</b>')
             return _status_card(headline, period, plan_line, traffic_line)
-        if days_left == 1:
-            headline = texts.t('SUB_STATUS_TRIAL_TOMORROW', '⚠️ <b>Пробный период закончится завтра</b>')
-            return _status_card(headline, plan_line, traffic_line)
-        headline = texts.t('SUB_STATUS_TRIAL_TODAY', '⚠️ <b>Пробный период закончится сегодня</b>')
+        # Hours, not «завтра»/«сегодня»: the bot does not know the person's time zone.
+        headline = texts.t('SUB_STATUS_TRIAL_ENDS_IN', '⚠️ <b>Бесплатная подписка закончится {when}</b>').format(
+            when=format_time_left(subscription.end_date, texts.language)
+        )
         return _status_card(headline, plan_line, traffic_line)
 
     if actual_status == 'active':
@@ -1128,10 +1133,9 @@ def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | N
                 '⚠️ <b>Подписка закончится через {days}</b>',
             ).format(days=days_text)
             return _status_card(headline, until, plan_line, traffic_line)
-        if days_left == 1:
-            headline = texts.t('SUB_STATUS_ACTIVE_TOMORROW', '⚠️ <b>Подписка закончится завтра</b>')
-            return _status_card(headline, plan_line, traffic_line)
-        headline = texts.t('SUB_STATUS_ACTIVE_TODAY', '⚠️ <b>Подписка закончится сегодня</b>')
+        headline = texts.t('SUB_STATUS_ACTIVE_ENDS_IN', '⚠️ <b>Подписка закончится {when}</b>').format(
+            when=format_time_left(subscription.end_date, texts.language)
+        )
         return _status_card(headline, plan_line, traffic_line)
 
     return texts.t('SUB_STATUS_UNKNOWN', '❓ Неизвестно')

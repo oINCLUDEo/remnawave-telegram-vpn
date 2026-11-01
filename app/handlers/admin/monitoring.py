@@ -152,7 +152,7 @@ async def _build_notification_preview_message(language: str, notification_type: 
     from app.keyboards.inline import get_channel_sub_keyboard
     from app.keyboards.main_menu import _support_button
     from app.services.channel_subscription_service import channel_subscription_service
-    from app.utils.formatters import format_human_date
+    from app.utils.formatters import format_days_declension, format_human_date, format_valid_for
 
     header = '🧪 <b>Тестовое уведомление мониторинга</b>\n\n'
 
@@ -209,8 +209,10 @@ async def _build_notification_preview_message(language: str, notification_type: 
         )
         message = template.format(
             percent=percent,
-            expires_at=(now + timedelta(hours=valid_hours)).strftime('%d.%m.%Y %H:%M'),
+            expires_at=format_valid_for(now + timedelta(hours=valid_hours), language),
             trigger_days=3,
+            days=format_days_declension(3, language),
+            tariff_label='',
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -259,7 +261,9 @@ async def _build_notification_preview_message(language: str, notification_type: 
         message = template.format(
             percent=percent,
             trigger_days=trigger_days,
-            expires_at=(now + timedelta(hours=valid_hours)).strftime('%d.%m.%Y %H:%M'),
+            days=format_days_declension(trigger_days, language),
+            expires_at=format_valid_for(now + timedelta(hours=valid_hours), language),
+            tariff_label='',
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

@@ -728,12 +728,14 @@ class SubscriptionService:
         from app.bot_factory import create_bot
         from app.utils.miniapp_buttons import strip_leading_emoji_if_custom_icon
 
+        from app.utils.formatters import format_valid_for
+
         message = (
-            '🔌 <b>Временный доступ к VPN</b>\n\n'
-            'Ваша подписка истекла, но мы включили временный резервный доступ '
-            f'до {grace_expire_at.strftime("%d.%m.%Y %H:%M")}, чтобы вы могли продлить подписку.\n\n'
-            f'Лимит трафика на это время: {settings.RESERVE_GRACE_TRAFFIC_GB} ГБ.\n'
-            'После истечения срока или лимита трафика доступ будет отключён.'
+            '🔌 <b>Временный доступ к VPN</b>\n'
+            f'Подписка закончилась, но резервный доступ работает {format_valid_for(grace_expire_at)}, '
+            'чтобы вы успели продлить подписку.\n'
+            f'На это время доступно {settings.RESERVE_GRACE_TRAFFIC_GB} ГБ трафика. '
+            'Когда время или трафик закончатся, VPN выключится.'
         )
 
         extend_icon = ICONS['renew'].custom_emoji_id
