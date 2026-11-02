@@ -260,10 +260,11 @@ async def process_referral_registration(db: AsyncSession, new_user_id: int, refe
             if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
                 referral_notification = friend_texts.t(
                     'REFERRAL_WELCOME_BONUS',
-                    '🎁 <b>Приглашение от {name}</b>\nПополните баланс от {min}, и мы добавим {bonus} в подарок.',
+                    '🎁 <b>Приглашение от друга: {name}</b>\n'
+                    'Пополните баланс от {min}, и мы добавим {bonus} в подарок.',
                 )
             else:
-                referral_notification = friend_texts.t('REFERRAL_WELCOME', '🤝 <b>Приглашение от {name}</b>')
+                referral_notification = friend_texts.t('REFERRAL_WELCOME', '🤝 <b>Приглашение от друга: {name}</b>')
             referral_notification = referral_notification.format(
                 name=html.escape(referrer.full_name or ''),
                 min=minimum,
