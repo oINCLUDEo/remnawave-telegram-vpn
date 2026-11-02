@@ -18,6 +18,7 @@ from app.database.database import AsyncSessionLocal
 from app.database.models import ContestTemplate, SubscriptionStatus, User
 from app.services.contests.enums import GameType, PrizeType
 from app.services.contests.games import get_game_strategy
+from app.utils.formatters import format_days_declension
 
 
 logger = structlog.get_logger(__name__)
@@ -269,10 +270,10 @@ class ContestRotationService:
         prize_type = tpl.prize_type or PrizeType.DAYS.value
         prize_value = tpl.prize_value or '1'
 
-        if prize_type == PrizeType.DAYS.value:
-            prize_display = f'{prize_value} {texts.t("DAYS", "дн. подписки")}'
-        elif prize_type == PrizeType.BALANCE.value:
-            prize_display = f'{prize_value} коп.'
+        if prize_type == PrizeType.DAYS.value and str(prize_value).isdigit():
+            prize_display = f'{format_days_declension(int(prize_value), "ru")} подписки'
+        elif prize_type == PrizeType.BALANCE.value and str(prize_value).isdigit():
+            prize_display = settings.format_price(int(prize_value))
         elif prize_type == PrizeType.CUSTOM.value:
             prize_display = prize_value
         else:

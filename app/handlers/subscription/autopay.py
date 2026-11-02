@@ -263,8 +263,7 @@ async def handle_unlink_card(callback: types.CallbackQuery, db_user: User, db: A
     if len(cards) == 1:
         text += texts.t(
             'SAVED_CARDS_LAST_CARD_WARNING',
-            '\n\n⚠️ <b>Внимание:</b> это ваша последняя привязанная карта. '
-            'После отвязки автоплатеж не сможет списывать средства.',
+            '\n\n⚠️ Это ваша последняя привязанная карта. Без неё автоплатёж не сможет продлевать подписку.',
         )
 
     await callback.message.edit_text(

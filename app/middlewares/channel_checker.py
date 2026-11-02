@@ -191,7 +191,7 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                 await event.answer(
                     texts.t(
                         'CHANNEL_CHECK_NOT_SUBSCRIBED',
-                        'You are not subscribed to all required channels. Please subscribe and try again.',
+                        'Вы подписаны не на все обязательные каналы. Подпишитесь и нажмите кнопку ещё раз.',
                     ),
                     show_alert=True,
                 )
@@ -499,12 +499,12 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                     if settings.is_multi_tariff_enabled() and len(disabled_subs) > 1:
                         notification_text = texts.t(
                             'SUBSCRIPTION_REACTIVATED_CHANNEL_SUBSCRIBE_MULTI',
-                            '✅ Ваши подписки восстановлены!\n\nСпасибо, что подписались на канал. VPN снова работает.',
+                            '✅ <b>Подписки снова работают</b>\nСпасибо, что подписались на канал.',
                         )
                     else:
                         notification_text = texts.t(
                             'SUBSCRIPTION_REACTIVATED_CHANNEL_SUBSCRIBE',
-                            '✅ Ваша подписка восстановлена!\n\nСпасибо, что подписались на канал. VPN снова работает.',
+                            '✅ <b>Подписка снова работает</b>\nСпасибо, что подписались на канал.',
                         )
                     await bot.send_message(telegram_id, notification_text)
                 except Exception as notify_error:

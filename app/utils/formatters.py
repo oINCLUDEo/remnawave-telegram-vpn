@@ -331,6 +331,22 @@ def format_days_declension(days: int, language: str = 'ru') -> str:
     return f'{days} дней'
 
 
+def format_days_ago(days: int, language: str = 'ru') -> str:
+    """«сегодня», «вчера», «5 дней назад»; "today", "5 days ago"."""
+    language_code = (language or 'ru').split('-')[0].lower()
+    if language_code == 'uk':
+        language_code = 'ua'
+    if days <= 0:
+        return {'ua': 'сьогодні', 'en': 'today', 'zh': '今天', 'fa': 'امروز'}.get(language_code, 'сегодня')
+    if days == 1:
+        return {'ua': 'вчора', 'en': 'yesterday', 'zh': '昨天', 'fa': 'دیروز'}.get(language_code, 'вчера')
+    count = format_days_declension(days, language_code)
+    if language_code == 'zh':
+        return f'{count}前'
+    suffix = {'ua': 'тому', 'en': 'ago', 'fa': 'پیش'}.get(language_code, 'назад')
+    return f'{count} {suffix}'
+
+
 def _slavic_plural(count: int, one: str, few: str, many: str) -> str:
     if count % 10 == 1 and count % 100 != 11:
         return one

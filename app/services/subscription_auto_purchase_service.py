@@ -3031,10 +3031,9 @@ async def try_resume_disabled_daily_after_topup(
 
             message = texts.t(
                 'DAILY_SUBSCRIPTION_RESUMED_AFTER_TOPUP',
-                '✅ <b>Подписка возобновлена!</b>\n\n'
-                'Ваш суточный тариф «{tariff_name}» возобновлён после пополнения баланса.\n\n'
-                '💳 Списано: {amount}\n'
-                '💰 Остаток: {balance}',
+                '✅ <b>Подписка снова работает</b>\n'
+                'Суточный тариф «{tariff_name}» продлился после пополнения.\n\n'
+                '🧾 Списано {amount}, на балансе {balance}',
             ).format(
                 tariff_name=html.escape(tariff.name),
                 amount=settings.format_price(daily_price),

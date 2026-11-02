@@ -1342,7 +1342,7 @@ async def handle_activate_button(callback: types.CallbackQuery, db_user: User, d
     # Если подписка активна — ничего не делаем
     if subscription and subscription.status == 'ACTIVE' and subscription.end_date > datetime.now(UTC):
         await callback.answer(
-            texts.t('SUBSCRIPTION_ALREADY_ACTIVE', '✅ Подписка уже активна!'),
+            texts.t('SUBSCRIPTION_ALREADY_ACTIVE', '✅ Подписка уже активна'),
             show_alert=True,
         )
         return
