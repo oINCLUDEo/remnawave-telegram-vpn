@@ -117,13 +117,13 @@ from app.utils.subscription_utils import (
     resolve_simple_subscription_device_limit,
 )
 from app.utils.formatters import (
+    format_days_declension,
     format_devices_count,
     format_gb,
     format_human_date,
     format_remaining,
     format_valid_for,
 )
-from app.utils.timezone import format_local_datetime
 
 from .autopay import (
     handle_autopay_menu,
@@ -829,7 +829,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
         message_lines = [
             texts.t('PAID_TRIAL_HEADER', '⚡ <b>Пробная подписка</b>'),
             '',
-            f'📅 {texts.t("PERIOD", "Период")}: {paid_trial_days} {texts.t("DAYS", "дней")}',
+            f'📅 {texts.t("PERIOD", "Период")}: {format_days_declension(paid_trial_days, db_user.language)}',
             f'📊 {texts.t("TRAFFIC", "Трафик")}: {traffic_label}',
             f'📱 {texts.t("DEVICES", "Устройства")}: {paid_trial_devices}',
             '',
@@ -1773,10 +1773,8 @@ async def confirm_extend_subscription(
     await db.refresh(db_user)
 
     success_message = (
-        '✅ Подписка успешно продлена!\n\n'
-        f'⏰ Добавлено: {days} дней\n'
-        f'Действует до: {format_local_datetime(refreshed_end_date, "%d.%m.%Y %H:%M")}\n\n'
-        f'💰 Списано: {texts.format_price(price)}'
+        f'✅ <b>Подписка продлена до {format_human_date(refreshed_end_date, db_user.language)}</b>\n'
+        f'Добавлено {format_days_declension(days, db_user.language)}, списано {texts.format_price(price)}.'
     )
 
     # Добавляем уведомление о сбросе трафика
@@ -1785,7 +1783,7 @@ async def confirm_extend_subscription(
         success_message += f'\n\n📊 Трафик сброшен до {fixed_limit} ГБ'
 
     if promo_offer_discount > 0:
-        success_message += f' (включая доп. скидку {offer_pct}%: -{texts.format_price(promo_offer_discount)})'
+        success_message += f'\nДополнительная скидка {offer_pct}% уже учтена.'
 
     await callback.message.edit_text(success_message, reply_markup=get_back_keyboard(db_user.language))
 
@@ -3016,7 +3014,10 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
     )
 
     if not success:
-        await callback.answer(texts.t('PAYMENT_FAILED', '❌ Не удалось списать средства'), show_alert=True)
+        await callback.answer(
+            texts.t('PAYMENT_FAILED', '❌ Не получилось списать деньги с баланса. Попробуйте ещё раз через минуту.'),
+            show_alert=True,
+        )
         return
 
     # Создаём транзакцию для учёта списания за триал
@@ -3405,7 +3406,7 @@ async def handle_trial_payment_method(callback: types.CallbackQuery, db_user: Us
                     days=trial_duration
                 ),
                 description=(
-                    f'{texts.t("PERIOD", "Период")}: {trial_duration} {texts.t("DAYS", "дней")}\n'
+                    f'{texts.t("PERIOD", "Период")}: {format_days_declension(trial_duration, db_user.language)}\n'
                     f'{texts.t("DEVICES", "Устройства")}: {trial_devices}\n'
                     f'{texts.t("TRAFFIC", "Трафик")}: {traffic_label}'
                 ),
@@ -4345,15 +4346,14 @@ async def _extend_existing_subscription(
 
     # Отправляем сообщение пользователю
     success_message = (
-        '✅ Подписка успешно продлена!\n\n'
-        f'⏰ Добавлено: {period_days} дней\n'
-        f'Действует до: {format_local_datetime(new_end_date, "%d.%m.%Y %H:%M")}\n\n'
-        f'💰 Списано: {texts.format_price(price_kopeks)}'
+        f'✅ <b>Подписка продлена до {format_human_date(new_end_date, db_user.language)}</b>\n'
+        f'Добавлено {format_days_declension(period_days, db_user.language)}, '
+        f'списано {texts.format_price(price_kopeks)}.'
     )
 
     # Если это была триальная подписка, добавляем информацию о преобразовании
     if current_subscription.is_trial:
-        success_message += '\n🎯 Триальная подписка преобразована в платную'
+        success_message += '\nБесплатная подписка стала платной.'
 
     await callback.message.edit_text(success_message, reply_markup=get_back_keyboard(db_user.language))
 

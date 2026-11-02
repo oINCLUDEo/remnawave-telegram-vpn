@@ -111,7 +111,7 @@ async def on_user_joined_channel(event: ChatMemberUpdated, bot: Bot) -> None:
                 texts = get_texts(db_user.language or DEFAULT_LANGUAGE)
                 notification_text = texts.t(
                     'SUBSCRIPTION_REACTIVATED_CHANNEL_SUBSCRIBE',
-                    'Your subscription has been restored! Thank you for subscribing to the channels.',
+                    '✅ <b>Подписка снова работает</b>\nСпасибо, что подписались на канал.',
                 )
                 await bot.send_message(user.id, notification_text)
             except Exception as notify_error:

@@ -135,7 +135,7 @@ async def process_promocode(message: types.Message, db_user: User, state: FSMCon
         await message.answer(
             texts.t(
                 'PROMO_RATE_LIMITED',
-                '⏳ Слишком много попыток. Попробуйте через {cooldown} сек.',
+                '⏳ Слишком много попыток подряд. Попробуйте ещё раз чуть позже.',
             ).format(cooldown=cooldown),
             reply_markup=get_back_keyboard(db_user.language),
         )

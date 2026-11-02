@@ -33,6 +33,7 @@ from app.services.purchase_messages import CELEBRATION_EFFECT_ID, build_subscrip
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
 from app.utils.decorators import error_handler
+from app.utils.formatters import format_days_declension
 from app.utils.formatting import format_period, format_price_kopeks, format_traffic
 from app.utils.pricing_utils import balance_covers_price, shortfall_topup_rubles
 from app.utils.promo_offer import get_user_active_promo_discount_percent
@@ -622,7 +623,7 @@ def shortfall_text(
     if discount_percent > 0:
         price += texts.t('PURCHASE_SHORTFALL_DISCOUNT', ', скидка {percent}%').format(percent=discount_percent)
     title = texts.t('PURCHASE_SHORTFALL_TITLE', '{icon} <b>Осталось доплатить {amount}</b>')
-    receipt = texts.t('PURCHASE_SHORTFALL_RECEIPT', '{item} — {price}\nНа балансе — {balance}')
+    receipt = texts.t('PURCHASE_SHORTFALL_RECEIPT', '{item}: {price}\nНа балансе: {balance}')
     receipt = receipt.format(item=item, price=price, balance=format_price_kopeks(balance_kopeks))
     lines = [
         title.format(icon=tg_emoji('payment'), amount=format_price_kopeks(missing_kopeks)),
@@ -2272,7 +2273,7 @@ async def confirm_daily_tariff_purchase(
         tariff_name=tariff.name,
         details=subscription_details(db_user.language, tariff.name, tariff.device_limit, tariff.traffic_limit_gb),
     )
-    next_charge = texts.t('PURCHASE_DAILY_NEXT_CHARGE', 'Следующее списание — {price} через сутки.')
+    next_charge = texts.t('PURCHASE_DAILY_NEXT_CHARGE', 'Следующее списание {price} через сутки.')
     text += '\n' + next_charge.format(price=format_price_kopeks(final_daily_price))
     await _show_purchase_result(callback, text, keyboard, celebrate=first_paid_purchase)
     await callback.answer()
@@ -3621,8 +3622,9 @@ def format_instant_switch_list_text(
     lines = [
         screen_title('tariff', texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф')),
         '',
-        texts.t('INSTANT_SWITCH_CURRENT', 'Сейчас: <b>{tariff}</b>, осталось <b>{days} дн.</b>').format(
-            tariff=html.escape(_tariff_icon_and_name(current_tariff)[1]), days=remaining_days
+        texts.t('INSTANT_SWITCH_CURRENT', 'Сейчас: <b>{tariff}</b>, осталось <b>{days}</b>').format(
+            tariff=html.escape(_tariff_icon_and_name(current_tariff)[1]),
+            days=format_days_declension(remaining_days, language),
         ),
         '',
     ]
@@ -3715,8 +3717,8 @@ def _instant_switch_preview_text(
         lines.append(f'<blockquote expandable>{html.escape(new_tariff.description)}</blockquote>')
     lines += [
         '',
-        texts.t('INSTANT_SWITCH_PREVIEW_DAYS', '🗓 Остаток <b>{days} дн.</b> переходит на новый тариф').format(
-            days=remaining_days
+        texts.t('INSTANT_SWITCH_PREVIEW_DAYS', '🗓 Остаток <b>{days}</b> переходит на новый тариф').format(
+            days=format_days_declension(remaining_days, language)
         ),
         price_line,
     ]
@@ -3881,10 +3883,11 @@ async def preview_instant_switch(
     is_new_daily = getattr(new_tariff, 'is_daily', False)
     daily_warning = ''
     if is_new_daily and remaining_days > 1:
-        daily_warning = texts.t(
+        daily_warning = '\n\n' + texts.t(
             'DAILY_SWITCH_WARNING',
-            f'\n\n⚠️ <b>Внимание!</b> У вас осталось {remaining_days} дн. подписки.\nПри смене на суточный тариф они будут утеряны!',
-        ).format(days=remaining_days)
+            '⚠️ <b>Остаток подписки сгорит</b>\n'
+            'Сейчас у вас осталось {days}. При переходе на суточный тариф этот остаток не сохранится.',
+        ).format(days=format_days_declension(remaining_days, db_user.language))
 
     # Для суточного тарифа особая логика показа
     if is_new_daily:
@@ -4254,7 +4257,9 @@ async def confirm_instant_switch(
                     tariff=html.escape(_tariff_icon_and_name(new_tariff)[1])
                 ),
                 _tariff_facts(texts, db_user.language, new_tariff),
-                texts.t('INSTANT_SWITCH_DONE_DAYS', '🗓 Осталось <b>{days} дн.</b>').format(days=remaining_days),
+                texts.t('INSTANT_SWITCH_DONE_DAYS', '🗓 Осталось <b>{days}</b>').format(
+                    days=format_days_declension(remaining_days, db_user.language)
+                ),
             ]
             if is_upgrade and upgrade_cost > 0:
                 done_lines.append(

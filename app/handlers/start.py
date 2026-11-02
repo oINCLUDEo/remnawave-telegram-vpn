@@ -50,6 +50,7 @@ from app.services.referral_service import process_referral_registration, save_pe
 from app.services.subscription_service import SubscriptionService
 from app.services.web_auth_service import WEB_AUTH_TOKEN_MIN_LENGTH, link_web_auth_token
 from app.states import RegistrationStates
+from app.utils.formatters import format_days_declension, format_devices_count
 from app.utils.user_utils import generate_unique_referral_code
 
 
@@ -349,6 +350,13 @@ async def _send_pinned_message(
         )
 
 
+def _campaign_traffic(texts, traffic_gb: int | None) -> str:
+    """«безлимитный трафик» or «50 ГБ трафика» for the campaign gift."""
+    if traffic_gb:
+        return texts.t('PURCHASE_TRAFFIC_LIMITED', '{gb} ГБ трафика').format(gb=traffic_gb)
+    return texts.t('PURCHASE_TRAFFIC_UNLIMITED', 'безлимитный трафик')
+
+
 async def _apply_campaign_bonus_if_needed(
     db: AsyncSession,
     user,
@@ -376,12 +384,11 @@ async def _apply_campaign_bonus_if_needed(
         )
 
     if result.bonus_type == 'subscription':
-        traffic_text = texts.format_traffic(result.subscription_traffic_gb or 0)
         return texts.CAMPAIGN_BONUS_SUBSCRIPTION.format(
             name=html.escape(campaign.name),
-            days=result.subscription_days,
-            traffic=traffic_text,
-            devices=result.subscription_device_limit,
+            days=format_days_declension(result.subscription_days or 0, texts.language),
+            traffic=_campaign_traffic(texts, result.subscription_traffic_gb),
+            devices=format_devices_count(result.subscription_device_limit or 0, texts.language),
         )
 
     if result.bonus_type == 'none':
@@ -389,15 +396,14 @@ async def _apply_campaign_bonus_if_needed(
         return None
 
     if result.bonus_type == 'tariff':
-        traffic_text = texts.format_traffic(result.subscription_traffic_gb or 0)
         return texts.t(
             'CAMPAIGN_BONUS_TARIFF',
-            "🎁 Вам выдан тариф '{tariff_name}' на {days} дней!\n📊 Трафик: {traffic}\n📱 Устройств: {devices}",
+            '🎁 <b>Тариф «{tariff_name}» на {days} в подарок</b>\n\n📱 {devices}\n📈 {traffic}',
         ).format(
-            tariff_name=result.tariff_name or 'Подарочный',
-            days=result.tariff_duration_days,
-            traffic=traffic_text,
-            devices=result.subscription_device_limit,
+            tariff_name=html.escape(result.tariff_name or 'Подарочный'),
+            days=format_days_declension(result.tariff_duration_days or 0, texts.language),
+            traffic=_campaign_traffic(texts, result.subscription_traffic_gb),
+            devices=format_devices_count(result.subscription_device_limit or 0, texts.language),
         )
 
     return None
@@ -456,7 +462,7 @@ async def handle_potential_referral_code(message: types.Message, state: FSMConte
         await message.answer(
             texts.t(
                 'PROMO_RATE_LIMITED',
-                '⏳ Слишком много попыток. Попробуйте через {cooldown} сек.',
+                '⏳ Слишком много попыток подряд. Попробуйте ещё раз чуть позже.',
             ).format(cooldown=cooldown)
         )
         return True
@@ -641,7 +647,7 @@ async def cmd_start(message: types.Message, state: FSMContext, db: AsyncSession,
                 await message.answer(
                     texts.t(
                         'WEB_AUTH_CONFIRM_PROMPT',
-                        '🔐 Подтвердите вход в личный кабинет. Если вы не запрашивали вход — нажмите «Нет».',
+                        '🔐 Подтвердите вход в личный кабинет.\nЕсли вы не входили, нажмите «Нет».',
                     ),
                     reply_markup=keyboard,
                 )
@@ -1253,7 +1259,7 @@ async def process_referral_code_input(message: types.Message, state: FSMContext,
         await message.answer(
             texts.t(
                 'PROMO_RATE_LIMITED',
-                '⏳ Слишком много попыток. Попробуйте через {cooldown} сек.',
+                '⏳ Слишком много попыток подряд. Попробуйте ещё раз чуть позже.',
             ).format(cooldown=cooldown)
         )
         return
@@ -2276,7 +2282,7 @@ async def process_webauth_confirm(
     texts = get_texts(user.language)
     if linked:
         await callback.message.edit_text(
-            texts.t('WEB_AUTH_SUCCESS', '✅ Авторизация в кабинете подтверждена! Вернитесь в браузер.'),
+            texts.t('WEB_AUTH_SUCCESS', '✅ Вход в кабинет подтверждён. Вернитесь в браузер.'),
         )
     else:
         await callback.message.edit_text(

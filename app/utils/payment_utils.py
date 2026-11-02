@@ -320,12 +320,7 @@ def get_payment_methods_text(language: str) -> str:
     if not methods:
         return texts.t(
             'PAYMENT_METHODS_NONE_AVAILABLE',
-            """💳 <b>Способы пополнения баланса</b>
-
-⚠️ В данный момент способы оплаты временно недоступны.
-Попробуйте позже.
-
-Выберите способ пополнения:""",
+            '💳 <b>Пополнение сейчас недоступно</b>\nПопробуйте ещё раз чуть позже или напишите в поддержку.',
         )
 
     if len(methods) == 1 and methods[0]['id'] == 'support':

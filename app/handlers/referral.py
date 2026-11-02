@@ -19,6 +19,7 @@ from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService, NotificationCategory
 from app.services.referral_withdrawal_service import referral_withdrawal_service
 from app.states import ReferralWithdrawalStates
+from app.utils.formatters import format_days_ago
 from app.utils.photo_message import edit_or_answer_photo
 from app.utils.user_utils import (
     get_detailed_referral_list,
@@ -105,11 +106,14 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
 
     texts = get_texts(db_user.language)
     if not settings.is_referral_program_enabled():
-        await callback.answer(texts.t('REFERRAL_PROGRAM_DISABLED', 'Реферальная программа отключена'), show_alert=True)
+        await callback.answer(texts.t('REFERRAL_PROGRAM_DISABLED', 'Приглашения сейчас недоступны'), show_alert=True)
         return
 
     if not db_user.referral_code:
-        await callback.answer(texts.t('REFERRAL_CODE_NOT_ASSIGNED', 'Реферальный код не назначен'), show_alert=True)
+        await callback.answer(
+            texts.t('REFERRAL_CODE_NOT_ASSIGNED', 'Ссылка-приглашение ещё не готова. Попробуйте через минуту.'),
+            show_alert=True,
+        )
         return
 
     summary = await get_user_referral_summary(db, db_user.id)
@@ -293,7 +297,10 @@ async def show_referral_qr(
     texts = get_texts(db_user.language)
 
     if not db_user.referral_code:
-        await callback.answer(texts.t('REFERRAL_CODE_NOT_ASSIGNED', 'Реферальный код не назначен'), show_alert=True)
+        await callback.answer(
+            texts.t('REFERRAL_CODE_NOT_ASSIGNED', 'Ссылка-приглашение ещё не готова. Попробуйте через минуту.'),
+            show_alert=True,
+        )
         return
 
     await callback.answer()
@@ -351,7 +358,7 @@ async def show_detailed_referral_list(callback: types.CallbackQuery, db_user: Us
             callback,
             texts.t(
                 'REFERRAL_LIST_EMPTY',
-                '📋 У вас пока нет рефералов.\n\nПоделитесь своей реферальной ссылкой, чтобы начать зарабатывать!',
+                '📋 Вы пока никого не пригласили.\n\nПоделитесь ссылкой-приглашением, чтобы начать зарабатывать.',
             ),
             types.InlineKeyboardMarkup(
                 inline_keyboard=[[types.InlineKeyboardButton(text=texts.BACK, callback_data='menu_referrals')]]
@@ -364,7 +371,7 @@ async def show_detailed_referral_list(callback: types.CallbackQuery, db_user: Us
     text = (
         texts.t(
             'REFERRAL_LIST_HEADER',
-            '👥 <b>Ваши рефералы</b> (стр. {current}/{total})',
+            '👥 <b>Приглашённые друзья</b>, страница {current} из {total}',
         ).format(
             current=referrals_data['current_page'],
             total=referrals_data['total_pages'],
@@ -401,8 +408,8 @@ async def show_detailed_referral_list(callback: types.CallbackQuery, db_user: Us
         text += (
             texts.t(
                 'REFERRAL_LIST_ITEM_REGISTERED',
-                '   📅 Регистрация: {days} дн. назад',
-            ).format(days=referral['days_since_registration'])
+                '   📅 Регистрация: {days}',
+            ).format(days=format_days_ago(referral['days_since_registration'], db_user.language))
             + '\n'
         )
 
@@ -410,8 +417,8 @@ async def show_detailed_referral_list(callback: types.CallbackQuery, db_user: Us
             text += (
                 texts.t(
                     'REFERRAL_LIST_ITEM_ACTIVITY',
-                    '   🕐 Активность: {days} дн. назад',
-                ).format(days=referral['days_since_activity'])
+                    '   🕐 Активность: {days}',
+                ).format(days=format_days_ago(referral['days_since_activity'], db_user.language))
                 + '\n'
             )
         else:
@@ -544,7 +551,10 @@ async def create_invite_message(callback: types.CallbackQuery, db_user: User):
     texts = get_texts(db_user.language)
 
     if not db_user.referral_code:
-        await callback.answer(texts.t('REFERRAL_CODE_NOT_ASSIGNED', 'Реферальный код не назначен'), show_alert=True)
+        await callback.answer(
+            texts.t('REFERRAL_CODE_NOT_ASSIGNED', 'Ссылка-приглашение ещё не готова. Попробуйте через минуту.'),
+            show_alert=True,
+        )
         return
 
     bot_username = (await callback.bot.get_me()).username
@@ -596,7 +606,7 @@ async def show_withdrawal_info(callback: types.CallbackQuery, db_user: User, db:
     # Проверяем возможность вывода
     can_request, reason, _stats = await referral_withdrawal_service.can_request_withdrawal(db, db_user.id)
 
-    text = texts.t('REFERRAL_WITHDRAWAL_TITLE', '💸 <b>Вывод реферального баланса</b>') + '\n\n'
+    text = texts.t('REFERRAL_WITHDRAWAL_TITLE', '💸 <b>Вывод дохода от друзей</b>') + '\n\n'
 
     # Показываем детальную статистику
     text += referral_withdrawal_service.format_balance_stats_for_user(stats, texts)
@@ -892,10 +902,7 @@ async def confirm_withdrawal_request(callback: types.CallbackQuery, db_user: Use
     # Отвечаем пользователю
     text = texts.t(
         'REFERRAL_WITHDRAWAL_SUCCESS',
-        '✅ <b>Заявка #{id} создана!</b>\n\n'
-        'Сумма: <b>{amount}</b>\n\n'
-        'Ваша заявка будет рассмотрена администрацией. '
-        'Мы уведомим вас о результате.',
+        '✅ <b>Заявка №{id} на {amount} отправлена</b>\nМы проверим её и сообщим о решении.',
     ).format(id=request.id, amount=texts.format_price(amount_kopeks))
 
     keyboard = types.InlineKeyboardMarkup(

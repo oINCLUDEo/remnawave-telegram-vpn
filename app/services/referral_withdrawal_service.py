@@ -574,7 +574,7 @@ class ReferralWithdrawalService:
         """Форматирует статистику баланса для пользователя."""
         text = ''
         text += (
-            texts.t('REFERRAL_WITHDRAWAL_STATS_EARNED', '📈 Всего заработано с рефералов: <b>{amount}</b>').format(
+            texts.t('REFERRAL_WITHDRAWAL_STATS_EARNED', '📈 Заработано на приглашениях: <b>{amount}</b>').format(
                 amount=texts.format_price(stats['total_earned'])
             )
             + '\n'
@@ -612,7 +612,7 @@ class ReferralWithdrawalService:
 
         if stats['only_referral_mode']:
             text += (
-                texts.t('REFERRAL_WITHDRAWAL_ONLY_REF_MODE', '<i>ℹ️ Выводить можно только реферальный баланс</i>') + '\n'
+                texts.t('REFERRAL_WITHDRAWAL_ONLY_REF_MODE', '<i>ℹ️ Выводить можно только доход от друзей</i>') + '\n'
             )
 
         return text
