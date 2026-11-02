@@ -3307,7 +3307,11 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
 
 
 def _trial_started_text(texts, subscription: Subscription, charged_amount: int = 0, *, link_ready: bool = True) -> str:
-    """«Пробный период включён до 5 ноября», what it gives, and the one step left: connecting."""
+    """«Бесплатная подписка включена до 5 ноября», the steps to connect, and what it gives.
+
+    Connecting is the one thing left to do, so the steps come right under the
+    title and the conditions wait at the end on one line.
+    """
     from .tariff_purchase import _tariff_devices
 
     language = texts.language
@@ -3317,30 +3321,16 @@ def _trial_started_text(texts, subscription: Subscription, charged_amount: int =
     )
     lines = [title]
 
-    devices = _tariff_devices(texts, language, subscription.device_limit) if subscription.device_limit else ''
-    if subscription.traffic_limit_gb:
-        facts = texts.t(
-            'TRIAL_STARTED_FACTS_LIMITED',
-            '{devices} и {gb} ГБ на серверах обхода белых списков, на обычных безлимитный трафик. '
-            'Серверы те же, что в платных тарифах.',
-        ).format(devices=devices, gb=subscription.traffic_limit_gb)
-    else:
-        facts = texts.t(
-            'TRIAL_STARTED_FACTS_UNLIMITED',
-            '{devices} и безлимитный трафик. Серверы те же, что в платных тарифах.',
-        ).format(devices=devices)
-    if devices:
-        lines.append(facts[0].upper() + facts[1:])
-
     if link_ready:
-        lines += [
-            '',
+        lines.append(
             texts.t(
                 'TRIAL_STARTED_NEXT_STEP',
-                'Осталось подключиться. Нажмите «Подключиться», и страница по шагам покажет, что установить. '
-                'Пара минут, и VPN работает.',
-            ),
-        ]
+                'Осталось подключиться, это займёт пару минут:\n\n'
+                '1. Нажмите «Подключиться».\n'
+                '2. Установите приложение со страницы.\n'
+                '3. Добавьте подписку одной кнопкой.',
+            )
+        )
     else:
         lines += [
             '',
@@ -3349,6 +3339,17 @@ def _trial_started_text(texts, subscription: Subscription, charged_amount: int =
                 'Ссылка для подключения ещё готовится. Через полминуты откройте «Моя подписка», она будет там.',
             ),
         ]
+
+    devices = _tariff_devices(texts, language, subscription.device_limit) if subscription.device_limit else ''
+    if devices:
+        if subscription.traffic_limit_gb:
+            facts = texts.t(
+                'TRIAL_STARTED_FACTS_LIMITED',
+                '📱 {devices}, безлимитный трафик и {gb} ГБ на обходе белых списков',
+            ).format(devices=devices, gb=subscription.traffic_limit_gb)
+        else:
+            facts = texts.t('TRIAL_STARTED_FACTS_UNLIMITED', '📱 {devices}, безлимитный трафик').format(devices=devices)
+        lines += ['', facts[0].upper() + facts[1:]]
 
     if charged_amount > 0:
         lines += [
@@ -3363,8 +3364,8 @@ def _trial_started_text(texts, subscription: Subscription, charged_amount: int =
 def _build_trial_success_keyboard(
     texts, subscription: Subscription, *, link_ready: bool = True
 ) -> InlineKeyboardMarkup:
-    """One coloured button, «Подключиться», opening the same thing as in the main menu."""
-    from app.keyboards.main_menu import connect_button
+    """One coloured button, «Подключиться», opening the same thing as in the main menu, and support under it."""
+    from app.keyboards.main_menu import _is_support_enabled, connect_button, write_support_button
 
     rows: list[list[InlineKeyboardButton]] = []
     if link_ready:
@@ -3382,14 +3383,18 @@ def _build_trial_success_keyboard(
                 )
             ]
         )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                callback_data='back_to_menu',
-            )
-        ]
-    )
+    if link_ready and _is_support_enabled():
+        # Connecting is the step people get stuck on, so help is one tap away.
+        rows.append([write_support_button(texts)])
+    else:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
+                    callback_data='back_to_menu',
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

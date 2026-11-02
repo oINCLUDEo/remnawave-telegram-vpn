@@ -33,11 +33,12 @@ def build_subscription_ready_message(
     tariff_name: str | None = None,
     details: str | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """«💎 Подписка оформлена до 20 ноября» with where the money went and «Подключиться».
+    """«💎 Подписка оформлена до 20 ноября», what to do now, the tariff and the money, and «Подключиться».
 
-    After a top-up the second line explains the balance: «Баланс пополнен на
-    179 ₽, за подписку списано 299 ₽». Otherwise it says what was charged and
-    what is left. *details* is an optional quoted line about the tariff.
+    The money line is «Оплачено 199 ₽» when the top-up paid exactly for the
+    subscription; when the amounts differ it shows both, and without a top-up
+    it says what was charged and what is left. *details* is an optional line
+    about the tariff: devices and traffic.
     """
     from app.keyboards.main_menu import connect_button
 
@@ -60,17 +61,26 @@ def build_subscription_ready_message(
         )
     ]
 
-    if topup_kopeks > 0:
-        money = texts.t('SUBSCRIPTION_PAID_FROM_TOPUP', 'Баланс пополнен на {topup}, за подписку списано {price}.')
+    # What to do now. Renewing keeps the same link, and so does a purchase
+    # when the person has one subscription; with several, a new one has its own.
+    if renewed or not settings.is_multi_tariff_enabled():
+        lines.append(texts.t('SUBSCRIPTION_READY_NOTHING_TO_DO', 'Если VPN уже подключён, ничего делать не нужно.'))
+    else:
+        lines.append(texts.t('SUBSCRIPTION_READY_CONNECT', 'Нажмите «Подключиться» и добавьте подписку в приложение.'))
+
+    if topup_kopeks > 0 and topup_kopeks == price_kopeks:
+        money = texts.t('SUBSCRIPTION_PAID', 'Оплачено {price}').format(price=fmt(price_kopeks))
+    elif topup_kopeks > 0:
+        money = texts.t('SUBSCRIPTION_PAID_FROM_TOPUP', 'Баланс пополнен на {topup}, за подписку списано {price}')
         money = money.format(topup=fmt(topup_kopeks), price=fmt(price_kopeks))
     else:
-        money = texts.t('SUBSCRIPTION_PAID_FROM_BALANCE', 'Списано {price}, на балансе {balance}.')
+        money = texts.t('SUBSCRIPTION_PAID_FROM_BALANCE', 'Списано {price}, на балансе {balance}')
         money = money.format(price=fmt(price_kopeks), balance=fmt(getattr(user, 'balance_kopeks', 0) or 0))
 
+    lines.append('')
     if details:
-        lines.append(f'<blockquote>{details}\n{money}</blockquote>')
-    else:
-        lines.append(money)
+        lines.append(f'📱 {details}')
+    lines.append(f'🧾 {money}')
 
     sub_suffix = f':{subscription.id}' if settings.is_multi_tariff_enabled() else ''
     keyboard = InlineKeyboardMarkup(
@@ -83,7 +93,7 @@ def build_subscription_ready_message(
 
 
 def subscription_details(language: str, tariff_name: str | None, device_limit: int, traffic_limit_gb: int) -> str:
-    """«Стандарт · 3 устройства · безлимитный трафик» for the quoted line of the message.
+    """«Стандарт, 3 устройства, безлимитный трафик» for the tariff line of the message.
 
     With several tariffs the title already names the tariff, so the line leaves it out.
     """
@@ -97,7 +107,7 @@ def subscription_details(language: str, tariff_name: str | None, device_limit: i
         parts.append(texts.t('PURCHASE_TRAFFIC_LIMITED', '{gb} ГБ трафика').format(gb=traffic_limit_gb))
     else:
         parts.append(texts.t('PURCHASE_TRAFFIC_UNLIMITED', 'безлимитный трафик'))
-    return ' · '.join(parts)
+    return ', '.join(parts)
 
 
 def topup_note(language: str, topup_kopeks: int) -> str:

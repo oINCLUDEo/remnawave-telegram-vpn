@@ -264,6 +264,7 @@ def get_main_menu_keyboard(
     is_moderator: bool = False,
     custom_buttons: list[InlineKeyboardButton] | None = None,
     auth_type: str | None = None,
+    trial_days: int | None = None,
 ) -> InlineKeyboardMarkup:
     from app.keyboards.main_menu import build_main_menu_keyboard
 
@@ -276,6 +277,7 @@ def get_main_menu_keyboard(
         is_admin=is_admin,
         is_moderator=is_moderator,
         custom_buttons=custom_buttons,
+        trial_days=trial_days,
     )
 
 
@@ -1441,7 +1443,7 @@ def get_referral_keyboard(language: str = DEFAULT_LANGUAGE, share_url: str | Non
     texts = get_texts(language)
 
     if share_url:
-        first = InlineKeyboardButton(text=texts.t('REFERRAL_BTN_SHARE', '📤 Поделиться ссылкой'), url=share_url)
+        first = InlineKeyboardButton(text=texts.t('REFERRAL_BTN_SHARE', '📤 Отправить другу'), url=share_url)
     else:
         first = InlineKeyboardButton(
             text=texts.t('CREATE_INVITE_BUTTON', '📝 Создать приглашение'), callback_data='referral_create_invite'
@@ -1500,7 +1502,7 @@ def get_support_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMark
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=texts.t('CONTACT_SUPPORT_BUTTON', '💬 Связаться с поддержкой'),
+                    text=texts.t('CONTACT_SUPPORT_BUTTON', '💬 Написать в поддержку'),
                     url=settings.get_support_contact_url() or 'https://t.me/',
                 )
             ]

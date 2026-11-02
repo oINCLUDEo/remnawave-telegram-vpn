@@ -126,13 +126,18 @@ def _direct_support_url() -> str | None:
     return settings.get_support_contact_url() or None
 
 
-def _support_button(texts) -> InlineKeyboardButton:
+def _support_button(texts, label: str | None = None, *, style: str | None = None) -> InlineKeyboardButton:
     """ "Поддержка": straight into the support chat when there is nothing else on the support screen."""
-    label = texts.t('MAIN_MENU_BTN_SUPPORT', 'Поддержка')
+    label = label or texts.t('MAIN_MENU_BTN_SUPPORT', 'Поддержка')
     direct_url = _direct_support_url()
     if direct_url:
-        return icon_button('support', label, url=direct_url)
-    return icon_button('support', label, callback_data='menu_support')
+        return icon_button('support', label, url=direct_url, style=style)
+    return icon_button('support', label, callback_data='menu_support', style=style)
+
+
+def write_support_button(texts, *, style: str | None = None) -> InlineKeyboardButton:
+    """ "Написать в поддержку": the same button in a message that asks the person to write to us."""
+    return _support_button(texts, texts.t('SUPPORT_WRITE_BUTTON', 'Написать в поддержку'), style=style)
 
 
 def connect_button(texts, subscription, *, sub_suffix: str = '', style: str | None = STYLE_USE) -> InlineKeyboardButton:
@@ -171,7 +176,9 @@ def build_main_menu_keyboard(
     is_admin: bool = False,
     is_moderator: bool = False,
     custom_buttons: list[InlineKeyboardButton] | None = None,
+    trial_days: int | None = None,
 ) -> InlineKeyboardMarkup:
+    """*trial_days* is the real trial length (``get_trial_params``): the trial button names it."""
     texts = get_texts(language)
     state = resolve_menu_state(subscription)
 
@@ -203,17 +210,19 @@ def build_main_menu_keyboard(
 
     if state == MenuState.NEW:
         if is_trial_available(subscription, has_had_paid_subscription=has_had_paid_subscription, auth_type=auth_type):
+            if trial_days:
+                from app.utils.formatters import format_days_declension
+
+                trial_label = t('POST_REGISTRATION_TRIAL_DAYS_BUTTON', 'Попробовать {days} бесплатно').format(
+                    days=format_days_declension(trial_days, texts.language)
+                )
+            else:
+                trial_label = t('MAIN_MENU_BTN_TRIAL', 'Попробовать бесплатно')
+            rows.append([icon_button('trial', trial_label, callback_data='menu_trial', style=STYLE_PAY)])
+            # Next to the free trial the button is for looking, not for buying yet.
             rows.append(
-                [
-                    icon_button(
-                        'trial',
-                        t('MAIN_MENU_BTN_TRIAL', 'Попробовать бесплатно'),
-                        callback_data='menu_trial',
-                        style=STYLE_PAY,
-                    )
-                ]
+                [icon_button('buy', t('MAIN_MENU_BTN_TARIFFS', 'Тарифы и цены'), callback_data='menu_buy')]
             )
-            rows.append([buy()])
         else:
             rows.append([buy(STYLE_PAY)])
 

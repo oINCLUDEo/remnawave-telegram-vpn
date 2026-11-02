@@ -52,7 +52,7 @@ from app.external.remnawave_api import (
     RemnaWaveUser,
     UserStatus as RemnaWaveUserStatus,
 )
-from app.keyboards.icons import ICONS, STYLE_PAY, tg_emoji
+from app.keyboards.icons import ICONS, STYLE_PAY, STYLE_USE, tg_emoji
 from app.localization.texts import get_texts
 from app.services.notification_delivery_service import (
     notification_delivery_service,
@@ -911,11 +911,15 @@ class MonitoringService:
     async def _send_trial_not_connected_notification(
         self, user: User, subscription: Subscription, stage: int
     ) -> bool:
-        """«VPN ещё не подключён» with «Подключиться» and «Поддержка»."""
+        """«VPN ещё не подключён» with «Подключиться» and «Написать в поддержку».
+
+        An hour in, connecting comes first. A day in, it has not worked out on
+        its own, so writing to us comes first and the message asks for the device.
+        """
         try:
             from aiogram.types import InlineKeyboardMarkup
 
-            from app.keyboards.main_menu import _is_support_enabled, _support_button, connect_button
+            from app.keyboards.main_menu import _is_support_enabled, connect_button, write_support_button
             from app.utils.formatters import format_human_date, format_valid_for
 
             texts = get_texts(user.language)
@@ -923,27 +927,30 @@ class MonitoringService:
                 message = texts.t(
                     'TRIAL_NOT_CONNECTED_FIRST',
                     '{icon} <b>VPN ещё не подключён</b>\n'
-                    'Бесплатная подписка уже включена и действует {left}. Обычно подключение занимает пару минут: '
-                    'нажмите «Подключиться» и следуйте шагам на странице. '
-                    'Застряли на каком-то шаге? Напишите в поддержку, разберёмся вместе.',
+                    'Бесплатная подписка действует {left}.\n\n'
+                    'Застряли на каком-то шаге? Напишите нам, и мы поможем.',
                 )
             else:
                 message = texts.t(
                     'TRIAL_NOT_CONNECTED_SECOND',
-                    '{icon} <b>VPN так и не подключён</b>\n'
-                    'Бесплатная подписка действует {left}, жалко терять эти дни. '
-                    'Если не получилось с приложением, напишите нам: подскажем, что поставить '
-                    'на ваш телефон или компьютер.',
+                    '{icon} <b>VPN пока не подключён</b>\n'
+                    'Бесплатная подписка действует {left}.\n\n'
+                    'Напишите, какое у вас устройство, и мы пришлём инструкцию для него.',
                 )
             message = message.format(
-                icon=tg_emoji('connect'),
+                icon=tg_emoji('warning') if stage == 1 else tg_emoji('chat'),
                 left=format_valid_for(subscription.end_date, user.language),
                 end_date=format_human_date(subscription.end_date, user.language),
             )
 
-            rows = [[connect_button(texts, subscription)]]
-            if _is_support_enabled():
-                rows.append([_support_button(texts)])
+            connect_row = [connect_button(texts, subscription, style=STYLE_USE if stage == 1 else None)]
+            support_row = [write_support_button(texts, style=None if stage == 1 else STYLE_USE)]
+            if not _is_support_enabled():
+                rows = [[connect_button(texts, subscription)]]
+            elif stage == 1:
+                rows = [connect_row, support_row]
+            else:
+                rows = [support_row, connect_row]
 
             await self._send_message_with_logo(
                 chat_id=user.telegram_id,
@@ -1867,7 +1874,7 @@ class MonitoringService:
                 message = texts.t(
                     'SUBSCRIPTION_ENDS_SOON',
                     '{icon} <b>Подписка{tariff_label} закончится {end_date}</b>\n'
-                    'Чтобы VPN работал дальше, продлите подписку.',
+                    'Продлите сейчас, и VPN не выключится ни на минуту.',
                 ).format(
                     icon=tg_emoji('warning'),
                     tariff_label=tariff_label,
@@ -1887,6 +1894,11 @@ class MonitoringService:
                     ]
                 ]
                 if settings.ENABLE_AUTOPAY and not subscription.autopay_enabled:
+                    # The button needs one line on where autopay takes the money from.
+                    message += '\n\n' + texts.t(
+                        'SUBSCRIPTION_ENDS_SOON_AUTOPAY_NOTE',
+                        '🔄 Автопродление оплатит подписку с баланса, если на нём хватит денег.',
+                    )
                     rows.append(
                         [
                             InlineKeyboardButton(
@@ -1936,7 +1948,7 @@ class MonitoringService:
         """
         if settings.is_multi_tariff_enabled():
             return ''
-        return ' ' + texts.t('TRIAL_KEEPS_SETUP_NOTE', 'Переподключаться не придётся.')
+        return ' ' + texts.t('TRIAL_KEEPS_SETUP_NOTE', 'Настраивать его заново не придётся.')
 
     async def _trial_offer(self, db: AsyncSession, user: User, texts):
         """The tariff to offer when the trial ends: the one most people buy, with the user's price.
@@ -1995,7 +2007,7 @@ class MonitoringService:
         _icon, name = _tariff_icon_and_name(tariff)
         offer = texts.t(
             'TRIAL_OFFER_LINE',
-            'Чаще всего берут «{name}»: {devices}, {traffic}, {price}.',
+            'Чаще всего выбирают «{name}» за {price}: {devices}, {traffic}.',
         ).format(
             name=html.escape(name),
             devices=_tariff_devices(texts, language, tariff.device_limit),
@@ -2006,7 +2018,9 @@ class MonitoringService:
             [
                 icon_button(
                     'buy',
-                    texts.t('TRIAL_OFFER_BUY_BUTTON', 'Оформить за {price}').format(price=price_text),
+                    texts.t('TRIAL_OFFER_BUY_BUTTON', 'Оформить «{name}» за {price}').format(
+                        name=name, price=price_text
+                    ),
                     callback_data=f'tariff_select:{tariff.id}',
                     style=STYLE_PAY,
                 )
@@ -2036,8 +2050,7 @@ class MonitoringService:
             message = texts.t(
                 'TRIAL_ENDS_SOON',
                 '{icon} <b>Бесплатная подписка закончится {end_date}</b>\n'
-                'Потом VPN выключится. Если он пригодился, оформите подписку сейчас, '
-                'и всё продолжит работать без перерыва.{keeps_setup}',
+                'Оформите подписку сейчас, и VPN продолжит работать без перерыва.',
             ).format(
                 icon=tg_emoji('warning'),
                 end_date=format_time_left(subscription.end_date, user.language),
@@ -2090,25 +2103,27 @@ class MonitoringService:
             from aiogram.types import InlineKeyboardMarkup
 
             from app.keyboards.icons import icon_button
+            from app.keyboards.main_menu import _is_support_enabled, write_support_button
 
             texts = get_texts(user.language)
             message = texts.t(
                 'TRIAL_EXPIRED',
-                '{icon} <b>Бесплатная подписка закончилась</b>\n'
-                'VPN выключен. Выберите тариф, и он заработает сразу после оплаты.{keeps_setup}',
+                '{icon} <b>Бесплатная подписка закончилась</b>\nVPN заработает сразу после оплаты.{keeps_setup}',
             ).format(icon=tg_emoji('expired'), keeps_setup=self._trial_keeps_setup_note(texts))
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        icon_button(
-                            'buy',
-                            texts.t('MAIN_MENU_BTN_CHOOSE_TARIFF', 'Выбрать тариф'),
-                            callback_data='menu_buy',
-                            style=STYLE_PAY,
-                        )
-                    ]
+            rows = [
+                [
+                    icon_button(
+                        'buy',
+                        texts.t('MAIN_MENU_BTN_CHOOSE_TARIFF', 'Выбрать тариф'),
+                        callback_data='menu_buy',
+                        style=STYLE_PAY,
+                    )
                 ]
-            )
+            ]
+            if _is_support_enabled():
+                # For the one who has a question before paying.
+                rows.append([write_support_button(texts)])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
             sent = await self._send_message_with_logo(
                 chat_id=user.telegram_id,
                 text=message,
@@ -2285,8 +2300,7 @@ class MonitoringService:
                     'SUBSCRIPTION_EXPIRED_THIRD_WAVE',
                     (
                         '🎁 <b>Скидка {percent}% на продление{tariff_label}</b>\n'
-                        'VPN не работает уже {days}. Если хотите вернуться, скидка добавится к вашей обычной '
-                        'и действует {expires_at}. Это последнее такое предложение.'
+                        'VPN не работает уже {days}. Если хотите вернуться, скидка действует {expires_at}.'
                     ),
                 )
 
@@ -2379,16 +2393,14 @@ class MonitoringService:
             if wave == 'second':
                 template = texts.t(
                     'TRIAL_EXPIRED_SECOND_WAVE',
-                    '{icon} <b>Скидка {percent}% на первую оплату</b>\n'
-                    'Бесплатная подписка закончилась, а скидка только началась. '
-                    'Действует на любой тариф {expires_at}.',
+                    '{icon} <b>Скидка {percent}% на первую оплату</b>\nДействует на любой тариф {expires_at}.',
                 )
             else:
                 template = texts.t(
                     'TRIAL_EXPIRED_THIRD_WAVE',
                     '{icon} <b>Скидка {percent}% на первую оплату</b>\n'
                     'С конца бесплатной подписки прошло {days}. Если белые списки снова мешают, возвращайтесь: '
-                    'скидка действует на любой тариф {expires_at}. Это последнее такое предложение.',
+                    'скидка действует на любой тариф {expires_at}.',
                 )
             message = template.format(
                 icon=tg_emoji('trial'),

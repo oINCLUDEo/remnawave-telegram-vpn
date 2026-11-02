@@ -93,7 +93,7 @@ def _referral_exchange_text(texts, db_user: User) -> str:
                 rewards=texts.t('REFERRAL_EXCHANGE_AND', ' и ').join(rewards)
             )
         )
-        lines.append(texts.t('REFERRAL_EXCHANGE_SPEND', '🪙 Бонусами можно оплатить свою подписку'))
+        lines.append(texts.t('REFERRAL_EXCHANGE_SPEND', '🪙 Бонусы можно потратить на подписку'))
     if not lines:
         return texts.t('REFERRAL_EXCHANGE_NONE', 'Поделитесь ссылкой с теми, кому тоже нужен рабочий VPN.')
     return '\n'.join(lines)
@@ -116,9 +116,8 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
 
     bot_username = (await callback.bot.get_me()).username
     bot_referral_link = settings.get_bot_referral_link(db_user.referral_code, bot_username)
-    cabinet_referral_link = settings.get_cabinet_referral_link(db_user.referral_code)
 
-    # Short blocks with air between them: what you get, your progress, your links.
+    # Short blocks with air between them: what you get, your progress, your link.
     lines = [
         texts.t('REFERRAL_PROGRAM_TITLE', '🤝 <b>Пригласить друга</b>'),
         '',
@@ -137,15 +136,10 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
             progress = texts.t('REFERRAL_PROGRESS', '👥 Вы уже привели {friends}.').format(friends=friends)
         lines.append('\n' + progress)
 
-    link_block = texts.t('REFERRAL_LINK_TITLE', '🔗 <b>Ссылка в бот</b>, нажмите, чтобы скопировать') + (
+    # One link, into the bot: two made people choose. The site link lives on «Доход».
+    link_block = texts.t('REFERRAL_LINK_TITLE', '🔗 Нажмите на ссылку, чтобы скопировать её:') + (
         f'\n<code>{html_escape(bot_referral_link)}</code>'
     )
-    if cabinet_referral_link:
-        link_block += (
-            '\n\n'
-            + texts.t('REFERRAL_CABINET_LINK_TITLE', '🌐 <b>Ссылка на сайт</b>')
-            + f'\n<code>{html_escape(cabinet_referral_link)}</code>'
-        )
     lines.append('\n' + link_block)
 
     await edit_or_answer_photo(
@@ -528,6 +522,13 @@ async def show_referral_analytics(callback: types.CallbackQuery, db_user: User, 
                 + '\n'
             )
         text += '\n'
+
+    cabinet_referral_link = settings.get_cabinet_referral_link(db_user.referral_code) if db_user.referral_code else None
+    if cabinet_referral_link:
+        text += (
+            texts.t('REFERRAL_CABINET_LINK_TITLE', '🌐 <b>Ссылка на сайт</b>')
+            + f'\n<code>{html_escape(cabinet_referral_link)}</code>'
+        )
 
     await edit_or_answer_photo(
         callback,

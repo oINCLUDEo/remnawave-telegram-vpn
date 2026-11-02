@@ -180,8 +180,47 @@ async def build_main_menu(db: AsyncSession, db_user: User) -> tuple[str, types.I
         subscription=subscription,
         custom_buttons=custom_buttons,
         auth_type=getattr(db_user, 'auth_type', None),
+        trial_days=await _trial_days_if_available(db, db_user),
     )
     return menu_text, keyboard
+
+
+async def _trial_days_if_available(db: AsyncSession, user: User) -> int | None:
+    """The real trial length for a person who can still take the trial, else None."""
+    if not is_trial_available(
+        getattr(user, 'subscription', None),
+        has_had_paid_subscription=user.has_had_paid_subscription,
+        auth_type=getattr(user, 'auth_type', None),
+    ):
+        return None
+    try:
+        from app.services.trial_activation_service import get_trial_params
+
+        return (await get_trial_params(db)).days
+    except Exception as error:
+        logger.debug('Не удалось узнать длину бесплатной подписки', error=error)
+        return None
+
+
+async def _monthly_price_from(db: AsyncSession, user: User) -> str:
+    """«99 ₽»: the cheapest month among the tariffs this person can buy, or '' when it cannot be told."""
+    if not settings.is_tariffs_mode():
+        return ''
+    try:
+        from app.database.crud.tariff import get_tariffs_for_user
+        from app.handlers.subscription.tariff_purchase import tariff_list_price
+
+        prices = []
+        for tariff in await get_tariffs_for_user(db, getattr(user, 'promo_group_id', None)):
+            if getattr(tariff, 'is_daily', False):
+                continue
+            list_price = tariff_list_price(tariff, user)
+            if list_price and list_price[1] == 30:
+                prices.append(list_price[0])
+    except Exception as error:
+        logger.debug('Не удалось узнать минимальную цену тарифа', error=error)
+        return ''
+    return settings.format_price(min(prices)) if prices else ''
 
 
 async def show_main_menu(
@@ -1034,23 +1073,36 @@ def _menu_facts(texts, subscription, tariff) -> tuple[str, str]:
     return plan_line, traffic.format(used=used, limit=limit)
 
 
-def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | None = None) -> str:
-    """The status card. *trial_days* is the real trial length (the trial tariff may override the setting)."""
+def _get_subscription_status(
+    user: User, texts, tariff=None, trial_days: int | None = None, price_from: str = ''
+) -> str:
+    """The status card.
+
+    *trial_days* is the real trial length (the trial tariff may override the
+    setting); *price_from* is the cheapest month, «99 ₽», for a new person.
+    """
     subscription = getattr(user, 'subscription', None)
     no_subscription = texts.t('SUB_STATUS_NONE', '💎 <b>Подписки пока нет</b>')
-    trial_hint = ''
+    new_user_lines: list[str] = []
     if is_trial_available(
         subscription,
         has_had_paid_subscription=user.has_had_paid_subscription,
         auth_type=getattr(user, 'auth_type', None),
     ):
-        # A new person: say what Ulya gives, not what they lack.
-        no_subscription = texts.t('SUB_STATUS_NEW_USER', '🌐 <b>VPN, который работает даже при белых списках</b>')
-        trial_hint = texts.t('MAIN_MENU_TRIAL_HINT', '🎁 {days} бесплатно, оплата не нужна').format(
+        # A new person: the free days and that no card is asked first, what
+        # Ulya gives second, and what it costs after the trial last.
+        no_subscription = texts.t('MAIN_MENU_TRIAL_HINT', '🎁 <b>{days} бесплатно, карта не нужна</b>').format(
             days=format_days_declension(trial_days or settings.TRIAL_DURATION_DAYS, texts.language)
         )
+        new_user_lines.append(texts.t('SUB_STATUS_NEW_USER', 'VPN работает даже при белых списках.'))
+        if price_from:
+            new_user_lines.append(
+                texts.t('MAIN_MENU_PRICE_FROM', 'Если понравится, подписка стоит от {price} в месяц.').format(
+                    price=price_from
+                )
+            )
     if not subscription:
-        return _status_card(no_subscription, trial_hint)
+        return _status_card(no_subscription, *new_user_lines)
 
     # Reserve-squad grace: подписка локально уже истекла (её status/end_date не
     # подменяются — grace живёт только в панели, см. grant_reserve_squad_grace),
@@ -1082,7 +1134,7 @@ def _get_subscription_status(user: User, texts, tariff=None, trial_days: int | N
     plan_line, traffic_line = _menu_facts(texts, subscription, tariff)
 
     if actual_status == 'pending':
-        return _status_card(no_subscription, trial_hint)
+        return _status_card(no_subscription, *new_user_lines)
 
     if actual_status == 'disabled':
         return _status_card(texts.t('SUB_STATUS_DISABLED', '🚫 <b>Подписка отключена</b>'), plan_line)
@@ -1208,19 +1260,14 @@ async def get_main_menu_text(user, texts, db: AsyncSession):
             except Exception as e:
                 logger.debug('Не удалось загрузить тариф для главного меню', error=e)
 
-        trial_days = None
-        if is_trial_available(
-            subscription,
-            has_had_paid_subscription=user.has_had_paid_subscription,
-            auth_type=getattr(user, 'auth_type', None),
-        ):
-            from app.services.trial_activation_service import get_trial_params
-
-            trial_days = (await get_trial_params(db)).days
+        trial_days = await _trial_days_if_available(db, user)
+        price_from = await _monthly_price_from(db, user) if trial_days else ''
 
         base_text = texts.MAIN_MENU.format(
             user_name=html.escape(user.full_name or ''),
-            subscription_status=_get_subscription_status(user, texts, tariff, trial_days=trial_days),
+            subscription_status=_get_subscription_status(
+                user, texts, tariff, trial_days=trial_days, price_from=price_from
+            ),
         )
 
     info_sections: list[str] = []
