@@ -43,18 +43,89 @@ async def _send_create_failed(message: types.Message, texts, amount_kopeks: int)
     )
 
 
-def _invoice_text(texts, title: str, extra_line: str | None = None) -> str:
-    """One invoice for card and СБП: amount and method, when the money arrives, the payee."""
-    lines = [title, texts.t('PAYMENT_INVOICE_ARRIVES', 'Деньги придут на баланс сразу после оплаты.')]
+async def _paid_tariff(db: AsyncSession, db_user: User, amount_kopeks: int) -> tuple[str, bool] | None:
+    """(tariff name, is a renewal) when this payment completes a saved purchase on its own.
+
+    A top-up from «Не хватает N ₽» saves the purchase in a cart, and with
+    auto-purchase on, the bot buys the tariff as soon as the money arrives. The
+    invoice then names the tariff and promises the subscription, not the balance
+    (msg 9 of the text audit). None for a plain top-up, or when the amount is
+    not enough to complete the purchase.
+    """
+    if not settings.is_auto_purchase_after_topup_enabled():
+        return None
+    try:
+        from app.database.crud.tariff import get_tariff_by_id
+        from app.handlers.subscription.tariff_purchase import _tariff_icon_and_name
+        from app.services.user_cart_service import user_cart_service
+        from app.utils.pricing_utils import balance_covers_price
+
+        cart = await user_cart_service.get_user_cart(db_user.id)
+        if not cart:
+            carts = await user_cart_service.get_all_subscription_carts(db_user.id)
+            cart = carts[0] if len(carts) == 1 else None
+        if not cart or not cart.get('tariff_id'):
+            return None
+        mode = cart.get('cart_mode') or cart.get('mode')
+        if mode not in ('tariff_purchase', 'extend', 'daily_tariff_purchase'):
+            return None
+        price = int(cart.get('total_price') or 0)
+        if not balance_covers_price((db_user.balance_kopeks or 0) + amount_kopeks, price):
+            return None
+        tariff = await get_tariff_by_id(db, int(cart['tariff_id']))
+        if not tariff:
+            return None
+        return _tariff_icon_and_name(tariff)[1], mode == 'extend'
+    except Exception as error:  # the invoice must go out even when the cart cannot be read
+        logger.warning('Не удалось определить тариф для счёта', user_id=db_user.id, error=error)
+        return None
+
+
+def _invoice_title(texts, method: str, amount_kopeks: int, paid_tariff: tuple[str, bool] | None) -> str:
+    """«Оплата тарифа «Безлимит» по СБП, 199 ₽»: what the money is for, then how much.
+
+    «тарифа» is there because the bot cannot decline names set in the admin panel.
+    """
+    values = {
+        'icon': tg_emoji('payment'),
+        'amount': texts.format_price(amount_kopeks),
+        'name': html.escape(paid_tariff[0]) if paid_tariff else '',
+    }
+    if method == 'sbp':
+        if paid_tariff:
+            title = texts.t('PAYMENT_INVOICE_SBP_TARIFF_TITLE', '🏦 <b>Оплата тарифа «{name}» по СБП, {amount}</b>')
+        else:
+            title = texts.t('PAYMENT_INVOICE_SBP_TITLE', '🏦 <b>Оплата {amount} по СБП</b>')
+    elif paid_tariff:
+        title = texts.t('PAYMENT_INVOICE_CARD_TARIFF_TITLE', '{icon} <b>Оплата тарифа «{name}» картой, {amount}</b>')
+    else:
+        title = texts.t('PAYMENT_INVOICE_CARD_TITLE', '{icon} <b>Оплата {amount} картой</b>')
+    return title.format(**values)
+
+
+def _invoice_text(texts, title: str, extra_line: str | None = None, paid_tariff: tuple[str, bool] | None = None) -> str:
+    """One invoice for card and СБП: what is paid for, what happens after, the payee.
+
+    For a tariff it promises the subscription itself, so nobody has to come
+    back to the bot; for a top-up, the balance.
+    """
+    if paid_tariff and paid_tariff[1]:
+        arrives = texts.t('PAYMENT_INVOICE_RENEWAL_ARRIVES', 'Подписка продлится сама сразу после оплаты.')
+    elif paid_tariff:
+        arrives = texts.t('PAYMENT_INVOICE_SUBSCRIPTION_ARRIVES', 'Подписка включится сама сразу после оплаты.')
+    else:
+        arrives = texts.t('PAYMENT_INVOICE_ARRIVES', 'Деньги придут на баланс сразу после оплаты.')
+    lines = [title, arrives]
     if extra_line:
         lines.append(extra_line)
     statement_name = (settings.YOOKASSA_STATEMENT_NAME or '').strip()
     if statement_name:
         # Named as in the bank statement, so the user knows the payment goes where it should.
+        lines.append('')
         lines.append(
             texts.t(
                 'PAYMENT_INVOICE_STATEMENT_NAME',
-                '<blockquote>Получатель в выписке банка: «{name}»</blockquote>',
+                '🧾 В выписке банка платёж будет от «{name}»',
             ).format(name=html.escape(statement_name))
         )
     return '\n'.join(lines)
@@ -68,15 +139,16 @@ def _invoice_keyboard(
         # The amount on the button answers "how much will be charged".
         pay_label = texts.t('PAYMENT_PAY_BUTTON', 'Оплатить {amount}').format(amount=texts.format_price(amount_kopeks))
         rows.append([icon_button('payment', pay_label, url=confirmation_url, style=STYLE_PAY)])
+    # «Проверить, прошла ли оплата» says why to press it; it is too long to share a row.
     rows.append(
         [
             types.InlineKeyboardButton(
-                text=texts.t('PAYMENT_CHECK_BUTTON', 'Проверить оплату'),
+                text=texts.t('PAYMENT_CHECK_BUTTON', 'Проверить, прошла ли оплата'),
                 callback_data=f'check_yookassa_{local_payment_id}',
-            ),
-            types.InlineKeyboardButton(text=texts.BACK, callback_data=topup_methods_callback(amount_kopeks)),
+            )
         ]
     )
+    rows.append([types.InlineKeyboardButton(text=texts.BACK, callback_data=topup_methods_callback(amount_kopeks))])
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -249,10 +321,11 @@ async def process_yookassa_payment_amount(
 
         await _delete_amount_prompt(message, state, 'card')
 
-        title = texts.t('PAYMENT_INVOICE_CARD_TITLE', '{icon} <b>Оплата {amount} картой</b>').format(
-            icon=tg_emoji('payment'), amount=texts.format_price(amount_kopeks)
+        paid_tariff = await _paid_tariff(db, db_user, amount_kopeks)
+        title = _invoice_title(texts, 'card', amount_kopeks, paid_tariff)
+        invoice_message = await message.answer(
+            _invoice_text(texts, title, paid_tariff=paid_tariff), reply_markup=keyboard, parse_mode='HTML'
         )
-        invoice_message = await message.answer(_invoice_text(texts, title), reply_markup=keyboard, parse_mode='HTML')
 
         try:
             from app.services import payment_service as payment_module
@@ -422,17 +495,16 @@ async def process_yookassa_sbp_payment_amount(
 
         await _delete_amount_prompt(message, state, 'sbp')
 
-        title = texts.t('PAYMENT_INVOICE_SBP_TITLE', '🏦 <b>Оплата {amount} по СБП</b>').format(
-            amount=texts.format_price(amount_kopeks)
-        )
+        paid_tariff = await _paid_tariff(db, db_user, amount_kopeks)
+        title = _invoice_title(texts, 'sbp', amount_kopeks, paid_tariff)
         qr_line = None
         if qr_photo:
             # From a computer people pay by scanning the code with their phone.
             qr_line = texts.t(
                 'PAYMENT_INVOICE_SBP_QR',
-                'Если вы за компьютером, отсканируйте QR-код камерой телефона.',
+                'Если вы за компьютером, отсканируйте QR-код телефоном.',
             )
-        message_text = _invoice_text(texts, title, qr_line)
+        message_text = _invoice_text(texts, title, qr_line, paid_tariff=paid_tariff)
 
         if qr_photo:
             invoice_message = await message.answer_photo(

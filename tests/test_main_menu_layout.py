@@ -60,7 +60,6 @@ def test_new_user_sees_trial_first():
     assert rows == [
         ['menu_trial'],
         ['menu_buy'],
-        ['menu_balance'],
         ['menu_referrals'],
         ['menu_support', 'menu_info'],
     ]
@@ -70,7 +69,13 @@ def test_buy_is_first_when_trial_already_used():
     rows = _rows(build_main_menu_keyboard('ru', subscription=None, has_had_paid_subscription=True))
 
     assert rows[0] == ['menu_buy']
-    assert rows[1] == ['menu_balance']
+    assert rows[1] == ['menu_referrals']
+
+
+def test_new_user_sees_balance_once_there_is_money():
+    rows = _rows(build_main_menu_keyboard('ru', subscription=None, balance_kopeks=10000))
+
+    assert ['menu_balance'] in rows
 
 
 def test_active_user_sees_connect_first():

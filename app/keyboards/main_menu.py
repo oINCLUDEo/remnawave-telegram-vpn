@@ -16,8 +16,8 @@ most for the user's current state, so the state decides the rows:
 Row   NEW (no subscription)     TRIAL / ACTIVE            RENEW (expiring or ended)
 ====  ========================  ========================  ========================
 1     Попробовать (1)           Подключиться              Продлить (4)
-2     Купить подписку           Моя подписка (2)          Подключиться (3)
-3     Баланс                    Баланс                    Моя подписка
+2     Тарифы и цены             Моя подписка (2)          Подключиться (3)
+3     Баланс (5)                Баланс                    Моя подписка
 4     Пригласить друга          Пригласить друга          Баланс
 5     Поддержка · Инфо          Поддержка · Инфо          Пригласить друга
 6     —                         —                         Поддержка · Инфо
@@ -27,6 +27,7 @@ Row   NEW (no subscription)     TRIAL / ACTIVE            RENEW (expiring or end
 (2) "Купить подписку" while on a trial. (3) Only while access still works.
 (4) "Выбрать тариф" when it is the trial that ended or ran out of traffic:
 nothing was bought, so there is nothing to renew.
+(5) Only with money on the balance: «Баланс: 0 ₽» gives a new person nothing.
 
 Only the first coloured button keeps its colour; see the colour rules in
 :mod:`app.keyboards.icons`.
@@ -262,7 +263,10 @@ def build_main_menu_keyboard(
             rows.append([connect_button(texts, subscription)])
         rows.append([my_subscription])
 
-    rows.append([balance])
+    # «Баланс: 0 ₽» gives a new person nothing and takes attention from the trial:
+    # the button appears once there is a subscription or money on the balance.
+    if state != MenuState.NEW or (balance_kopeks or 0) > 0:
+        rows.append([balance])
     rows.append([referral])
     rows.append([support, info])
 

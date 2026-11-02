@@ -4,6 +4,7 @@ import json
 import redis.asyncio as aioredis
 import structlog
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,7 @@ from app.config import settings
 from app.database.crud.referral import create_referral_earning, get_commission_payment_count, get_user_campaign_id
 from app.database.crud.user import add_user_balance, get_user_by_id
 from app.database.models import ReferralEarning, TransactionType, User
+from app.localization.texts import get_texts
 from app.services.notification_delivery_service import (
     notification_delivery_service,
 )
@@ -116,6 +118,46 @@ async def _is_commission_limit_reached(db: AsyncSession, referrer_id: int, refer
     return False
 
 
+def _invite_more_keyboard(texts) -> InlineKeyboardMarkup:
+    """«Пригласить ещё»: money from a friend has just come, the best moment to invite another one."""
+    from app.keyboards.icons import icon_button
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                icon_button(
+                    'referral',
+                    texts.t('REFERRAL_INVITE_MORE_BUTTON', 'Пригласить ещё'),
+                    callback_data='menu_referrals',
+                )
+            ]
+        ]
+    )
+
+
+def _commission_notification(
+    referrer: User, friend: User, amount_kopeks: int, commission_kopeks: int, percent: int, *, purchase: bool = False
+) -> str:
+    """«+75 ₽ от друга»: a friend paid, and the commission is already on the balance."""
+    texts = get_texts(referrer.language)
+    fmt = settings.format_price
+    if purchase:
+        body = texts.t(
+            'REFERRAL_PURCHASE_COMMISSION_TEXT',
+            'Ваш друг {name} оплатил покупку на {amount}. Ваши {percent}% уже на балансе.',
+        )
+    else:
+        body = texts.t(
+            'REFERRAL_COMMISSION_TEXT',
+            'Ваш друг {name} пополнил баланс на {amount}. Ваши {percent}% уже на балансе.',
+        )
+    return (
+        texts.t('REFERRAL_INCOME_TITLE', '💰 <b>+{amount} от друга</b>').format(amount=fmt(commission_kopeks))
+        + '\n'
+        + body.format(name=html.escape(friend.full_name or ''), amount=fmt(amount_kopeks), percent=percent)
+    )
+
+
 async def send_referral_notification(
     bot: Bot,
     telegram_id: int | None,
@@ -123,9 +165,13 @@ async def send_referral_notification(
     user: User | None = None,
     bonus_kopeks: int = 0,
     referral_name: str = '',
+    reply_markup: InlineKeyboardMarkup | None = None,
 ):
     """
     Отправляет реферальное уведомление в Telegram или по email.
+
+    In Telegram it comes with the «Пригласить друга» banner (``referral``) when
+    the designer's file exists, and with *reply_markup* («Пригласить ещё»).
 
     Args:
         bot: Telegram Bot instance
@@ -153,7 +199,16 @@ async def send_referral_notification(
         return
 
     try:
-        await bot.send_message(telegram_id, message, parse_mode='HTML')
+        from app.utils.message_patch import send_banner_message
+
+        await send_banner_message(
+            bot,
+            banner='referral',
+            chat_id=telegram_id,
+            text=message,
+            parse_mode='HTML',
+            reply_markup=reply_markup,
+        )
         logger.info('✅ Уведомление отправлено пользователю', telegram_id=telegram_id)
     except Exception as e:
         logger.error('❌ Ошибка отправки уведомления пользователю', telegram_id=telegram_id, error=e)
@@ -197,41 +252,51 @@ async def process_referral_registration(db: AsyncSession, new_user_id: int, refe
 
         if bot:
             commission_percent = get_effective_referral_commission_percent(referrer)
-            referral_notification = (
-                f'🎉 <b>Добро пожаловать!</b>\n\n'
-                f'Вы перешли по реферальной ссылке пользователя <b>{html.escape(referrer.full_name)}</b>!'
-            )
+            fmt = settings.format_price
+            minimum = fmt(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS)
+
+            # The invited person: who invited them and what the first top-up brings.
+            friend_texts = get_texts(new_user.language)
             if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
-                referral_notification += (
-                    f'\n\n💰 При первом пополнении от {settings.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS)} '
-                    f'вы получите бонус {settings.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS)}!'
+                referral_notification = friend_texts.t(
+                    'REFERRAL_WELCOME_BONUS',
+                    '🎁 <b>Приглашение от {name}</b>\nПополните баланс от {min}, и мы добавим {bonus} в подарок.',
                 )
+            else:
+                referral_notification = friend_texts.t('REFERRAL_WELCOME', '🤝 <b>Приглашение от {name}</b>')
+            referral_notification = referral_notification.format(
+                name=html.escape(referrer.full_name or ''),
+                min=minimum,
+                bonus=fmt(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
+            )
             await send_referral_notification(bot, new_user.telegram_id, referral_notification, user=new_user)
 
-            inviter_notification = (
-                f'👥 <b>Новый реферал!</b>\n\n'
-                f'По вашей ссылке зарегистрировался пользователь <b>{html.escape(new_user.full_name)}</b>!\n\n'
-                f'💰 Когда он пополнит баланс от {settings.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS)}, '
-            )
+            # The inviter: who came and what they will get, in one sentence.
+            texts = get_texts(referrer.language)
+            inviter_title = texts.t('REFERRAL_NEW_FRIEND_TITLE', '🤝 <b>Новый друг по вашей ссылке: {name}</b>')
             if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0 and commission_percent > 0:
-                inviter_notification += (
-                    f'вы получите {settings.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS)} + '
-                    f'{commission_percent}% от суммы пополнения.\n\n'
+                terms = texts.t(
+                    'REFERRAL_NEW_FRIEND_BONUS_AND_PERCENT',
+                    'Когда друг пополнит баланс от {min}, вам придут {bonus}, а потом {percent}% с каждой его оплаты.',
                 )
             elif settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
-                inviter_notification += (
-                    f'вы получите {settings.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS)}.\n\n'
-                )
+                terms = texts.t('REFERRAL_NEW_FRIEND_BONUS', 'Когда друг пополнит баланс от {min}, вам придут {bonus}.')
             elif commission_percent > 0:
-                inviter_notification += f'вы получите {commission_percent}% от суммы.\n\n'
+                terms = texts.t('REFERRAL_NEW_FRIEND_PERCENT', 'С каждой его оплаты вам будут приходить {percent}%.')
             else:
-                inviter_notification += 'вы получите уведомление.\n\n'
-            if commission_percent > 0:
-                inviter_notification += (
-                    f'📈 С каждого последующего пополнения вы будете получать {commission_percent}% комиссии.'
+                terms = ''
+            inviter_notification = inviter_title.format(name=html.escape(new_user.full_name or ''))
+            if terms:
+                inviter_notification += '\n' + terms.format(
+                    min=minimum, bonus=fmt(settings.REFERRAL_INVITER_BONUS_KOPEKS), percent=commission_percent
                 )
             await send_referral_notification(
-                bot, referrer.telegram_id, inviter_notification, user=referrer, referral_name=new_user.full_name
+                bot,
+                referrer.telegram_id,
+                inviter_notification,
+                user=referrer,
+                referral_name=new_user.full_name,
+                reply_markup=_invite_more_keyboard(texts),
             )
 
         logger.info(
@@ -315,13 +380,8 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                         )
 
                         if bot:
-                            commission_notification = (
-                                f'💰 <b>Реферальная комиссия!</b>\n\n'
-                                f'Ваш реферал <b>{html.escape(user.full_name)}</b> пополнил баланс на '
-                                f'{settings.format_price(topup_amount_kopeks)}\n\n'
-                                f'🎁 Ваша комиссия ({commission_percent}%): '
-                                f'{settings.format_price(commission_amount)}\n\n'
-                                f'💎 Средства зачислены на ваш баланс.'
+                            commission_notification = _commission_notification(
+                                referrer, user, topup_amount_kopeks, commission_amount, commission_percent
                             )
                             await send_referral_notification(
                                 bot,
@@ -330,6 +390,7 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                                 user=referrer,
                                 bonus_kopeks=commission_amount,
                                 referral_name=user.full_name,
+                                reply_markup=_invite_more_keyboard(get_texts(referrer.language)),
                             )
                     else:
                         logger.error(
@@ -373,12 +434,11 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                     )
 
                     if bot:
-                        bonus_notification = (
-                            f'🎉 <b>Бонус получен!</b>\n\n'
-                            f'За первое пополнение вы получили бонус '
-                            f'{settings.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS)}!\n\n'
-                            f'💎 Средства зачислены на ваш баланс.'
-                        )
+                        friend_texts = get_texts(user.language)
+                        bonus_notification = friend_texts.t(
+                            'REFERRAL_FRIEND_BONUS',
+                            '🎁 <b>+{bonus} на баланс</b>\nЭто подарок за первое пополнение по приглашению друга.',
+                        ).format(bonus=settings.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS))
                         await send_referral_notification(
                             bot,
                             user.telegram_id,
@@ -422,35 +482,50 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                     )
 
                     if bot:
-                        bonus_parts = []
+                        # «+175 ₽ от друга», what it is made of, and what comes next (msg 15 of the audit).
+                        texts = get_texts(referrer.language)
+                        fmt = settings.format_price
+                        breakdown = []
                         if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
-                            bonus_parts.append(
-                                f'фикс. бонус {settings.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS)}'
+                            breakdown.append(
+                                texts.t('REFERRAL_FIRST_TOPUP_BONUS_LINE', '🎁 {bonus} за первое пополнение').format(
+                                    bonus=fmt(settings.REFERRAL_INVITER_BONUS_KOPEKS)
+                                )
                             )
                         if commission_amount > 0:
-                            bonus_parts.append(
-                                f'комиссия {commission_percent}% = {settings.format_price(commission_amount)}'
+                            percent_line = texts.t(
+                                'REFERRAL_FIRST_TOPUP_PERCENT_LINE', '📈 {commission} — {percent}% от его оплаты'
                             )
-                        bonus_breakdown = ' + '.join(bonus_parts)
-                        inviter_bonus_notification = (
-                            f'💰 <b>Реферальная награда!</b>\n\n'
-                            f'Ваш реферал <b>{html.escape(user.full_name)}</b> сделал первое пополнение '
-                            f'на {settings.format_price(topup_amount_kopeks)}!\n\n'
-                            f'🎁 Ваша награда: {settings.format_price(inviter_bonus)}'
-                            f' ({bonus_breakdown})'
-                        )
+                            breakdown.append(
+                                percent_line.format(commission=fmt(commission_amount), percent=commission_percent)
+                            )
+                        parts = [
+                            texts.t('REFERRAL_INCOME_TITLE', '💰 <b>+{amount} от друга</b>').format(
+                                amount=fmt(inviter_bonus)
+                            )
+                            + '\n'
+                            + texts.t(
+                                'REFERRAL_FIRST_TOPUP_TEXT', 'Ваш друг {name} впервые пополнил баланс на {amount}.'
+                            ).format(name=html.escape(user.full_name or ''), amount=fmt(topup_amount_kopeks))
+                        ]
+                        if len(breakdown) > 1:
+                            # One part needs no breakdown: the title already says it.
+                            parts.append('\n'.join(breakdown))
                         if commission_percent > 0:
-                            inviter_bonus_notification += (
-                                f'\n\n📈 Теперь с каждого его пополнения вы будете получать '
-                                f'{commission_percent}% комиссии.'
+                            parts.append(
+                                texts.t(
+                                    'REFERRAL_FIRST_TOPUP_NEXT',
+                                    'Дальше {percent}% с каждой его оплаты будут приходить на ваш баланс.',
+                                ).format(percent=commission_percent)
                             )
                         await send_referral_notification(
                             bot,
                             referrer.telegram_id,
-                            inviter_bonus_notification,
+                            '\n\n'.join(parts),
                             user=referrer,
                             bonus_kopeks=inviter_bonus,
                             referral_name=user.full_name,
+                            reply_markup=_invite_more_keyboard(texts),
                         )
                 else:
                     logger.error(
@@ -490,13 +565,8 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                 )
 
                 if bot:
-                    commission_notification = (
-                        f'💰 <b>Реферальная комиссия!</b>\n\n'
-                        f'Ваш реферал <b>{html.escape(user.full_name)}</b> пополнил баланс на '
-                        f'{settings.format_price(topup_amount_kopeks)}\n\n'
-                        f'🎁 Ваша комиссия ({commission_percent}%): '
-                        f'{settings.format_price(commission_amount)}\n\n'
-                        f'💎 Средства зачислены на ваш баланс.'
+                    commission_notification = _commission_notification(
+                        referrer, user, topup_amount_kopeks, commission_amount, commission_percent
                     )
                     await send_referral_notification(
                         bot,
@@ -505,6 +575,7 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                         user=referrer,
                         bonus_kopeks=commission_amount,
                         referral_name=user.full_name,
+                        reply_markup=_invite_more_keyboard(get_texts(referrer.language)),
                     )
             else:
                 logger.error(
@@ -571,13 +642,8 @@ async def process_referral_purchase(
             )
 
             if bot:
-                purchase_commission_notification = (
-                    f'💰 <b>Комиссия с покупки!</b>\n\n'
-                    f'Ваш реферал <b>{html.escape(user.full_name)}</b> совершил покупку на '
-                    f'{settings.format_price(purchase_amount_kopeks)}\n\n'
-                    f'🎁 Ваша комиссия ({commission_percent}%): '
-                    f'{settings.format_price(commission_amount)}\n\n'
-                    f'💎 Средства зачислены на ваш баланс.'
+                purchase_commission_notification = _commission_notification(
+                    referrer, user, purchase_amount_kopeks, commission_amount, commission_percent, purchase=True
                 )
                 await send_referral_notification(
                     bot,

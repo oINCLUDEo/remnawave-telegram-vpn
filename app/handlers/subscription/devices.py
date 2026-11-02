@@ -83,7 +83,7 @@ async def get_current_devices_detailed(db_user: User, subscription=None) -> dict
         return {'count': 0, 'devices': []}
 
 
-async def get_servers_display_names(squad_uuids: list[str]) -> str:
+async def get_servers_display_names(squad_uuids: list[str], *, last_separator: str | None = None) -> str:
     if not squad_uuids:
         return 'Нет серверов'
 
@@ -120,6 +120,9 @@ async def get_servers_display_names(squad_uuids: list[str]) -> str:
             displayed = ', '.join(server_names[:6])
             remaining = len(server_names) - 6
             return f'{displayed} и ещё {remaining}'
+        if last_separator and len(server_names) > 1:
+            # «Нидерланды, Германия и обход белых списков» reads as a sentence, not a list.
+            return ', '.join(server_names[:-1]) + last_separator + server_names[-1]
         return ', '.join(server_names)
 
     except Exception as e:

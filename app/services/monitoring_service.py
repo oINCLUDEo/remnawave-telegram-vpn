@@ -64,7 +64,6 @@ from app.utils.cache import cache
 from app.utils.formatters import format_human_date
 from app.utils.pricing_utils import balance_covers_price, shortfall_topup_rubles
 from app.utils.message_patch import caption_exceeds_telegram_limit
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button, strip_leading_emoji_if_custom_icon
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 from app.utils.subscription_utils import (
     autopay_days_before,
@@ -130,11 +129,16 @@ class MonitoringService:
         parse_mode: str | None = 'HTML',
         user: User | None = None,
         disable_notification: bool = False,
+        banner: str | None = None,
     ):
         """Отправляет сообщение, добавляя логотип при необходимости.
 
         *disable_notification* делает сообщение тихим: так приходят чеки и
         напоминания, которые не требуют действий.
+
+        *banner* is the section the message leads to (keys in app/utils/banners.py):
+        a renewal reminder comes with the ``renew`` picture, like the screen its
+        button opens. Without the designer's file the logo goes, as before.
         """
         if not self.bot:
             raise RuntimeError('Bot instance is not available')
@@ -155,17 +159,19 @@ class MonitoringService:
             and not caption_exceeds_telegram_limit(text)
         ):
             try:
+                from app.utils.banners import use_banner
                 from app.utils.message_patch import _cache_logo_file_id, get_logo_media
 
-                result = await self.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=get_logo_media(),
-                    caption=text,
-                    reply_markup=reply_markup,
-                    parse_mode=parse_mode,
-                    disable_notification=disable_notification,
-                )
-                _cache_logo_file_id(result)
+                with use_banner(banner):
+                    result = await self.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=get_logo_media(),
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode=parse_mode,
+                        disable_notification=disable_notification,
+                    )
+                    _cache_logo_file_id(result)
                 return result
             except TelegramBadRequest as exc:
                 logger.warning(
@@ -953,6 +959,7 @@ class MonitoringService:
                 rows = [support_row, connect_row]
 
             await self._send_message_with_logo(
+                banner='connect' if stage == 1 else 'support',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -1345,6 +1352,7 @@ class MonitoringService:
                             offer.id,
                             'second',
                             is_trial=is_trial,
+                            db=db,
                         )
                         if success:
                             await record_notification(db, user.id, subscription.id, 'expired_discount_wave2')
@@ -1376,6 +1384,7 @@ class MonitoringService:
                                 'third',
                                 trigger_days=trigger_days,
                                 is_trial=is_trial,
+                                db=db,
                             )
                             if success:
                                 await record_notification(db, user.id, subscription.id, 'expired_discount_wave3')
@@ -1718,6 +1727,24 @@ class MonitoringService:
             price=settings.format_price(price)
         )
 
+    @staticmethod
+    def _renew_callback(subscription: Subscription) -> str:
+        """Where a button with a price («Продлить за 199 ₽») leads: the payment for that very period.
+
+        The price on the button is for the tariff's shortest period, so the
+        button opens its confirmation at once, not the list of periods; «Назад»
+        there leads to the other periods.
+        """
+        if settings.is_multi_tariff_enabled():
+            return f'se:{subscription.id}'
+        from app.keyboards.main_menu import _loaded_tariff
+
+        tariff = _loaded_tariff(subscription)
+        period = tariff.get_shortest_period() if tariff and not getattr(tariff, 'is_daily', False) else None
+        if tariff and period:
+            return f'tariff_extend:{tariff.id}:{period}'
+        return 'subscription_extend'
+
     def _renew_keyboard(self, texts, subscription: Subscription, *, with_support: bool = False):
         """«Продлить подписку» (and «Поддержка»): the renewal flow itself offers payment methods if money is short."""
         from aiogram.types import InlineKeyboardMarkup
@@ -1770,6 +1797,7 @@ class MonitoringService:
             )
 
             sent = await self._send_message_with_logo(
+                banner='renew',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -1880,19 +1908,19 @@ class MonitoringService:
                     tariff_label=tariff_label,
                     end_date=format_time_left(subscription.end_date, user.language),
                 )
-                extend_callback = (
-                    f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-                )
-                rows = [
-                    [
-                        icon_button(
-                            'renew',
-                            texts.t('MAIN_MENU_BTN_RENEW', 'Продлить подписку'),
-                            callback_data=extend_callback,
-                            style=STYLE_PAY,
-                        )
-                    ]
-                ]
+                # The price on the button answers «сколько» before the tap (msg 12 of the text audit).
+                price = await get_renewal_price(db, subscription, user)
+                if price:
+                    renew_label = texts.t('RENEW_FOR_PRICE_BUTTON', 'Продлить за {price}').format(
+                        price=settings.format_price(price)
+                    )
+                    extend_callback = self._renew_callback(subscription)
+                else:
+                    renew_label = texts.t('MAIN_MENU_BTN_RENEW', 'Продлить подписку')
+                    extend_callback = (
+                        f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
+                    )
+                rows = [[icon_button('renew', renew_label, callback_data=extend_callback, style=STYLE_PAY)]]
                 if settings.ENABLE_AUTOPAY and not subscription.autopay_enabled:
                     # The button needs one line on where autopay takes the money from.
                     message += '\n\n' + texts.t(
@@ -1910,6 +1938,7 @@ class MonitoringService:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
 
             sent = await self._send_message_with_logo(
+                banner='renew',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -2060,6 +2089,7 @@ class MonitoringService:
                 message += '\n\n' + offer
 
             sent = await self._send_message_with_logo(
+                banner='buy',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -2125,6 +2155,7 @@ class MonitoringService:
                 rows.append([write_support_button(texts)])
             keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
             sent = await self._send_message_with_logo(
+                banner='buy',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -2232,6 +2263,7 @@ class MonitoringService:
             )
 
             sent = await self._send_message_with_logo(
+                banner='renew',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -2272,82 +2304,99 @@ class MonitoringService:
         trigger_days: int = None,
         *,
         is_trial: bool = False,
+        db: AsyncSession | None = None,
     ) -> bool:
+        """«Скидка 10% на продление тарифа «Безлимит»» with the price in rubles (msg 13 of the text audit).
+
+        The button says what the renewal costs with the discount, «Продлить за
+        179 ₽», and the tap claims the discount and opens the payment at once
+        (``claim_discount_offer``).
+        """
         if is_trial:
             return await self._send_trial_discount_notification(
-                user, subscription, percent, expires_at, offer_id, wave, trigger_days
+                user, subscription, percent, expires_at, offer_id, wave, trigger_days, db=db
             )
+        from aiogram.types import InlineKeyboardMarkup
+
+        from app.keyboards.icons import icon_button
+        from app.keyboards.main_menu import _loaded_tariff
+        from app.services.pricing_engine import PricingEngine
         from app.utils.formatters import format_days_declension, format_valid_for
 
         try:
             texts = get_texts(user.language)
+            valid = format_valid_for(expires_at, user.language)
 
             tariff_label = ''
-            if settings.is_multi_tariff_enabled() and hasattr(subscription, 'tariff') and subscription.tariff:
-                tariff_label = f' «{subscription.tariff.name}»'
+            tariff = _loaded_tariff(subscription)
+            if tariff:
+                from app.handlers.subscription.tariff_purchase import _tariff_icon_and_name
 
-            if wave == 'second':
-                template = texts.get(
-                    'SUBSCRIPTION_EXPIRED_SECOND_WAVE',
-                    (
-                        '🔥 <b>Скидка {percent}% на продление{tariff_label}</b>\n'
-                        'Добавляется к вашей обычной скидке и действует {expires_at}. '
-                        'Нажмите кнопку, чтобы её получить.'
-                    ),
+                # «тарифа» because the bot cannot decline names set in the admin panel.
+                tariff_label = texts.t('DISCOUNT_TARIFF_LABEL', ' тарифа «{name}»').format(
+                    name=html.escape(_tariff_icon_and_name(tariff)[1])
+                )
+
+            price = None
+            if db is not None:
+                from app.utils.subscription_utils import get_renewal_price
+
+                try:
+                    fresh_user = await get_user_by_id(db, user.id) or user
+                    price = await get_renewal_price(db, subscription, fresh_user)
+                except Exception as error:
+                    logger.warning('Не удалось узнать цену продления для скидки', error=error)
+            discounted = PricingEngine.apply_discount(price, percent) if price else None
+
+            if discounted:
+                offer = texts.t(
+                    'DISCOUNT_RENEW_PRICE_LINE',
+                    'Продлить можно за {price} вместо {old_price}, скидка действует {expires_at}.',
+                ).format(
+                    price=settings.format_price(discounted),
+                    old_price=settings.format_price(price),
+                    expires_at=valid,
                 )
             else:
-                template = texts.get(
+                offer = texts.t('DISCOUNT_VALID_LINE', 'Скидка действует {expires_at}.').format(expires_at=valid)
+
+            if wave == 'second':
+                template = texts.t(
+                    'SUBSCRIPTION_EXPIRED_SECOND_WAVE',
+                    '🎁 <b>Скидка {percent}% на продление{tariff_label}</b>\n{offer}\n\n'
+                    'VPN заработает сразу после оплаты, без новой настройки.',
+                )
+            else:
+                template = texts.t(
                     'SUBSCRIPTION_EXPIRED_THIRD_WAVE',
-                    (
-                        '🎁 <b>Скидка {percent}% на продление{tariff_label}</b>\n'
-                        'VPN не работает уже {days}. Если хотите вернуться, скидка действует {expires_at}.'
-                    ),
+                    '🎁 <b>Скидка {percent}% на продление{tariff_label}</b>\nVPN не работает уже {days}. {offer}',
                 )
 
             message = template.format(
                 percent=percent,
-                expires_at=format_valid_for(expires_at, user.language),
+                offer=offer,
+                expires_at=valid,
                 trigger_days=trigger_days or '',
                 days=format_days_declension(trigger_days or 0, user.language),
                 tariff_label=tariff_label,
             )
 
-            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-            extend_callback = f'se:{subscription.id}' if settings.is_multi_tariff_enabled() else 'subscription_extend'
-
+            if discounted:
+                button_text = texts.t('RENEW_FOR_PRICE_BUTTON', 'Продлить за {price}').format(
+                    price=settings.format_price(discounted)
+                )
+            else:
+                button_text = texts.t('DISCOUNT_RENEW_BUTTON', 'Продлить со скидкой {percent}%').format(
+                    percent=percent
+                )
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [
-                        build_miniapp_or_callback_button(
-                            text='🎁 Получить скидку', callback_data=f'claim_discount_{offer_id}'
-                        )
-                    ],
-                    [
-                        build_miniapp_or_callback_button(
-                            text=strip_leading_emoji_if_custom_icon(
-                                texts.t('SUBSCRIPTION_EXTEND', '💎 Продлить подписку'), ICONS['renew'].custom_emoji_id
-                            ),
-                            callback_data=extend_callback,
-                            style='success',
-                            icon_custom_emoji_id=ICONS['renew'].custom_emoji_id,
-                        )
-                    ],
-                    [
-                        build_miniapp_or_callback_button(
-                            text=texts.t('BALANCE_TOPUP', '💳 Пополнить баланс'),
-                            callback_data='balance_topup',
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text=texts.t('SUPPORT_BUTTON', '🆘 Поддержка'), callback_data='menu_support'
-                        )
-                    ],
+                    [icon_button('renew', button_text, callback_data=f'claim_discount_{offer_id}', style=STYLE_PAY)]
                 ]
             )
 
             sent = await self._send_message_with_logo(
+                banner='renew',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -2372,6 +2421,59 @@ class MonitoringService:
             logger.error('Ошибка отправки скидочного уведомления пользователю', telegram_id=user.telegram_id, e=e)
             return False
 
+    async def _discounted_tariff_lines(self, db: AsyncSession | None, user: User, texts, percent: int) -> list[str]:
+        """«📱 «Стандарт» за 134 ₽ вместо 149 ₽» for two tariffs, so nobody has to work out the percent.
+
+        The tariff most people choose and the next one up; without a recommended
+        tariff, the two cheapest. Monthly prices only, with the user's own discounts.
+        """
+        if db is None or not settings.is_tariffs_mode():
+            return []
+        try:
+            from app.database.crud.tariff import get_tariffs_for_user
+            from app.handlers.subscription.tariff_purchase import (
+                _tariff_icon_and_name,
+                get_recommended_tariff_id,
+                tariff_list_price,
+            )
+            from app.services.pricing_engine import PricingEngine
+
+            fresh_user = await get_user_by_id(db, user.id) or user
+            priced = []
+            for tariff in await get_tariffs_for_user(db, getattr(fresh_user, 'promo_group_id', None)):
+                if getattr(tariff, 'is_daily', False):
+                    continue
+                list_price = tariff_list_price(tariff, fresh_user)
+                if list_price and list_price[1] == 30 and list_price[0] > 0:
+                    priced.append((list_price[0], tariff))
+            priced.sort(key=lambda item: item[0])
+            if not priced:
+                return []
+            recommended_id = await get_recommended_tariff_id(db, [tariff for _, tariff in priced])
+            index = next((i for i, (_, tariff) in enumerate(priced) if tariff.id == recommended_id), None)
+            if index is None:
+                chosen = priced[:2]
+            elif index + 1 < len(priced):
+                chosen = priced[index : index + 2]
+            else:
+                chosen = priced[max(0, index - 1) : index + 1]
+        except Exception as error:
+            logger.warning('Не удалось посчитать цены со скидкой', user_id=user.id, error=error)
+            return []
+
+        lines = []
+        for price, tariff in chosen:
+            icon, name = _tariff_icon_and_name(tariff)
+            lines.append(
+                texts.t('DISCOUNT_TARIFF_PRICE_LINE', '{icon} «{name}» за {price} вместо {old_price}').format(
+                    icon=icon or tg_emoji('tariff'),
+                    name=html.escape(name),
+                    price=settings.format_price(PricingEngine.apply_discount(price, percent)),
+                    old_price=settings.format_price(price),
+                )
+            )
+        return lines
+
     async def _send_trial_discount_notification(
         self,
         user: User,
@@ -2381,8 +2483,10 @@ class MonitoringService:
         offer_id: int,
         wave: str,
         trigger_days: int | None = None,
+        *,
+        db: AsyncSession | None = None,
     ) -> bool:
-        """The same discount waves after a trial: «на первую подписку», not «на продление»."""
+        """The same discount waves after a trial: «на первую оплату», with prices in rubles (msg 7)."""
         try:
             from aiogram.types import InlineKeyboardMarkup
 
@@ -2408,6 +2512,9 @@ class MonitoringService:
                 expires_at=format_valid_for(expires_at, user.language),
                 days=format_days_declension(trigger_days or 0, user.language),
             )
+            price_lines = await self._discounted_tariff_lines(db, user, texts, percent)
+            if price_lines:
+                message += '\n\n' + '\n'.join(price_lines)
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -2423,6 +2530,7 @@ class MonitoringService:
                 ]
             )
             sent = await self._send_message_with_logo(
+                banner='buy',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -2467,6 +2575,7 @@ class MonitoringService:
                 days=days,
             )
             await self._send_message_with_logo(
+                banner='success',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',
@@ -2531,6 +2640,7 @@ class MonitoringService:
             )
 
             sent = await self._send_message_with_logo(
+                banner='renew',
                 chat_id=user.telegram_id,
                 text=message,
                 parse_mode='HTML',

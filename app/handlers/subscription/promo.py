@@ -1,7 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
 from aiogram import types
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +25,9 @@ from app.utils.promo_offer import (
 )
 
 from .common import _format_text_with_placeholders
+
+
+logger = structlog.get_logger(__name__)
 
 
 async def _get_promo_offer_hint(
@@ -102,10 +107,63 @@ async def _build_promo_group_discount_text(
     return '\n'.join(lines)
 
 
+async def _open_discounted_payment(
+    callback: types.CallbackQuery, db_user: User, db: AsyncSession, state, offer
+) -> bool:
+    """After a discount from a reminder, go straight on: the renewal's payment or the tariffs.
+
+    The reminders after a subscription or a trial ended name the price on
+    their button («Продлить за 179 ₽», msg 13 of the text audit), so the tap
+    is the yes and there is no «Скидка активирована!» in between. False when
+    there is nowhere to go, and the caller says the discount is on as before.
+    """
+    try:
+        from app.database.crud.subscription import get_subscription_by_id_for_user
+        from app.database.crud.tariff import get_tariff_by_id
+
+        from .purchase import handle_extend_subscription, start_subscription_purchase
+
+        subscription = None
+        if offer.subscription_id:
+            subscription = await get_subscription_by_id_for_user(db, offer.subscription_id, db_user.id)
+
+        if subscription is None or subscription.is_trial:
+            # After a trial nothing was bought: the tariffs, with the discount in their prices.
+            await start_subscription_purchase(callback, state, db_user, db)
+            return True
+
+        if settings.is_multi_tariff_enabled():
+            await handle_extend_subscription(
+                callback.model_copy(update={'data': f'se:{subscription.id}'}).as_(callback.bot), db_user, db, state
+            )
+            return True
+
+        tariff = await get_tariff_by_id(db, subscription.tariff_id) if subscription.tariff_id else None
+        period = tariff.get_shortest_period() if tariff and not getattr(tariff, 'is_daily', False) else None
+        if tariff and tariff.is_active and period:
+            # The same period the button priced, so the payment shows the same sum.
+            from .tariff_purchase import select_tariff_extend_period
+
+            await select_tariff_extend_period(
+                callback.model_copy(update={'data': f'tariff_extend:{tariff.id}:{period}'}).as_(callback.bot),
+                db_user,
+                db,
+                state,
+            )
+            return True
+
+        await handle_extend_subscription(callback, db_user, db, state)
+        return True
+    except Exception as error:
+        logger.warning('Не удалось открыть оплату со скидкой', offer_id=offer.id, error=error, exc_info=True)
+        return False
+
+
 async def claim_discount_offer(
     callback: types.CallbackQuery,
     db_user: User,
     db: AsyncSession,
+    state: FSMContext = None,
 ):
     texts = get_texts(db_user.language)
 
@@ -260,6 +318,10 @@ async def claim_discount_offer(
         },
     )
     await db.refresh(db_user)
+
+    if (offer.notification_type or '').startswith('expired_discount_'):
+        if await _open_discounted_payment(callback, db_user, db, state, offer):
+            return
 
     success_template = texts.get(
         'DISCOUNT_CLAIM_SUCCESS',

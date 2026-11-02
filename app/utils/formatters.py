@@ -248,6 +248,67 @@ def format_valid_for(dt: datetime | None, language: str = 'ru') -> str:
     return _relative_deadline(dt, language, valid=True)
 
 
+def format_remaining(dt: datetime | None, language: str = 'ru') -> str:
+    """What is left until *dt*, without a date: «осталось 29 дней», «остался 1 час», «осталось меньше часа».
+
+    Fits after a date that is already on screen: «Активна до 1 декабря, осталось 29 дней».
+    Days are whole days left, so the count never promises more than there is.
+    """
+    if dt is None:
+        return ''
+    language_code = (language or 'ru').split('-')[0].lower()
+    if language_code == 'uk':
+        language_code = 'ua'
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    seconds = max((dt - datetime.now(UTC)).total_seconds(), 0)
+    hours = int(seconds // 3600)
+    in_days = hours >= 48
+    count = int(seconds // 86400) if in_days else hours
+
+    if language_code == 'ua':
+        if count < 1:
+            return 'залишилося менше години'
+        word = (
+            _slavic_plural(count, 'день', 'дні', 'днів')
+            if in_days
+            else _slavic_plural(count, 'година', 'години', 'годин')
+        )
+        return f'ще {count} {word}'
+    if language_code == 'zh':
+        if count < 1:
+            return '还剩不到 1 小时'
+        return f'还剩 {count} 天' if in_days else f'还剩 {count} 小时'
+    if language_code == 'fa':
+        if count < 1:
+            return 'کمتر از یک ساعت مانده'
+        return f'{count} روز مانده' if in_days else f'{count} ساعت مانده'
+    if language_code != 'ru':
+        if count < 1:
+            return 'less than an hour left'
+        unit = 'day' if in_days else 'hour'
+        return f'{count} {unit}{"s" if count != 1 else ""} left'
+
+    if count < 1:
+        return 'осталось меньше часа'
+    word = (
+        _slavic_plural(count, 'день', 'дня', 'дней') if in_days else _slavic_plural(count, 'час', 'часа', 'часов')
+    )
+    verb = 'остался' if count % 10 == 1 and count % 100 != 11 else 'осталось'
+    return f'{verb} {count} {word}'
+
+
+def format_gb(value: float | int | None, language: str = 'ru') -> str:
+    """Gigabytes as a number people read: «12,4», «8», "12.4". The unit is up to the sentence."""
+    text = f'{float(value or 0):.1f}'
+    if text.endswith('.0'):
+        text = text[:-2]
+    language_code = (language or 'ru').split('-')[0].lower()
+    if language_code in {'ru', 'ua', 'uk'}:
+        text = text.replace('.', ',')
+    return text
+
+
 def format_days_declension(days: int, language: str = 'ru') -> str:
     language_code = (language or 'ru').split('-')[0].lower()
     if language_code in {'ua', 'uk'}:
