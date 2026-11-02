@@ -308,6 +308,27 @@ def format_tariffs_list_text(
             ),
         ]
 
+    from app.utils.banners import banner_path
+
+    if banner_path('buy') is not None:
+        # The «buy» banner shows each tariff's price, devices and traffic and
+        # marks the popular one, so the text keeps one line per tariff: who it
+        # is for (msg 8 of the text audit). Without the banner the facts stay
+        # here, or they would vanish from the screen altogether.
+        short = []
+        for tariff in tariffs:
+            head = f'<b>{html.escape(tariff.name)}</b>'
+            if tariff.id in purchased_tariff_ids:
+                head += ' ✅'
+            tagline = _tagline(tariff.description)
+            if tagline and not tagline[1:2].isupper():
+                tagline = tagline[:1].lower() + tagline[1:]
+            short.append(f'{head}: {html.escape(tagline)}' if tagline else head)
+        lines += ['', '\n'.join(short)]
+        if has_period_discounts:
+            lines.append(texts.t('TARIFF_LIST_PERIOD_DISCOUNTS', '<i>На длинные сроки у вас скидка.</i>'))
+        return '\n'.join(lines)
+
     blocks = []
     for tariff in tariffs:
         head = f'<b>{html.escape(tariff.name)}</b>'
@@ -519,21 +540,25 @@ async def _show_purchase_result(
 
     Telegram plays a message effect only on a new message, so the first paid
     purchase gets a new message with 🎉 and the purchase screen is removed.
+    The result comes with the «Оплата прошла» banner (``success``) when it exists.
     """
-    if celebrate:
-        try:
-            await callback.message.answer(
-                text, reply_markup=keyboard, parse_mode='HTML', message_effect_id=CELEBRATION_EFFECT_ID
-            )
-        except Exception as error:
-            logger.warning('Не удалось отправить сообщение о покупке с эффектом', error=error)
-        else:
+    from app.utils.banners import use_banner
+
+    with use_banner('success'):
+        if celebrate:
             try:
-                await callback.message.delete()
+                await callback.message.answer(
+                    text, reply_markup=keyboard, parse_mode='HTML', message_effect_id=CELEBRATION_EFFECT_ID
+                )
             except Exception as error:
-                logger.debug('Не удалось удалить экран покупки', error=error)
-            return
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
+                logger.warning('Не удалось отправить сообщение о покупке с эффектом', error=error)
+            else:
+                try:
+                    await callback.message.delete()
+                except Exception as error:
+                    logger.debug('Не удалось удалить экран покупки', error=error)
+                return
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
 
 
 def get_shortfall_keyboard(db_user: User | None, missing_kopeks: int, back_callback: str) -> InlineKeyboardMarkup:

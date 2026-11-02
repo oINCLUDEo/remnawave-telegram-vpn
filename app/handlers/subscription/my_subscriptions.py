@@ -22,6 +22,7 @@ from app.database.models import Subscription, SubscriptionStatus, User
 from app.keyboards.common import back_button
 from app.localization.texts import get_texts
 from app.services.subscription_service import SubscriptionService
+from app.utils.formatters import format_devices_count, format_gb, format_human_date
 
 
 logger = structlog.get_logger(__name__)
@@ -61,14 +62,14 @@ def _format_subscription_line(sub, idx: int) -> str:
     if sub.traffic_limit_gb == 0:
         traffic = '∞'
     else:
-        used = f'{sub.traffic_used_gb:.1f}' if sub.traffic_used_gb else '0'
-        traffic = f'{used}/{sub.traffic_limit_gb} ГБ'
+        traffic = f'{format_gb(sub.traffic_used_gb)} из {sub.traffic_limit_gb} ГБ'
 
     # Devices
-    devices = f'{sub.device_limit} устр.' if sub.device_limit else ''
+    devices = format_devices_count(sub.device_limit) if sub.device_limit else ''
 
     # End date
-    end_date = sub.end_date.strftime('%d.%m.%Y') if sub.end_date else '—'
+    # Dates in words and without clock time, as everywhere in the bot.
+    end_date = format_human_date(sub.end_date) if sub.end_date else '—'
 
     parts = [f'{emoji} <b>{idx}. {tariff_name}</b>{label}']
     parts.append(f'   📊 Трафик: {traffic}')
@@ -197,10 +198,9 @@ async def show_subscription_detail(
     if subscription.traffic_limit_gb == 0:
         traffic = '∞ ГБ'
     else:
-        used = f'{subscription.traffic_used_gb:.1f}' if subscription.traffic_used_gb else '0'
-        traffic = f'{used} / {subscription.traffic_limit_gb} ГБ'
+        traffic = f'{format_gb(subscription.traffic_used_gb)} из {subscription.traffic_limit_gb} ГБ'
 
-    end_date = subscription.end_date.strftime('%d.%m.%Y %H:%M') if subscription.end_date else '—'
+    end_date = format_human_date(subscription.end_date) if subscription.end_date else '—'
     status = subscription.status_display
 
     text = (

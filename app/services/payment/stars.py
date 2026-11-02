@@ -505,10 +505,16 @@ class TelegramStarsMixin:
         if not topup_announced and getattr(self, 'bot', None) and user.telegram_id:
             try:
                 from app.services.payment.common import build_topup_success_message
+                from app.utils.message_patch import send_banner_message
 
                 success_text, keyboard = await build_topup_success_message(user, amount_kopeks)
-                await self.bot.send_message(
-                    chat_id=user.telegram_id, text=success_text, reply_markup=keyboard, parse_mode='HTML'
+                await send_banner_message(
+                    self.bot,
+                    banner='success',
+                    chat_id=user.telegram_id,
+                    text=success_text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML',
                 )
             except Exception as error:  # pragma: no cover - диагностический лог
                 logger.error('Ошибка отправки сообщения о пополнении Stars', user_id=user.id, error=error)

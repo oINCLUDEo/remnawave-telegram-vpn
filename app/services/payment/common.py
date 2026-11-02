@@ -82,7 +82,11 @@ class PaymentCommonMixin:
             # The method is not repeated: the user has just chosen it.
             message, keyboard = await build_topup_success_message(user_snapshot, amount_kopeks)
 
-            await self.bot.send_message(
+            from app.utils.message_patch import send_banner_message
+
+            await send_banner_message(
+                self.bot,
+                banner='success',
                 chat_id=telegram_id,
                 text=message,
                 parse_mode='HTML',

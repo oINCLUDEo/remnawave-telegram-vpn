@@ -8,7 +8,7 @@ from aiogram.types import FSInputFile, InaccessibleMessage, InputMediaPhoto, Mes
 
 from app.config import settings
 from app.localization.texts import get_texts
-from app.utils.banners import banner_path, current_banner_key
+from app.utils.banners import banner_path, current_banner_key, use_banner
 
 
 LOGO_PATH = Path(settings.LOGO_FILE)
@@ -66,6 +66,23 @@ def _cache_logo_file_id(result: Message | None) -> None:
         return
     if not _logo_file_id:
         _logo_file_id = result.photo[-1].file_id
+
+
+async def send_banner_message(bot, chat_id: int, text: str, banner: str, **kwargs) -> Message:
+    """A message that no button opened (payment result, auto-purchase, bonus) with its section's banner.
+
+    It goes as a photo only when the logo mode is on and the designer's file
+    for *banner* exists; otherwise as plain text, as these messages went before.
+    """
+    if settings.ENABLE_LOGO_MODE and banner_path(banner) and not caption_exceeds_telegram_limit(text):
+        try:
+            with use_banner(banner):
+                result = await bot.send_photo(chat_id=chat_id, photo=get_logo_media(), caption=text, **kwargs)
+                _cache_logo_file_id(result)
+            return result
+        except TelegramBadRequest:
+            pass  # a caption Telegram refuses still goes out as text
+    return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
 
 
 _TOPIC_REQUIRED_ERRORS = (

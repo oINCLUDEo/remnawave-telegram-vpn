@@ -10,8 +10,9 @@ The key is picked from the update itself: the button the user pressed
 (``callback_data``) or the command they sent. :class:`BannerMiddleware`
 stores it in a context variable for the duration of the update, and the
 photo helpers in :mod:`app.utils.message_patch` read it when they choose the
-picture. Screens reached in other ways (notifications, payment webhooks) keep
-the logo.
+picture. Messages that no button opens (reminders, offers, payment webhooks)
+name their key when they are sent, through :func:`use_banner`, so a renewal
+reminder comes with the ``renew`` picture like the screen it leads to.
 
 Keys and the screens they cover:
 
@@ -27,10 +28,12 @@ payment             пополнение и выбор способа оплат
 referral            «Пригласить друга»
 support             поддержка и тикеты
 info                «Инфо», личный кабинет, правила, FAQ, язык, промокод
+success             оплата прошла: «Подписка оформлена», «Баланс пополнен»
 ==================  ==========================================================
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -54,6 +57,7 @@ BANNER_KEYS = (
     'referral',
     'support',
     'info',
+    'success',
 )
 
 # Exact callback_data → banner key.
@@ -146,6 +150,25 @@ def current_banner_key() -> str | None:
 def set_current_banner(key: str | None):
     """Override the banner for the rest of this update; returns a token for ``reset``."""
     return _current_banner.set(key)
+
+
+@contextmanager
+def use_banner(key: str | None) -> Iterator[None]:
+    """Send what happens inside with the banner *key*.
+
+    For messages that no button opens, so the middleware cannot pick their
+    section (notifications, payment results, auto-purchases), and for a result
+    that deserves its own picture («Оплата прошла»). While the designer's file
+    is missing nothing changes: the section's banner or the logo goes as before.
+    """
+    if banner_path(key) is None:
+        yield
+        return
+    token = _current_banner.set(key)
+    try:
+        yield
+    finally:
+        _current_banner.reset(token)
 
 
 class BannerMiddleware(BaseMiddleware):

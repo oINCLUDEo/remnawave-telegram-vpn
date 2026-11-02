@@ -119,6 +119,27 @@ def _extract_event(args) -> types.TelegramObject:
     return None
 
 
+def _error_keyboard(texts, retry_data: str | None) -> types.InlineKeyboardMarkup | None:
+    """«Попробовать ещё раз» (the same button again) and «Написать в поддержку», when they exist."""
+    rows = []
+    if retry_data:
+        rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('ERROR_RETRY_BUTTON', 'Попробовать ещё раз'), callback_data=retry_data
+                )
+            ]
+        )
+    try:
+        from app.keyboards.main_menu import _is_support_enabled, write_support_button
+
+        if _is_support_enabled():
+            rows.append([write_support_button(texts)])
+    except Exception as error:  # the error message must go out even without the button
+        logger.warning('Не удалось добавить кнопку поддержки к ошибке', error=error)
+    return types.InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 async def _send_error_message(args, kwargs, original_error, func_name: str = 'unknown'):
     event = _extract_event(args)
     db_user = kwargs.get('db_user')
@@ -130,8 +151,34 @@ async def _send_error_message(args, kwargs, original_error, func_name: str = 'un
 
         texts = get_texts(db_user.language if db_user else 'ru')
 
-        if isinstance(event, types.Message):
-            await event.answer(texts.ERROR)
+        # What did not work, what to do, and two ways out (msg 17 of the text audit):
+        # «Попробовать ещё раз» repeats the same button, «Написать в поддержку» is the exit.
+        if isinstance(event, types.CallbackQuery) and isinstance(event.message, types.Message):
+            try:
+                await event.answer()
+            except TelegramBadRequest:
+                pass  # the handler may have answered it before failing
+            await event.message.answer(
+                texts.t(
+                    'ERROR_SCREEN',
+                    '❌ <b>Не получилось открыть экран</b>\n'
+                    'Попробуйте ещё раз через минуту.\n'
+                    'Если ошибка повторится, напишите в поддержку.',
+                ),
+                reply_markup=_error_keyboard(texts, event.data),
+                parse_mode='HTML',
+            )
+        elif isinstance(event, types.Message):
+            await event.answer(
+                texts.t(
+                    'ERROR_MESSAGE',
+                    '❌ <b>Не получилось обработать сообщение</b>\n'
+                    'Попробуйте ещё раз через минуту.\n'
+                    'Если ошибка повторится, напишите в поддержку.',
+                ),
+                reply_markup=_error_keyboard(texts, None),
+                parse_mode='HTML',
+            )
         elif isinstance(event, types.CallbackQuery):
             await event.answer(texts.ERROR, show_alert=True)
 

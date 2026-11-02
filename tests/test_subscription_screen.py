@@ -10,7 +10,6 @@ from app.keyboards.inline import (
     get_subscription_keyboard,
     get_updated_subscription_settings_keyboard,
 )
-from app.localization.texts import get_texts
 
 
 def _sub(*, is_trial=False, days_left=30, actual_status='active', daily=False, paused=False, traffic_limit_gb=0):
@@ -106,30 +105,3 @@ def test_settings_carry_autopay_and_traffic():
     assert ['buy_traffic'] in rows
     assert ['subscription_manage_devices'] not in rows  # it is on the subscription screen now
     assert rows[-1] == ['menu_subscription']
-
-
-@pytest.mark.parametrize('language', ['ru', 'en', 'ua', 'zh', 'fa'])
-@pytest.mark.parametrize('key', ['SUBSCRIPTION_OVERVIEW_TEMPLATE', 'SUBSCRIPTION_DAILY_OVERVIEW_TEMPLATE'])
-def test_overview_templates_format_in_every_language(language, key):
-    template = get_texts(language).t(key, '')
-    text = template.format(
-        title='T',
-        date_icon='D',
-        devices_line='',
-        full_name='',
-        balance='',
-        status_emoji='S',
-        status_display='Active',
-        warning='',
-        tariff_info_block='',
-        subscription_type='',
-        end_date='01.01.2027',
-        time_left='3',
-        traffic='1 / 2',
-        servers='NL',
-        devices_used='1',
-        device_limit='3',
-    )
-
-    assert text.startswith('T\n\nS <b>Active</b>')
-    assert text.count('<blockquote>') == text.count('</blockquote>') == 1

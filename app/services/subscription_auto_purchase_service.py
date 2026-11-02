@@ -33,6 +33,7 @@ from app.services.subscription_purchase_service import (
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
+from app.utils.message_patch import send_banner_message
 from app.utils.pricing_utils import balance_covers_price
 
 
@@ -634,7 +635,9 @@ async def _auto_extend_subscription(
                 tariff_name=prepared.tariff_name,
             )
 
-            await bot.send_message(
+            await send_banner_message(
+                bot,
+                banner='success',
                 chat_id=user.telegram_id,
                 text=full_message,
                 reply_markup=keyboard,
@@ -979,7 +982,9 @@ async def _auto_purchase_tariff(
                 tariff_name=tariff_name_for_label,
             )
 
-            await bot.send_message(
+            await send_banner_message(
+                bot,
+                banner='success',
                 chat_id=user.telegram_id,
                 text=message,
                 reply_markup=keyboard,
@@ -2680,7 +2685,9 @@ async def try_auto_extend_expired_after_topup(
                 tariff_name=tariff_name_for_label,
             )
 
-            await bot.send_message(
+            await send_banner_message(
+                bot,
+                banner='success',
                 chat_id=user.telegram_id,
                 text=full_message,
                 reply_markup=keyboard,
@@ -3427,7 +3434,9 @@ async def _process_legacy_generic_cart(
                     tariff_name=tariff_name,
                 )
 
-                await bot.send_message(
+                await send_banner_message(
+                    bot,
+                    banner='success',
                     chat_id=user.telegram_id,
                     text=full_message,
                     reply_markup=keyboard,
