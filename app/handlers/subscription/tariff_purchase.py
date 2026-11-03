@@ -3760,6 +3760,14 @@ async def show_instant_switch_list(
         await show_tariff_switch_list(callback, db_user, db, state)
         return
 
+    now = datetime.now(UTC)
+    if not subscription.end_date or subscription.end_date <= now:
+        # An ended subscription has no days to carry over, so changing the tariff
+        # is a purchase: the tariff list, where another tariff replaces the old one
+        # (confirm_tariff_purchase) and the same one is a renewal.
+        await show_tariffs_list(callback, db_user, db, state)
+        return
+
     # Получаем текущий тариф
     current_tariff = await get_tariff_by_id(db, subscription.tariff_id)
     if not current_tariff:
@@ -3767,26 +3775,7 @@ async def show_instant_switch_list(
         return
 
     # Рассчитываем оставшиеся дни
-    now = datetime.now(UTC)
-    remaining_days = 0
-    if subscription.end_date:
-        remaining_days = max(0, (subscription.end_date - now).days)
-
-    if not subscription.end_date or subscription.end_date <= now:
-        await callback.message.edit_text(
-            screen_title('tariff', texts.t('SUBSCRIPTION_BTN_TARIFF', 'Сменить тариф'))
-            + '\n\n'
-            + texts.t(
-                'INSTANT_SWITCH_UNAVAILABLE',
-                'Сменить тариф можно, пока подписка активна. Продлите её или выберите новый тариф.',
-            ),
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')]]
-            ),
-            parse_mode='HTML',
-        )
-        await callback.answer()
-        return
+    remaining_days = max(0, (subscription.end_date - now).days)
 
     # Получаем доступные тарифы
     promo_group_id = getattr(db_user, 'promo_group_id', None)

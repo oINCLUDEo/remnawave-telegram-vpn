@@ -1849,7 +1849,6 @@
   "INSTANT_SWITCH_DONE_TARIFF": "📦 Тариф: <b>{tariff}</b>",
   "INSTANT_SWITCH_DONE_DAYS": "🗓 Осталось <b>{days}</b>",
   "INSTANT_SWITCH_DONE_PAID": "💰 Списано с баланса: <b>{amount}</b>",
-  "INSTANT_SWITCH_UNAVAILABLE": "Сменить тариф можно, пока подписка активна. Продлите её или выберите новый тариф.",
   "INSTANT_SWITCH_NONE": "Других тарифов сейчас нет.",
   "TARIFF_LIST_NOTE": "Гигабайты считаются только на серверах обхода белых списков. На обычных серверах безлимитный трафик.",
   "TARIFF_BADGE_POPULAR": "выбирают чаще всего",

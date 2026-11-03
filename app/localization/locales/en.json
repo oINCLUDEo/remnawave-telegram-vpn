@@ -1867,7 +1867,6 @@
   "INSTANT_SWITCH_DONE_TARIFF": "📦 Plan: <b>{tariff}</b>",
   "INSTANT_SWITCH_DONE_DAYS": "🗓 <b>{days}</b> left",
   "INSTANT_SWITCH_DONE_PAID": "💰 Charged from balance: <b>{amount}</b>",
-  "INSTANT_SWITCH_UNAVAILABLE": "You can change plans while your subscription is active. Renew it or choose a new plan.",
   "INSTANT_SWITCH_NONE": "There are no other plans right now.",
   "TARIFF_LIST_NOTE": "Gigabytes count only on the servers that bypass whitelists. Regular servers have unlimited traffic.",
   "TARIFF_BADGE_POPULAR": "most popular",

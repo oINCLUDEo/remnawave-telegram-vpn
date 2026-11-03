@@ -1888,7 +1888,6 @@
   "INSTANT_SWITCH_DONE_TARIFF": "📦 تعرفه: <b>{tariff}</b>",
   "INSTANT_SWITCH_DONE_DAYS": "🗓 <b>{days}</b> مانده",
   "INSTANT_SWITCH_DONE_PAID": "💰 از موجودی کسر شد: <b>{amount}</b>",
-  "INSTANT_SWITCH_UNAVAILABLE": "تا وقتی اشتراک فعال است می‌توانید تعرفه را تغییر دهید. آن را تمدید کنید یا تعرفه جدیدی انتخاب کنید.",
   "INSTANT_SWITCH_NONE": "در حال حاضر تعرفه دیگری وجود ندارد.",
   "TARIFF_LIST_NOTE": "گیگابایت‌ها فقط روی سرورهای دور زدن لیست سفید حساب می‌شوند. ترافیک سرورهای معمولی نامحدود است.",
   "TARIFF_BADGE_POPULAR": "محبوب‌ترین",
