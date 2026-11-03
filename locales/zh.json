@@ -1718,7 +1718,6 @@
   "INSTANT_SWITCH_DONE_TARIFF": "📦 套餐：<b>{tariff}</b>",
   "INSTANT_SWITCH_DONE_DAYS": "🗓 剩余<b>{days}</b>",
   "INSTANT_SWITCH_DONE_PAID": "💰 已从余额扣除：<b>{amount}</b>",
-  "INSTANT_SWITCH_UNAVAILABLE": "订阅有效期内才能更换套餐。请续订或选择新套餐。",
   "INSTANT_SWITCH_NONE": "目前没有其他套餐。",
   "TARIFF_LIST_NOTE": "流量只在绕过白名单的服务器上计算。普通服务器不限流量。",
   "TARIFF_BADGE_POPULAR": "最受欢迎",
